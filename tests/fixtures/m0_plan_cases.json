@@ -1,0 +1,89 @@
+{
+  "provenance": [
+    "aninamer/tests/plan/test_plan_builder_core.py::test_build_rename_plan_basic_and_ignores_unmapped",
+    "aninamer/tests/plan/test_plan_builder_core.py::test_build_rename_plan_disambiguates_subtitles",
+    "aninamer/tests/plan/test_plan_builder_validation.py::test_build_rename_plan_includes_s00_for_ova"
+  ],
+  "series": {
+    "title_zh_cn": "示例动画",
+    "year": 2024,
+    "tmdb_id": 42
+  },
+  "episode_catalog": {
+    "0": 1,
+    "1": 5
+  },
+  "candidates": [
+    {"id": "video:1", "kind": "video", "display_name": "episode-01.mkv"},
+    {"id": "video:2", "kind": "video", "display_name": "episode-02-03.mp4"},
+    {"id": "video:3", "kind": "video", "display_name": "ova.mkv"},
+    {"id": "video:4", "kind": "video", "display_name": "special.mkv"},
+    {"id": "video:5", "kind": "video", "display_name": "unknown.mkv"},
+    {"id": "subtitle:1", "kind": "subtitle", "display_name": "episode-02-03.ass"},
+    {"id": "subtitle:2", "kind": "subtitle", "display_name": "unknown.ass"},
+    {"id": "subtitle:3", "kind": "subtitle", "display_name": "episode-02-03-alt.ass"}
+  ],
+  "moves": [
+    {
+      "kind": "subtitle",
+      "source_id": "subtitle:1",
+      "video_id": "video:2",
+      "season": 1,
+      "episode_start": 2,
+      "episode_end": 3,
+      "variant": "chs",
+      "extension": ".ASS"
+    },
+    {
+      "kind": "subtitle",
+      "source_id": "subtitle:3",
+      "video_id": "video:2",
+      "season": 1,
+      "episode_start": 2,
+      "episode_end": 3,
+      "variant": "chs",
+      "extension": ".ass"
+    },
+    {
+      "kind": "video",
+      "source_id": "video:4",
+      "season": 0,
+      "episode_start": 1,
+      "episode_end": 1,
+      "extension": ".mkv"
+    },
+    {
+      "kind": "video",
+      "source_id": "video:2",
+      "season": 1,
+      "episode_start": 2,
+      "episode_end": 3,
+      "extension": ".mp4"
+    },
+    {
+      "kind": "video",
+      "source_id": "video:1",
+      "season": 1,
+      "episode_start": 1,
+      "episode_end": 1,
+      "extension": ".MKV"
+    },
+    {
+      "kind": "video",
+      "source_id": "video:3",
+      "season": 1,
+      "episode_start": 5,
+      "episode_end": 5,
+      "extension": ".mkv"
+    }
+  ],
+  "expected_destinations": [
+    "示例动画 (2024) {tmdb-42}/S01/示例动画 S01E01.mkv",
+    "示例动画 (2024) {tmdb-42}/S01/示例动画 S01E02-E03.mp4",
+    "示例动画 (2024) {tmdb-42}/S01/示例动画 S01E05.mkv",
+    "示例动画 (2024) {tmdb-42}/S00/示例动画 S00E01.mkv",
+    "示例动画 (2024) {tmdb-42}/S01/示例动画 S01E02-E03.chs.ass",
+    "示例动画 (2024) {tmdb-42}/S01/示例动画 S01E02-E03.chs.1.ass"
+  ],
+  "expected_unmapped": ["video:5", "subtitle:2"]
+}
