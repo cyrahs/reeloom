@@ -34,7 +34,12 @@ class ScannedFile:
         ):
             raise DomainError(ErrorCode.PATH_ESCAPE)
         if (
-            len(self.relative_path.as_posix().encode("utf-8"))
+            len(
+                self.relative_path.as_posix().encode(
+                    "utf-8",
+                    errors="surrogateescape",
+                )
+            )
             > _MAX_RELATIVE_PATH_BYTES
         ):
             raise DomainError(ErrorCode.SCAN_LIMIT_EXCEEDED)

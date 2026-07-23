@@ -7,6 +7,7 @@ from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
+    RunFailed,
     RunStarted,
     RunStopped,
     SeriesSelected,
@@ -61,6 +62,11 @@ def test_assistant_final_does_not_imply_domain_completion() -> None:
 
     assert state.phase is Phase.IDENTIFY_SERIES
     assert state.phase is not Phase.COMPLETED
+
+
+def test_stop_reason_cannot_claim_domain_completion() -> None:
+    with pytest.raises(ValueError):
+        StopReason("domain_completed")
 
 
 def test_snapshot_event_binds_the_run_once_before_tool_calls() -> None:
@@ -253,6 +259,23 @@ def test_stopping_with_pending_tool_call_fails_closed() -> None:
         reduce_event(state, RunStopped(reason=StopReason.MODEL_FINAL))
 
     assert error.value.code is RuntimeErrorCode.INVALID_TRANSITION
+
+
+def test_terminal_failure_aborts_pending_tool_calls() -> None:
+    state = reduce_event(
+        None,
+        RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME),
+    )
+    state = reduce_event(
+        state,
+        ToolRequested(call_id="call-1", tool_name="list_candidates"),
+    )
+
+    state = reduce_event(state, RunFailed(code="adapter_crashed"))
+
+    assert state.status is RunStatus.FAILED
+    assert state.pending_tool_calls == frozenset()
+    assert state.failure_code == "adapter_crashed"
 
 
 def test_store_is_append_only_and_replays_deterministically() -> None:

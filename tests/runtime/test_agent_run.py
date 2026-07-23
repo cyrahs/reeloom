@@ -23,7 +23,7 @@ from reeloom.kernel.candidates import (
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.budget import RunBudget
-from reeloom.runtime.errors import RuntimeErrorCode
+from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import ToolRejected
 from reeloom.runtime.policy import PhaseToolPolicy
 from reeloom.runtime.state import Phase, RunStatus, StopReason
@@ -227,6 +227,21 @@ class _FailingSource:
         )
 
 
+class _CrashingSource:
+    snapshot_id = "candidate-snapshot-v1:crashing"
+    candidate_count = 0
+
+    async def page(
+        self,
+        *,
+        kind: CandidateKind,
+        cursor: int,
+        limit: int,
+    ) -> CandidatePage:
+        del kind, cursor, limit
+        raise ValueError("unexpected adapter failure")
+
+
 def test_retryable_tool_error_is_observed_by_the_model() -> None:
     model = ScriptedModel(
         (
@@ -291,6 +306,36 @@ def test_fatal_tool_error_escapes_the_sdk_loop() -> None:
     assert context.runtime.state.stop_reason is StopReason.FATAL_ERROR
 
 
+def test_unexpected_tool_error_aborts_and_clears_pending_call() -> None:
+    model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="list_candidates",
+                arguments={"kind": "video", "cursor": 0, "limit": 10},
+                call_id="call-crash",
+            ),
+        )
+    )
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_CrashingSource(),
+        work_type=TmdbWorkType.ANIME,
+    )
+
+    with pytest.raises(UserError) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=model,
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert isinstance(error.value.__cause__, ValueError)
+    assert context.runtime.state.status is RunStatus.FAILED
+    assert context.runtime.state.pending_tool_calls == frozenset()
+
+
 def test_sdk_max_turns_is_a_domain_stop_condition() -> None:
     model = ScriptedModel(
         (
@@ -347,3 +392,20 @@ def test_same_script_produces_the_same_domain_event_transcript() -> None:
         second_context.runtime.store.events
     )
     assert first_result.state == second_result.state
+
+
+def test_stopped_context_cannot_start_another_sdk_run() -> None:
+    context, _ = _run(ScriptedModel((FinalStep(text="done"),)))
+    second_model = ScriptedModel((FinalStep(text="must not run"),))
+
+    with pytest.raises(RuntimeDomainError) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=second_model,
+                prompt="Run again.",
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.RUN_NOT_ACTIVE
+    assert second_model.consumed_steps == 0

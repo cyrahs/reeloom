@@ -379,7 +379,17 @@ class TmdbSeasonDetails:
 def classify_special_kind(name: str, overview: str) -> SpecialKind:
     """Extract only explicit OVA/OAD evidence from bounded TMDB text."""
 
-    combined = unicodedata.normalize("NFKC", f"{name} {overview}").casefold()
+    bounded_name = _bounded_text(
+        name,
+        max_bytes=_MAX_TITLE_BYTES,
+        allow_empty=True,
+    )
+    bounded_overview = _bounded_text(
+        overview,
+        max_bytes=_MAX_OVERVIEW_BYTES,
+        allow_empty=True,
+    )
+    combined = f"{bounded_name} {bounded_overview}".casefold()
     token_match = _SPECIAL_TOKEN_PATTERN.search(combined)
     if token_match is not None:
         return (

@@ -181,6 +181,11 @@ class TmdbHttpAdapter:
                 return bytes(body)
         except TmdbProviderError:
             raise
+        except httpx.DecodingError:
+            raise TmdbProviderError(
+                TmdbErrorCode.INVALID_RESPONSE,
+                retryable=False,
+            ) from None
         except httpx.TimeoutException:
             raise TmdbProviderError(
                 TmdbErrorCode.UNAVAILABLE,
@@ -411,18 +416,26 @@ class TmdbHttpAdapter:
             f"/tv/{tmdb_id}/season/{season_number}",
             params={"language": language.value},
         )
-        raw_episodes = payload.get("episodes")
-        if (
-            not isinstance(raw_episodes, list)
-            or len(raw_episodes) > _MAX_EPISODES
-        ):
-            raise TmdbProviderError(
-                TmdbErrorCode.INVALID_RESPONSE,
-                retryable=False,
-            )
         try:
+            response_season = self._required_int(
+                payload,
+                "season_number",
+                minimum=0,
+            )
+            if response_season != season_number:
+                raise ValueError("mismatched season")
+            raw_episodes = payload.get("episodes")
+            if (
+                not isinstance(raw_episodes, list)
+                or len(raw_episodes) > _MAX_EPISODES
+            ):
+                raise TypeError("invalid episodes")
             episodes = tuple(
-                self._parse_episode(item, expected_season=season_number)
+                self._parse_episode(
+                    item,
+                    expected_tmdb_id=tmdb_id,
+                    expected_season=season_number,
+                )
                 for item in raw_episodes
             )
             return TmdbSeasonDetails(
@@ -524,9 +537,15 @@ class TmdbHttpAdapter:
         cls,
         value: object,
         *,
+        expected_tmdb_id: int,
         expected_season: int,
     ) -> TmdbEpisode:
         item = cls._object(value)
+        if (
+            cls._required_int(item, "show_id", minimum=1)
+            != expected_tmdb_id
+        ):
+            raise ValueError("mismatched series")
         season_number = cls._required_int(
             item,
             "season_number",

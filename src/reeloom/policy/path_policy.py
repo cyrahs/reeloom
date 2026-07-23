@@ -81,14 +81,3 @@ class AuthorizedRoot:
         object.__setattr__(instance, "device", root_stat.st_dev)
         object.__setattr__(instance, "inode", root_stat.st_ino)
         return instance
-
-    def resolve_existing(self, relative_path: object) -> Path:
-        relative = validate_relative_path(relative_path)
-        candidate = self.path.joinpath(*relative.parts)
-        try:
-            resolved = candidate.resolve(strict=True)
-        except (OSError, RuntimeError):
-            raise DomainError(ErrorCode.PATH_NOT_FOUND) from None
-        if not resolved.is_relative_to(self.path):
-            raise DomainError(ErrorCode.PATH_ESCAPE)
-        return resolved

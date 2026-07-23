@@ -186,22 +186,14 @@ def reduce_event(
     if isinstance(event, RunStopped):
         if state.pending_tool_calls:
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
-        phase = (
-            Phase.COMPLETED
-            if event.reason is StopReason.DOMAIN_COMPLETED
-            else state.phase
-        )
         return replace(
             state,
-            phase=phase,
             status=RunStatus.STOPPED,
             event_count=event_count,
             stop_reason=event.reason,
         )
 
     if isinstance(event, RunFailed):
-        if state.pending_tool_calls:
-            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
         if not event.code:
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
         return replace(
@@ -209,6 +201,7 @@ def reduce_event(
             phase=Phase.FAILED,
             status=RunStatus.FAILED,
             event_count=event_count,
+            pending_tool_calls=frozenset(),
             stop_reason=StopReason.FATAL_ERROR,
             failure_code=event.code,
         )

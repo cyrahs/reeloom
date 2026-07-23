@@ -38,6 +38,23 @@ def test_special_kind_uses_explicit_english_and_chinese_evidence(
     assert classify_special_kind(name, overview) is expected
 
 
+def test_special_hint_ignores_evidence_beyond_exposed_text_bounds() -> None:
+    episode = TmdbEpisode(
+        season_number=0,
+        episode_number=1,
+        name=("x" * 240) + " OVA",
+        overview=("y" * 1_000) + " OAD",
+        special_kind=classify_special_kind(
+            ("x" * 240) + " OVA",
+            ("y" * 1_000) + " OAD",
+        ),
+    )
+
+    assert episode.name == "x" * 240
+    assert episode.overview == "y" * 1_000
+    assert episode.special_kind is SpecialKind.UNKNOWN
+
+
 @pytest.mark.parametrize(
     ("work_type", "media_type"),
     (

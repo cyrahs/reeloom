@@ -17,7 +17,13 @@ _FIGHT_CLUB_TMDB_ID = 550
 _ADULT_MOVIE_TMDB_ID = 1358188
 _ADULT_MOVIE_QUERY = "My Neighbor's A Nudist?!"
 _MAX_DOTENV_BYTES = 64 * 1024
-_PROJECT_DOTENV_PATH = Path(__file__).absolute().parent.parent / ".env"
+
+
+def _project_dotenv_path(script_path: Path) -> Path:
+    return script_path.resolve(strict=True).parent.parent / ".env"
+
+
+_PROJECT_DOTENV_PATH = _project_dotenv_path(Path(__file__))
 
 logger = logging.getLogger(__name__)
 

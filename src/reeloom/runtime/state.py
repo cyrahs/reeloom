@@ -27,7 +27,6 @@ class RunStatus(StrEnum):
 
 class StopReason(StrEnum):
     MODEL_FINAL = "model_final"
-    DOMAIN_COMPLETED = "domain_completed"
     MAX_TURNS = "max_turns"
     BUDGET_EXHAUSTED = "budget_exhausted"
     FATAL_ERROR = "fatal_error"

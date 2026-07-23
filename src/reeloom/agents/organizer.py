@@ -24,7 +24,7 @@ from reeloom.kernel.candidates import CandidateKind
 from reeloom.kernel.tmdb import TmdbLanguage, TmdbWorkType
 from reeloom.ports.tmdb import TmdbProvider
 from reeloom.runtime.budget import RunBudget
-from reeloom.runtime.errors import RuntimeErrorCode
+from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     RunFailed,
@@ -64,7 +64,7 @@ _WORK_TYPE_VALUES = frozenset(
 )
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class OrganizerContext:
     runtime: ToolRuntime
     candidate_source: CandidateSource
@@ -424,6 +424,9 @@ async def run_episode_organizer(
     prompt: str,
 ) -> EpisodeOrganizerRunResult:
     """Run the real SDK loop while Reeloom records only domain events."""
+
+    if context.runtime.state.status is not RunStatus.RUNNING:
+        raise RuntimeDomainError(RuntimeErrorCode.RUN_NOT_ACTIVE)
 
     try:
         result = await Runner.run(

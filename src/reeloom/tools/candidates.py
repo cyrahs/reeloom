@@ -85,31 +85,32 @@ def _candidate_snapshot_id(snapshot: CandidateSnapshot) -> str:
     return "candidate-snapshot-v1:" + hashlib.sha256(canonical).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class SnapshotCandidateSource:
     """A bounded view over one immutable, run-scoped snapshot."""
 
     snapshot: CandidateSnapshot
-    snapshot_id: str = ""
+    snapshot_id: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.snapshot, CandidateSnapshot):
+    def __init__(self, snapshot: CandidateSnapshot) -> None:
+        if not isinstance(snapshot, CandidateSnapshot):
             raise TypeError("snapshot must be CandidateSnapshot")
-        if not self.snapshot_id:
-            object.__setattr__(
-                self,
-                "snapshot_id",
-                _candidate_snapshot_id(self.snapshot),
-            )
-        elif not isinstance(self.snapshot_id, str):
-            raise TypeError("snapshot_id must be a string")
+        object.__setattr__(self, "snapshot", snapshot)
+        object.__setattr__(
+            self,
+            "snapshot_id",
+            _candidate_snapshot_id(snapshot),
+        )
 
     @classmethod
     def from_scanned(
         cls,
         snapshot: ScannedCandidateSnapshot,
     ) -> SnapshotCandidateSource:
-        return cls(snapshot.candidates, snapshot.snapshot_id)
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "snapshot", snapshot.candidates)
+        object.__setattr__(instance, "snapshot_id", snapshot.snapshot_id)
+        return instance
 
     @property
     def candidate_count(self) -> int:
@@ -198,6 +199,22 @@ async def list_candidates(
                 ),
             )
         raise
+
+    state = runtime.state
+    if (
+        source.snapshot_id != state.candidate_snapshot_id
+        or source.candidate_count != state.candidate_count
+    ):
+        runtime.reject(
+            call_id=call_id,
+            tool_name=_TOOL_NAME,
+            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
+            retryable=False,
+        )
+        return _error_observation(
+            RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
+            retryable=False,
+        )
 
     if (
         not isinstance(kind, CandidateKind)

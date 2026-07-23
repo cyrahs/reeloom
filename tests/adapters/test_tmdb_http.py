@@ -179,6 +179,80 @@ def test_timeout_is_retryable_and_does_not_disclose_key() -> None:
     assert "secret-test-key" not in str(error.value)
 
 
+def test_malformed_content_encoding_is_an_invalid_response() -> None:
+    adapter = TmdbHttpAdapter(
+        api_key="test-key-not-secret",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=b"not-gzip",
+                headers={"content-encoding": "gzip"},
+                request=request,
+            )
+        ),
+    )
+    try:
+        with pytest.raises(TmdbProviderError) as error:
+            asyncio.run(
+                adapter.search_titles(
+                    query="title",
+                    work_type=TmdbWorkType.ANIME,
+                    language=TmdbLanguage.ZH_CN,
+                    limit=10,
+                )
+            )
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert error.value.code is TmdbErrorCode.INVALID_RESPONSE
+    assert not error.value.retryable
+    assert error.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"season_number": 1, "episodes": []},
+        {
+            "season_number": 0,
+            "episodes": [
+                {
+                    "show_id": 999,
+                    "season_number": 0,
+                    "episode_number": 1,
+                    "name": "OVA",
+                    "overview": "",
+                }
+            ],
+        },
+    ),
+)
+def test_season_response_must_match_requested_series_and_season(
+    payload: object,
+) -> None:
+    adapter = TmdbHttpAdapter(
+        api_key="test-key-not-secret",
+        transport=httpx.MockTransport(
+            lambda request: _json_response(payload)
+        ),
+    )
+    try:
+        with pytest.raises(TmdbProviderError) as error:
+            asyncio.run(
+                adapter.get_season(
+                    tmdb_id=100,
+                    work_type=TmdbWorkType.ANIME,
+                    season_number=0,
+                    language=TmdbLanguage.ZH_CN,
+                )
+            )
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert error.value.code is TmdbErrorCode.INVALID_RESPONSE
+    assert not error.value.retryable
+
+
 def test_response_body_limit_fails_closed() -> None:
     adapter = TmdbHttpAdapter(
         api_key="test-key-not-secret",

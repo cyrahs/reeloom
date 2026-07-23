@@ -124,6 +124,23 @@ def test_api_key_loader_falls_back_to_project_dotenv(
     assert tmdb_live_smoke._load_api_key() == "dotenv-key"
 
 
+def test_project_dotenv_is_anchored_to_resolved_script(
+    tmp_path: Path,
+) -> None:
+    project_scripts = tmp_path / "project" / "scripts"
+    project_scripts.mkdir(parents=True)
+    real_script = project_scripts / "tmdb_live_smoke.py"
+    real_script.write_text("# fixture\n", encoding="utf-8")
+    alternate_directory = tmp_path / "alternate"
+    alternate_directory.mkdir()
+    linked_script = alternate_directory / "tmdb_live_smoke.py"
+    linked_script.symlink_to(real_script)
+
+    assert tmdb_live_smoke._project_dotenv_path(linked_script) == (
+        tmp_path / "project" / ".env"
+    )
+
+
 def test_live_smoke_checks_adult_search_and_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

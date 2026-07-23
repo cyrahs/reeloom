@@ -5,7 +5,6 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.file_types import candidate_kind_for_filename
 from reeloom.kernel.scanner import (
@@ -46,12 +45,6 @@ class _ScanProgress:
 class FilesystemScanResult:
     authorized_root: AuthorizedRoot
     snapshot: ScannedCandidateSnapshot
-
-    def source_path(self, candidate_id: CandidateId) -> Path:
-        record = self.snapshot.record_for(candidate_id)
-        return self.authorized_root.resolve_existing(
-            record.relative_path.as_posix()
-        )
 
 
 @dataclass(frozen=True, slots=True)

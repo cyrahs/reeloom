@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,28 @@ def test_prompt_injection_filename_remains_inert_display_data(
 
     candidate = result.snapshot.candidates.candidates[0]
     assert candidate.display_name == malicious.name
+
+
+def test_scanner_accepts_posix_non_utf8_filename(tmp_path: Path) -> None:
+    root_path = tmp_path / "media"
+    root_path.mkdir()
+    raw_name = b"episode-\xff.mkv"
+    file_descriptor = os.open(
+        os.path.join(os.fsencode(root_path), raw_name),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        os.write(file_descriptor, b"video")
+    finally:
+        os.close(file_descriptor)
+
+    result = FilesystemScanner().scan(AuthorizedRoot.create(root_path))
+
+    candidate = result.snapshot.candidates.candidates[0]
+    record = result.snapshot.records[0]
+    assert os.fsencode(candidate.display_name) == raw_name
+    assert os.fsencode(record.relative_path.as_posix()) == raw_name
 
 
 def test_scanner_candidate_limit_fails_closed(tmp_path: Path) -> None:
