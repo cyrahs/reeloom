@@ -17,7 +17,12 @@ from reeloom.runtime.events import (
     ToolSucceeded,
 )
 from reeloom.runtime.reducer import reduce_event
-from reeloom.runtime.state import Phase, RunStatus, StopReason
+from reeloom.runtime.state import (
+    MappingValidationIssue,
+    Phase,
+    RunStatus,
+    StopReason,
+)
 from reeloom.runtime.store import InMemoryEventStore
 
 
@@ -297,3 +302,11 @@ def test_store_is_append_only_and_replays_deterministically() -> None:
     assert store.replay() == store.state
     assert store.state is not None
     assert store.state.failures == 1
+
+
+def test_mapping_validation_issue_rejects_unbounded_text() -> None:
+    with pytest.raises(ValueError):
+        MappingValidationIssue(
+            code="invalid_mapping",
+            context=(("detail", "x" * 161),),
+        )

@@ -2,22 +2,39 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from reeloom.kernel.candidates import CandidateId, CandidateKind
+from reeloom.kernel.errors import DomainError
+from reeloom.kernel.inventory import MAX_INVENTORY_EPISODES
+from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
+    ExistingInventoryObserved,
+    MappingRejected,
+    MappingSubmitted,
+    ModelUsageRecorded,
     RunFailed,
     RunStarted,
     RunStopped,
     RuntimeEvent,
     SeriesSelected,
+    SubtitleVariantDetected,
     TmdbCandidatesObserved,
+    TmdbSeasonCatalogObserved,
     ToolRejected,
     ToolRequested,
     ToolSucceeded,
 )
-from reeloom.runtime.state import Phase, RunState, RunStatus, StopReason
+from reeloom.runtime.state import (
+    MappingValidationIssue,
+    Phase,
+    RunState,
+    RunStatus,
+    StopReason,
+)
 
 
 def _require_running(state: RunState) -> None:
@@ -38,6 +55,22 @@ def _complete_tool_call(
             context={"call_id": call_id, "tool_name": tool_name},
         )
     return state.pending_tool_calls - {pending_call}
+
+
+def _observe_tool_call(
+    state: RunState,
+    *,
+    call_id: str,
+    tool_name: str,
+) -> frozenset[tuple[str, str]]:
+    call = (call_id, tool_name)
+    if (
+        not call_id
+        or call not in state.pending_tool_calls
+        or call in state.observed_tool_calls
+    ):
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+    return state.observed_tool_calls | {call}
 
 
 def reduce_event(
@@ -62,6 +95,7 @@ def reduce_event(
             tool_calls=0,
             failures=0,
             pending_tool_calls=frozenset(),
+            observed_tool_calls=frozenset(),
             work_type=event.work_type,
         )
 
@@ -72,14 +106,29 @@ def reduce_event(
     event_count = state.event_count + 1
 
     if isinstance(event, CandidateSnapshotCreated):
+        valid_candidate_ids = (
+            event.candidate_ids is None
+            or (
+                isinstance(event.candidate_ids, tuple)
+                and len(event.candidate_ids) == event.candidate_count
+                and len(set(event.candidate_ids))
+                == len(event.candidate_ids)
+                and all(
+                    isinstance(candidate_id, CandidateId)
+                    for candidate_id in event.candidate_ids
+                )
+            )
+        )
         if (
             state.candidate_snapshot_id is not None
             or state.tool_calls != 0
             or state.pending_tool_calls
+            or state.observed_tool_calls
             or state.phase is not Phase.BOOTSTRAP
             or not event.snapshot_id
             or type(event.candidate_count) is not int
             or event.candidate_count < 0
+            or not valid_candidate_ids
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
         return replace(
@@ -88,6 +137,7 @@ def reduce_event(
             event_count=event_count,
             candidate_snapshot_id=event.snapshot_id,
             candidate_count=event.candidate_count,
+            candidate_ids=event.candidate_ids,
         )
 
     if isinstance(event, ToolRequested):
@@ -158,6 +208,206 @@ def reduce_event(
             selected_work_type=event.work_type,
         )
 
+    if isinstance(event, TmdbSeasonCatalogObserved):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="get_tmdb_season",
+        )
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or state.selected_series is None
+            or event.tmdb_id != state.selected_series.tmdb_id
+            or event.work_type is not state.selected_work_type
+            or type(event.season_number) is not int
+            or event.season_number < 0
+            or type(event.episode_count) is not int
+            or event.episode_count < 1
+            or event.episode_count > 100_000
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        counts = dict(state.episode_catalog_counts)
+        previous = counts.get(event.season_number)
+        if previous is not None and previous != event.episode_count:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        counts[event.season_number] = event.episode_count
+        if len(counts) > 100:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            episode_catalog_counts=tuple(sorted(counts.items())),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, ExistingInventoryObserved):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="get_existing_inventory",
+        )
+        valid_occupied = (
+            isinstance(event.occupied, tuple)
+            and len(event.occupied) <= MAX_INVENTORY_EPISODES
+            and tuple(sorted(event.occupied)) == event.occupied
+            and len(set(event.occupied)) == len(event.occupied)
+            and all(
+                isinstance(item, tuple)
+                and len(item) == 2
+                and type(item[0]) is int
+                and 0 <= item[0] <= 999
+                and type(item[1]) is int
+                and 1 <= item[1] <= 100_000
+                for item in event.occupied
+            )
+        )
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or state.selected_series is None
+            or event.tmdb_id != state.selected_series.tmdb_id
+            or event.work_type is not state.selected_work_type
+            or not valid_occupied
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            inventory_episodes=event.occupied,
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, SubtitleVariantDetected):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="detect_subtitle_variant",
+        )
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or not isinstance(event.subtitle_id, CandidateId)
+            or event.subtitle_id.kind is not CandidateKind.SUBTITLE
+            or state.candidate_ids is None
+            or event.subtitle_id not in state.candidate_ids
+            or not isinstance(event.variant, SubtitleVariant)
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        variants = dict(state.subtitle_variants)
+        previous = variants.get(event.subtitle_id)
+        if previous is not None and previous is not event.variant:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        variants[event.subtitle_id] = event.variant
+        return replace(
+            state,
+            event_count=event_count,
+            subtitle_variants=tuple(
+                sorted(
+                    variants.items(),
+                    key=lambda item: item[0].ordinal,
+                )
+            ),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, MappingRejected):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="submit_mapping",
+        )
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or not isinstance(event.issue, MappingValidationIssue)
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            validation_issues=(event.issue,),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, MappingSubmitted):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="submit_mapping",
+        )
+        detected_subtitles = {
+            subtitle_id for subtitle_id, _ in state.subtitle_variants
+        }
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or not isinstance(event.mapping, MappingDraft)
+            or event.candidate_snapshot_id
+            != state.candidate_snapshot_id
+            or state.candidate_ids is None
+            or not state.episode_catalog_counts
+            or state.inventory_episodes is None
+            or any(
+                subtitle.subtitle_id not in detected_subtitles
+                for subtitle in event.mapping.subtitles
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        candidate_ids = set(state.candidate_ids)
+        if any(
+            video.video_id not in candidate_ids
+            for video in event.mapping.videos
+        ) or any(
+            subtitle.subtitle_id not in candidate_ids
+            or subtitle.video_id not in candidate_ids
+            for subtitle in event.mapping.subtitles
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        try:
+            catalog = EpisodeCatalog(
+                season_episode_counts=state.episode_catalog_counts
+            )
+            for video in event.mapping.videos:
+                catalog.validate(video.span)
+        except DomainError:
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            ) from None
+        occupied = set(state.inventory_episodes)
+        if any(
+            (video.span.season, episode) in occupied
+            for video in event.mapping.videos
+            for episode in video.span.episodes
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            phase=Phase.BUILD_PLAN,
+            event_count=event_count,
+            mapping_draft=event.mapping,
+            validation_issues=(),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, ModelUsageRecorded):
+        if (
+            type(event.input_tokens) is not int
+            or event.input_tokens < 0
+            or type(event.output_tokens) is not int
+            or event.output_tokens < 0
+            or type(event.total_tokens) is not int
+            or event.total_tokens < 0
+            or event.total_tokens
+            != event.input_tokens + event.output_tokens
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            model_turns=state.model_turns + 1,
+            model_tokens=state.model_tokens + event.total_tokens,
+        )
+
     if isinstance(event, ToolSucceeded):
         pending = _complete_tool_call(
             state,
@@ -168,6 +418,8 @@ def reduce_event(
             state,
             event_count=event_count,
             pending_tool_calls=pending,
+            observed_tool_calls=state.observed_tool_calls
+            - {(event.call_id, event.tool_name)},
         )
 
     if isinstance(event, ToolRejected):
@@ -181,15 +433,22 @@ def reduce_event(
             event_count=event_count,
             failures=state.failures + 1,
             pending_tool_calls=pending,
+            observed_tool_calls=state.observed_tool_calls
+            - {(event.call_id, event.tool_name)},
         )
 
     if isinstance(event, RunStopped):
-        if state.pending_tool_calls:
+        if (
+            state.pending_tool_calls
+            and event.reason is not StopReason.BUDGET_EXHAUSTED
+        ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
         return replace(
             state,
             status=RunStatus.STOPPED,
             event_count=event_count,
+            pending_tool_calls=frozenset(),
+            observed_tool_calls=frozenset(),
             stop_reason=event.reason,
         )
 
@@ -202,6 +461,7 @@ def reduce_event(
             status=RunStatus.FAILED,
             event_count=event_count,
             pending_tool_calls=frozenset(),
+            observed_tool_calls=frozenset(),
             stop_reason=StopReason.FATAL_ERROR,
             failure_code=event.code,
         )

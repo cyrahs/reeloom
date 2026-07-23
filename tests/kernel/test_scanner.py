@@ -4,9 +4,13 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from reeloom.kernel.candidates import CandidateId, CandidateKind
+from reeloom.kernel.candidates import Candidate, CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
-from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.scanner import (
+    CandidateRecord,
+    ScannedFile,
+    build_candidate_snapshot,
+)
 
 
 def test_snapshot_ids_are_stable_and_per_kind() -> None:
@@ -72,3 +76,20 @@ def test_scanned_file_rejects_env_component_without_io() -> None:
         )
 
     assert error.value.code is ErrorCode.ENV_PATH_FORBIDDEN
+
+
+def test_candidate_record_rejects_absolute_path() -> None:
+    candidate = Candidate(
+        id=CandidateId(CandidateKind.SUBTITLE, 1),
+        kind=CandidateKind.SUBTITLE,
+        display_name="subtitle.ass",
+    )
+
+    with pytest.raises(DomainError) as error:
+        CandidateRecord(
+            candidate=candidate,
+            relative_path=PurePosixPath("/outside/subtitle.ass"),
+            size_bytes=10,
+        )
+
+    assert error.value.code is ErrorCode.PATH_ESCAPE

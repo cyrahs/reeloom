@@ -19,6 +19,13 @@ def _default_rules() -> Mapping[str, frozenset[Phase]]:
             ),
             "get_tmdb_season": frozenset({Phase.MAP_EPISODES}),
             "select_series": frozenset({Phase.IDENTIFY_SERIES}),
+            "get_existing_inventory": frozenset(
+                {Phase.MAP_EPISODES}
+            ),
+            "detect_subtitle_variant": frozenset(
+                {Phase.MAP_EPISODES}
+            ),
+            "submit_mapping": frozenset({Phase.MAP_EPISODES}),
         }
     )
 

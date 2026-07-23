@@ -9,32 +9,24 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M3 / 受控 TMDB 识别（已完成）**
+**M4 / 剧集与字幕映射（已完成）**
 
-M0-M2 的领域契约、真实 SDK tool loop 和安全候选快照之上，已经建立受控
-TMDB 识别闭环：
+M0-M3 的领域契约、真实 SDK tool loop、安全候选快照和受控 TMDB 识别之上，
+已经建立“模型做 mapping、代码做 enforcement”的反馈闭环：
 
-- provider-neutral TMDB port 可以由真实 HTTP adapter 或离线 fake 实现；
-- HTTP adapter 固定访问 TMDB API v3，不接受模型提供的 URL，并限制超时、响应体
-  和缓存；
-- TMDB 的 `media_type`（`tv/movie`）与本地 `work_type`
-  （`anime/tv_series/movie`）分离；每个 run 必须显式绑定一个可信
-  `work_type`；
-- `search_tmdb`、`get_tmdb_series`、`get_tmdb_season` 和 `select_series` 都经过
-  strict schema、phase、capability、预算和 observation 大小校验；
-- 搜索 filter 必须匹配 run 的 `work_type`；搜索到的
-  `(work_type, tmdb_id)` 才成为候选 capability；
-- `anime` 使用 TV search 并严格保留 TMDB Animation genre 16，`movie` 使用
-  Movie search；结果同时返回 `work_type` 与 `media_type`；
-- Movie metadata adapter 返回有界标题、年份、语言、genre IDs 和严格布尔
-  `adult` 标记；该能力尚未暴露为 Agent 工具；
-- Agent 的 `search_tmdb` 不暴露 adult 开关，执行端固定启用
-  `include_adult=true`；
-- `SeriesSelected` typed event 是进入 `MAP_EPISODES` 的唯一成功路径；
-- zh-CN 名称优先，年份必填；TMDB season episode 会提取有限的 OVA/OAD hint；
-- 真实 Agents SDK Runner + scripted model + fake TMDB 的完整识别循环离线通过。
-- HTTP parsing 还会回放从 TMDB 官方 OpenAPI 示例投影出的 TV search、Movie
-  search、TV details 和 Season details 契约 fixture。
+- Agent 可调用 `get_existing_inventory`、`detect_subtitle_variant` 和
+  `submit_mapping`，但工具只接受 run-scoped ID 和 strict schema；
+- TMDB season observation 建立 episode boundary，纯 kernel 强制检查边界、
+  multi-episode overlap、重复/未知 ID、字幕归属和已有库存冲突；
+- 字幕 adapter 只 no-follow 读取 snapshot 内文件的 64 KiB 前缀，并复核扫描时
+  identity 与摘要；Agent 只看到 `.chs/.cht/.chi`，看不到正文或路径；
+- validation failure 返回有界结构化 issue，并保持 `MAP_EPISODES`；模型修正后
+  重新提交；
+- 只有 `MappingSubmitted` 领域事件能进入 `BUILD_PLAN`，普通 assistant 文本
+  不能改变成功状态；
+- run 同时限制模型轮数、工具数、失败数、累计 token 和 wall-clock time；
+- 真实 Agents SDK Runner + scripted model 的离线集成测试覆盖首次错误、读取
+  observation 后修正并成功提交。
 
 adapter 只接受调用方显式注入的凭据，不加载配置文件。自动化测试不访问真实
 网络，也没有任何移动、重命名或删除能力。
@@ -47,7 +39,8 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M0 Definition of Done](docs/m0-review.md)，M1 验收结论见
 [M1 Definition of Done](docs/m1-review.md)，M2 验收结论见
 [M2 Definition of Done](docs/m2-review.md)，M3 验收结论见
-[M3 Definition of Done](docs/m3-review.md)。
+[M3 Definition of Done](docs/m3-review.md)，M4 验收结论见
+[M4 Definition of Done](docs/m4-review.md)。
 
 ## 本地验证
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -16,6 +17,34 @@ from reeloom.kernel.errors import DomainError, ErrorCode
 
 _SNAPSHOT_SCHEMA = "candidate-snapshot-v1"
 _MAX_RELATIVE_PATH_BYTES = 4096
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_relative_path(relative_path: object) -> PurePosixPath:
+    if (
+        not isinstance(relative_path, PurePosixPath)
+        or relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or not relative_path.parts
+        or any("\\" in part for part in relative_path.parts)
+    ):
+        raise DomainError(ErrorCode.PATH_ESCAPE)
+    if (
+        len(
+            relative_path.as_posix().encode(
+                "utf-8",
+                errors="surrogateescape",
+            )
+        )
+        > _MAX_RELATIVE_PATH_BYTES
+    ):
+        raise DomainError(ErrorCode.SCAN_LIMIT_EXCEEDED)
+    if any(
+        part.casefold().startswith(".env")
+        for part in relative_path.parts
+    ):
+        raise DomainError(ErrorCode.ENV_PATH_FORBIDDEN)
+    return relative_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,37 +52,42 @@ class ScannedFile:
     relative_path: PurePosixPath
     kind: CandidateKind
     size_bytes: int
+    device: int | None = None
+    inode: int | None = None
+    mtime_ns: int | None = None
+    ctime_ns: int | None = None
+    sample_digest: str | None = None
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.relative_path, PurePosixPath)
-            or self.relative_path.is_absolute()
-            or ".." in self.relative_path.parts
-            or not self.relative_path.parts
-            or any("\\" in part for part in self.relative_path.parts)
-        ):
-            raise DomainError(ErrorCode.PATH_ESCAPE)
-        if (
-            len(
-                self.relative_path.as_posix().encode(
-                    "utf-8",
-                    errors="surrogateescape",
-                )
-            )
-            > _MAX_RELATIVE_PATH_BYTES
-        ):
-            raise DomainError(ErrorCode.SCAN_LIMIT_EXCEEDED)
-        if any(
-            part.casefold().startswith(".env")
-            for part in self.relative_path.parts
-        ):
-            raise DomainError(ErrorCode.ENV_PATH_FORBIDDEN)
+        _validate_relative_path(self.relative_path)
         if not isinstance(self.kind, CandidateKind):
             raise DomainError(ErrorCode.INVALID_CANDIDATE_KIND)
         if type(self.size_bytes) is not int or self.size_bytes < 0:
             raise DomainError(
                 ErrorCode.INVALID_FIELD_TYPE,
                 context={"field": "size_bytes", "expected": "non_negative_int"},
+            )
+        identities = (
+            self.device,
+            self.inode,
+            self.mtime_ns,
+            self.ctime_ns,
+        )
+        if any(value is not None for value in identities) and any(
+            type(value) is not int or value < 0
+            for value in identities
+        ):
+            raise DomainError(
+                ErrorCode.INVALID_FIELD_TYPE,
+                context={"field": "file_identity"},
+            )
+        if (
+            self.sample_digest is not None
+            and _SHA256_PATTERN.fullmatch(self.sample_digest) is None
+        ):
+            raise DomainError(
+                ErrorCode.INVALID_FIELD_TYPE,
+                context={"field": "sample_digest"},
             )
 
 
@@ -62,6 +96,42 @@ class CandidateRecord:
     candidate: Candidate
     relative_path: PurePosixPath
     size_bytes: int
+    device: int | None = None
+    inode: int | None = None
+    mtime_ns: int | None = None
+    ctime_ns: int | None = None
+    sample_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_relative_path(self.relative_path)
+        if (
+            not isinstance(self.candidate, Candidate)
+            or type(self.size_bytes) is not int
+            or self.size_bytes < 0
+        ):
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        identities = (
+            self.device,
+            self.inode,
+            self.mtime_ns,
+            self.ctime_ns,
+        )
+        if any(value is not None for value in identities) and any(
+            type(value) is not int or value < 0
+            for value in identities
+        ):
+            raise DomainError(
+                ErrorCode.INVALID_FIELD_TYPE,
+                context={"field": "file_identity"},
+            )
+        if (
+            self.sample_digest is not None
+            and _SHA256_PATTERN.fullmatch(self.sample_digest) is None
+        ):
+            raise DomainError(
+                ErrorCode.INVALID_FIELD_TYPE,
+                context={"field": "sample_digest"},
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +143,14 @@ class ScannedCandidateSnapshot:
     records: tuple[CandidateRecord, ...]
 
     def __post_init__(self) -> None:
-        if not self.snapshot_id.startswith(f"{_SNAPSHOT_SCHEMA}:"):
+        if (
+            not isinstance(self.records, tuple)
+            or any(
+                not isinstance(record, CandidateRecord)
+                for record in self.records
+            )
+            or self.snapshot_id != _snapshot_id(self.records)
+        ):
             raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
         if tuple(record.candidate for record in self.records) != (
             self.candidates.candidates
@@ -103,6 +180,11 @@ def _snapshot_id(records: tuple[CandidateRecord, ...]) -> str:
             "kind": record.candidate.kind.value,
             "relative_path": record.relative_path.as_posix(),
             "size_bytes": record.size_bytes,
+            "device": record.device,
+            "inode": record.inode,
+            "mtime_ns": record.mtime_ns,
+            "ctime_ns": record.ctime_ns,
+            "sample_digest": record.sample_digest,
         }
         for record in records
     ]
@@ -145,6 +227,11 @@ def build_candidate_snapshot(
                 candidate=candidate,
                 relative_path=scanned_file.relative_path,
                 size_bytes=scanned_file.size_bytes,
+                device=scanned_file.device,
+                inode=scanned_file.inode,
+                mtime_ns=scanned_file.mtime_ns,
+                ctime_ns=scanned_file.ctime_ns,
+                sample_digest=scanned_file.sample_digest,
             )
         )
 

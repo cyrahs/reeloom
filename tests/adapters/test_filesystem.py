@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
 import pytest
 
-from reeloom.adapters.filesystem import FilesystemScanner, ScanLimits
+from reeloom.adapters.filesystem import (
+    FilesystemScanner,
+    FilesystemSubtitleSampleProvider,
+    ScanLimits,
+)
+from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.policy.path_policy import AuthorizedRoot
 
@@ -123,3 +129,92 @@ def test_scanner_counts_unsupported_entries_toward_budget(
         ).scan(AuthorizedRoot.create(root_path))
 
     assert error.value.code is ErrorCode.SCAN_LIMIT_EXCEEDED
+
+
+def test_subtitle_provider_reads_only_a_bounded_snapshot_candidate(
+    tmp_path: Path,
+) -> None:
+    root_path = tmp_path / "media"
+    root_path.mkdir()
+    content = ("這是繁體字幕" * 20_000).encode()
+    (root_path / "Episode 01.cht.ass").write_bytes(content)
+    scan = FilesystemScanner().scan(AuthorizedRoot.create(root_path))
+    provider = FilesystemSubtitleSampleProvider(scan)
+
+    sample = asyncio.run(
+        provider.sample(
+            CandidateId(CandidateKind.SUBTITLE, 1),
+            max_bytes=64 * 1024,
+        )
+    )
+
+    assert sample.display_name == "Episode 01.cht.ass"
+    assert sample.content == content[: 64 * 1024]
+
+
+def test_subtitle_provider_fails_if_file_changes_after_scan(
+    tmp_path: Path,
+) -> None:
+    root_path = tmp_path / "media"
+    root_path.mkdir()
+    subtitle_path = root_path / "Episode 01.ass"
+    subtitle_path.write_bytes(b"original")
+    scan = FilesystemScanner().scan(AuthorizedRoot.create(root_path))
+    subtitle_path.write_bytes(b"changed-size")
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            FilesystemSubtitleSampleProvider(scan).sample(
+                CandidateId(CandidateKind.SUBTITLE, 1),
+                max_bytes=64 * 1024,
+            )
+        )
+
+    assert error.value.code is ErrorCode.SCAN_FAILED
+
+
+def test_subtitle_provider_fails_on_same_size_rewrite(
+    tmp_path: Path,
+) -> None:
+    root_path = tmp_path / "media"
+    root_path.mkdir()
+    subtitle_path = root_path / "Episode 01.ass"
+    subtitle_path.write_bytes("后台发布".encode())
+    scan = FilesystemScanner().scan(AuthorizedRoot.create(root_path))
+    subtitle_path.write_bytes("後臺發佈".encode())
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            FilesystemSubtitleSampleProvider(scan).sample(
+                CandidateId(CandidateKind.SUBTITLE, 1),
+                max_bytes=64 * 1024,
+            )
+        )
+
+    assert error.value.code is ErrorCode.SCAN_FAILED
+
+
+def test_subtitle_provider_maps_read_error_to_domain_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_path = tmp_path / "media"
+    root_path.mkdir()
+    (root_path / "Episode 01.ass").write_bytes(b"subtitle")
+    scan = FilesystemScanner().scan(AuthorizedRoot.create(root_path))
+
+    def fail_read(file_descriptor: int, max_bytes: int) -> bytes:
+        del file_descriptor, max_bytes
+        raise OSError("read failed")
+
+    monkeypatch.setattr(os, "read", fail_read)
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            FilesystemSubtitleSampleProvider(scan).sample(
+                CandidateId(CandidateKind.SUBTITLE, 1),
+                max_bytes=64 * 1024,
+            )
+        )
+
+    assert error.value.code is ErrorCode.SCAN_FAILED

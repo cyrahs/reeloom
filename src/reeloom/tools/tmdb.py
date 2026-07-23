@@ -19,7 +19,11 @@ from reeloom.ports.tmdb import (
     TmdbProviderError,
 )
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
-from reeloom.runtime.events import SeriesSelected, TmdbCandidatesObserved
+from reeloom.runtime.events import (
+    SeriesSelected,
+    TmdbCandidatesObserved,
+    TmdbSeasonCatalogObserved,
+)
 from reeloom.runtime.state import Phase
 from reeloom.runtime.tool_runtime import ToolRuntime
 
@@ -471,33 +475,58 @@ async def get_tmdb_season(
             code=TmdbErrorCode.INVALID_RESPONSE.value,
             retryable=False,
         )
-
-    return _bounded_observation(
-        {
-            "ok": True,
-            "season": {
-                "tmdb_id": details.tmdb_id,
-                "work_type": details.work_type.value,
-                "media_type": details.media_type.value,
-                "language": details.language.value,
-                "season_number": details.season_number,
-                "episodes": [
-                    {
-                        "episode_number": episode.episode_number,
-                        "name": episode.name,
-                        "overview": _bounded_overview(
-                            episode.overview
-                        ),
-                        "special_kind": episode.special_kind.value,
-                    }
-                    for episode in details.episodes
-                ],
-            },
-        },
-        runtime=runtime,
-        call_id=call_id,
-        tool_name=tool_name,
+    episode_numbers = sorted(
+        episode.episode_number for episode in details.episodes
     )
+    if episode_numbers != list(range(1, len(episode_numbers) + 1)):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=TmdbErrorCode.INVALID_RESPONSE.value,
+            retryable=False,
+        )
+
+    payload = {
+        "ok": True,
+        "season": {
+            "tmdb_id": details.tmdb_id,
+            "work_type": details.work_type.value,
+            "media_type": details.media_type.value,
+            "language": details.language.value,
+            "season_number": details.season_number,
+            "episodes": [
+                {
+                    "episode_number": episode.episode_number,
+                    "name": episode.name,
+                    "overview": _bounded_overview(episode.overview),
+                    "special_kind": episode.special_kind.value,
+                }
+                for episode in details.episodes
+            ],
+        },
+    }
+    observation = _serialize_observation(payload)
+    if observation is None:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.TOOL_OBSERVATION_TOO_LARGE.value,
+            retryable=False,
+        )
+    if details.episodes:
+        runtime.store.append(
+            TmdbSeasonCatalogObserved(
+                call_id=call_id,
+                tmdb_id=tmdb_id,
+                work_type=work_type,
+                season_number=season_number,
+                episode_count=len(details.episodes),
+            )
+        )
+    runtime.succeed(call_id=call_id, tool_name=tool_name)
+    return observation
 
 
 def _valid_season_details(

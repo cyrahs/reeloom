@@ -73,6 +73,19 @@ def test_phase_policy_is_deny_by_default() -> None:
         Phase.IDENTIFY_SERIES,
     )
     assert policy.is_allowed("get_tmdb_season", Phase.MAP_EPISODES)
+    assert policy.is_allowed(
+        "get_existing_inventory",
+        Phase.MAP_EPISODES,
+    )
+    assert policy.is_allowed(
+        "detect_subtitle_variant",
+        Phase.MAP_EPISODES,
+    )
+    assert policy.is_allowed("submit_mapping", Phase.MAP_EPISODES)
+    assert not policy.is_allowed(
+        "submit_mapping",
+        Phase.IDENTIFY_SERIES,
+    )
     assert not policy.is_allowed("unknown_tool", Phase.IDENTIFY_SERIES)
 
 

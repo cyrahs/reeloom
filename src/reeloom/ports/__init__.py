@@ -5,5 +5,15 @@ from reeloom.ports.tmdb import (
     TmdbProvider,
     TmdbProviderError,
 )
+from reeloom.ports.subtitles import (
+    SubtitleSample,
+    SubtitleSampleProvider,
+)
 
-__all__ = ["TmdbErrorCode", "TmdbProvider", "TmdbProviderError"]
+__all__ = [
+    "SubtitleSample",
+    "SubtitleSampleProvider",
+    "TmdbErrorCode",
+    "TmdbProvider",
+    "TmdbProviderError",
+]

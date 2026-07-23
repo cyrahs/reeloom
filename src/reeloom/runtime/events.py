@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from reeloom.kernel.candidates import CandidateId
+from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
-from reeloom.runtime.state import StopReason
+from reeloom.runtime.state import MappingValidationIssue, StopReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +21,7 @@ class RunStarted:
 class CandidateSnapshotCreated:
     snapshot_id: str
     candidate_count: int
+    candidate_ids: tuple[CandidateId, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +33,50 @@ class TmdbCandidatesObserved:
 class SeriesSelected:
     series: SeriesIdentity
     work_type: TmdbWorkType
+
+
+@dataclass(frozen=True, slots=True)
+class TmdbSeasonCatalogObserved:
+    call_id: str
+    tmdb_id: int
+    work_type: TmdbWorkType
+    season_number: int
+    episode_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingInventoryObserved:
+    call_id: str
+    tmdb_id: int
+    work_type: TmdbWorkType
+    occupied: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleVariantDetected:
+    call_id: str
+    subtitle_id: CandidateId
+    variant: SubtitleVariant
+
+
+@dataclass(frozen=True, slots=True)
+class MappingRejected:
+    call_id: str
+    issue: MappingValidationIssue
+
+
+@dataclass(frozen=True, slots=True)
+class MappingSubmitted:
+    call_id: str
+    candidate_snapshot_id: str
+    mapping: MappingDraft
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUsageRecorded:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +114,12 @@ RuntimeEvent: TypeAlias = (
     | CandidateSnapshotCreated
     | TmdbCandidatesObserved
     | SeriesSelected
+    | TmdbSeasonCatalogObserved
+    | ExistingInventoryObserved
+    | SubtitleVariantDetected
+    | MappingRejected
+    | MappingSubmitted
+    | ModelUsageRecorded
     | ToolRequested
     | ToolSucceeded
     | ToolRejected

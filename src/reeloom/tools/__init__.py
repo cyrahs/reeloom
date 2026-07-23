@@ -16,6 +16,11 @@ from reeloom.tools.tmdb import (
     search_tmdb,
     select_series,
 )
+from reeloom.tools.mapping import (
+    detect_subtitle_variant,
+    get_existing_inventory,
+    submit_mapping,
+)
 
 __all__ = [
     "CandidateSource",
@@ -30,4 +35,7 @@ __all__ = [
     "get_tmdb_series",
     "search_tmdb",
     "select_series",
+    "detect_subtitle_variant",
+    "get_existing_inventory",
+    "submit_mapping",
 ]

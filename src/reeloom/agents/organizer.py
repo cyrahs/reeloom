@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Annotated
@@ -17,16 +18,27 @@ from agents import (
     function_tool,
     tool_input_guardrail,
 )
+from agents.items import ModelResponse, TResponseInputItem
+from agents.lifecycle import RunHooksBase
+from agents.model_settings import ModelSettings
+from agents.run_context import RunContextWrapper
 from agents.tool_context import ToolContext
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.inventory import ExistingInventory
 from reeloom.kernel.tmdb import TmdbLanguage, TmdbWorkType
+from reeloom.ports.subtitles import SubtitleSampleProvider
 from reeloom.ports.tmdb import TmdbProvider
 from reeloom.runtime.budget import RunBudget
-from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
+from reeloom.runtime.errors import (
+    BudgetExceeded,
+    RuntimeDomainError,
+    RuntimeErrorCode,
+)
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
+    ModelUsageRecorded,
     RunFailed,
     RunStarted,
     RunStopped,
@@ -39,6 +51,7 @@ from reeloom.tools.candidates import (
     CandidateSource,
     MAX_CURSOR,
     MAX_PAGE_SIZE,
+    SnapshotCandidateSource,
     list_candidates,
 )
 from reeloom.tools.tmdb import (
@@ -50,6 +63,11 @@ from reeloom.tools.tmdb import (
     search_tmdb,
     select_series,
 )
+from reeloom.tools.mapping import (
+    detect_subtitle_variant,
+    get_existing_inventory,
+    submit_mapping,
+)
 
 _INSTRUCTIONS = """
 You organize animation episodes using only the provided typed tools.
@@ -58,6 +76,9 @@ Never invent filesystem paths or claim that files were moved.
 Inspect candidates before explaining what information is available.
 Search TMDB, inspect ambiguous candidates, and select only an observed series ID.
 The run's work_type is trusted context; never substitute another archive type.
+Before submitting a mapping, inspect the relevant TMDB seasons and existing
+inventory. Detect every mapped subtitle variant. If validation fails, correct
+only the reported issue and submit again.
 """.strip()
 _WORK_TYPE_VALUES = frozenset(
     work_type.value for work_type in TmdbWorkType
@@ -69,6 +90,8 @@ class OrganizerContext:
     runtime: ToolRuntime
     candidate_source: CandidateSource
     tmdb_provider: TmdbProvider | None = None
+    inventory: ExistingInventory | None = None
+    subtitle_provider: SubtitleSampleProvider | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +99,72 @@ class EpisodeOrganizerRunResult:
     final_output: str
     state: RunState
     model_turns: int
+    model_tokens: int
+
+
+class _VideoMappingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    video_id: str = Field(min_length=1, max_length=32)
+    season: int = Field(strict=True, ge=0, le=999)
+    episode_start: int = Field(strict=True, ge=1, le=100_000)
+    episode_end: int = Field(strict=True, ge=1, le=100_000)
+
+
+class _SubtitleMappingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    subtitle_id: str = Field(min_length=1, max_length=32)
+    video_id: str = Field(min_length=1, max_length=32)
+
+
+class _BudgetHooks(RunHooksBase[OrganizerContext, Agent]):
+    async def on_llm_start(
+        self,
+        context: RunContextWrapper[OrganizerContext],
+        agent: Agent[OrganizerContext],
+        system_prompt: str | None,
+        input_items: list[TResponseInputItem],
+    ) -> None:
+        del agent, system_prompt, input_items
+        organizer = context.context
+        if (
+            organizer.runtime.state.model_tokens
+            >= organizer.runtime.budget.max_total_tokens
+        ):
+            organizer.runtime.store.append(
+                RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+            )
+            raise BudgetExceeded(
+                RuntimeErrorCode.TOKEN_BUDGET_EXHAUSTED
+            )
+
+    async def on_llm_end(
+        self,
+        context: RunContextWrapper[OrganizerContext],
+        agent: Agent[OrganizerContext],
+        response: ModelResponse,
+    ) -> None:
+        del agent
+        organizer = context.context
+        usage = response.usage
+        organizer.runtime.store.append(
+            ModelUsageRecorded(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+            )
+        )
+        if (
+            organizer.runtime.state.model_tokens
+            > organizer.runtime.budget.max_total_tokens
+        ):
+            organizer.runtime.store.append(
+                RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+            )
+            raise BudgetExceeded(
+                RuntimeErrorCode.TOKEN_BUDGET_EXHAUSTED
+            )
 
 
 def _error_observation(
@@ -97,12 +186,13 @@ def _input_payload(
     data: ToolInputGuardrailData,
     *,
     fields: frozenset[str],
+    max_bytes: int = 1_024,
 ) -> dict[str, object] | None:
     raw_arguments = data.context.tool_arguments
     try:
         payload = (
             json.loads(raw_arguments)
-            if len(raw_arguments) <= 1_024
+            if len(raw_arguments.encode("utf-8")) <= max_bytes
             else None
         )
     except (json.JSONDecodeError, TypeError):
@@ -353,6 +443,159 @@ async def _select_series_tool(
     )
 
 
+@tool_input_guardrail
+def _get_existing_inventory_input_guardrail(
+    data: ToolInputGuardrailData,
+) -> ToolGuardrailFunctionOutput:
+    payload = _input_payload(
+        data,
+        fields=frozenset({"tmdb_id"}),
+    )
+    return _guard_result(
+        data,
+        valid=(
+            isinstance(payload, dict)
+            and _valid_tmdb_id_argument(payload["tmdb_id"])
+        ),
+    )
+
+
+@function_tool(
+    name_override="get_existing_inventory",
+    strict_mode=True,
+    failure_error_function=None,
+    tool_input_guardrails=[_get_existing_inventory_input_guardrail],
+)
+async def _get_existing_inventory_tool(
+    context: ToolContext[OrganizerContext],
+    tmdb_id: Annotated[int, Field(strict=True, ge=1, le=MAX_TMDB_ID)],
+) -> str:
+    return await get_existing_inventory(
+        context.context.runtime,
+        context.context.inventory,
+        call_id=context.tool_call_id,
+        tmdb_id=tmdb_id,
+    )
+
+
+@tool_input_guardrail
+def _detect_subtitle_variant_input_guardrail(
+    data: ToolInputGuardrailData,
+) -> ToolGuardrailFunctionOutput:
+    payload = _input_payload(
+        data,
+        fields=frozenset({"subtitle_id"}),
+    )
+    return _guard_result(
+        data,
+        valid=(
+            isinstance(payload, dict)
+            and isinstance(payload["subtitle_id"], str)
+            and 1 <= len(payload["subtitle_id"]) <= 32
+        ),
+    )
+
+
+@function_tool(
+    name_override="detect_subtitle_variant",
+    strict_mode=True,
+    failure_error_function=None,
+    tool_input_guardrails=[_detect_subtitle_variant_input_guardrail],
+)
+async def _detect_subtitle_variant_tool(
+    context: ToolContext[OrganizerContext],
+    subtitle_id: Annotated[str, Field(min_length=1, max_length=32)],
+) -> str:
+    return await detect_subtitle_variant(
+        context.context.runtime,
+        (
+            context.context.candidate_source
+            if isinstance(
+                context.context.candidate_source,
+                SnapshotCandidateSource,
+            )
+            else None
+        ),
+        context.context.subtitle_provider,
+        call_id=context.tool_call_id,
+        subtitle_id=subtitle_id,
+    )
+
+
+def _valid_mapping_list(
+    value: object,
+    *,
+    schema: type[BaseModel],
+    candidate_count: int,
+) -> bool:
+    if not isinstance(value, list) or len(value) > candidate_count:
+        return False
+    try:
+        for item in value:
+            schema.model_validate(item)
+    except ValueError:
+        return False
+    return True
+
+
+@tool_input_guardrail
+def _submit_mapping_input_guardrail(
+    data: ToolInputGuardrailData,
+) -> ToolGuardrailFunctionOutput:
+    payload = _input_payload(
+        data,
+        fields=frozenset({"videos", "subtitles"}),
+        max_bytes=64 * 1024,
+    )
+    context = data.context.context
+    if not isinstance(context, OrganizerContext):
+        raise TypeError("organizer tools require OrganizerContext")
+    valid = (
+        isinstance(payload, dict)
+        and _valid_mapping_list(
+            payload["videos"],
+            schema=_VideoMappingInput,
+            candidate_count=context.runtime.state.candidate_count,
+        )
+        and _valid_mapping_list(
+            payload["subtitles"],
+            schema=_SubtitleMappingInput,
+            candidate_count=context.runtime.state.candidate_count,
+        )
+    )
+    return _guard_result(data, valid=valid)
+
+
+@function_tool(
+    name_override="submit_mapping",
+    strict_mode=True,
+    failure_error_function=None,
+    tool_input_guardrails=[_submit_mapping_input_guardrail],
+)
+async def _submit_mapping_tool(
+    context: ToolContext[OrganizerContext],
+    videos: list[_VideoMappingInput],
+    subtitles: list[_SubtitleMappingInput],
+) -> str:
+    return await submit_mapping(
+        context.context.runtime,
+        (
+            context.context.candidate_source
+            if isinstance(
+                context.context.candidate_source,
+                SnapshotCandidateSource,
+            )
+            else None
+        ),
+        context.context.inventory,
+        call_id=context.tool_call_id,
+        payload={
+            "videos": [item.model_dump() for item in videos],
+            "subtitles": [item.model_dump() for item in subtitles],
+        },
+    )
+
+
 def _unknown_tool_error(
     args: ToolErrorFormatterArgs[OrganizerContext],
 ) -> str:
@@ -374,6 +617,8 @@ def create_organizer_context(
     candidate_source: CandidateSource,
     work_type: TmdbWorkType,
     tmdb_provider: TmdbProvider | None = None,
+    inventory: ExistingInventory | None = None,
+    subtitle_provider: SubtitleSampleProvider | None = None,
     budget: RunBudget | None = None,
 ) -> OrganizerContext:
     store = InMemoryEventStore()
@@ -382,6 +627,17 @@ def create_organizer_context(
         CandidateSnapshotCreated(
             snapshot_id=candidate_source.snapshot_id,
             candidate_count=candidate_source.candidate_count,
+            candidate_ids=(
+                tuple(
+                    candidate.id
+                    for candidate in candidate_source.snapshot.candidates
+                )
+                if isinstance(
+                    candidate_source,
+                    SnapshotCandidateSource,
+                )
+                else None
+            ),
         )
     )
     return OrganizerContext(
@@ -392,6 +648,8 @@ def create_organizer_context(
         ),
         candidate_source=candidate_source,
         tmdb_provider=tmdb_provider,
+        inventory=inventory,
+        subtitle_provider=subtitle_provider,
     )
 
 
@@ -399,6 +657,7 @@ def _create_agent(
     model: Model,
     *,
     work_type: TmdbWorkType,
+    budget: RunBudget,
 ) -> Agent[OrganizerContext]:
     return Agent(
         name="EpisodeOrganizerAgent",
@@ -407,12 +666,18 @@ def _create_agent(
             f"This run's authorized work_type is {work_type.value}."
         ),
         model=model,
+        model_settings=ModelSettings(
+            max_tokens=min(budget.max_total_tokens, 8_192),
+        ),
         tools=[
             _list_candidates_tool,
             _search_tmdb_tool,
             _get_tmdb_series_tool,
             _get_tmdb_season_tool,
             _select_series_tool,
+            _get_existing_inventory_tool,
+            _detect_subtitle_variant_tool,
+            _submit_mapping_tool,
         ],
     )
 
@@ -428,37 +693,85 @@ async def run_episode_organizer(
     if context.runtime.state.status is not RunStatus.RUNNING:
         raise RuntimeDomainError(RuntimeErrorCode.RUN_NOT_ACTIVE)
 
+    loop = asyncio.get_running_loop()
+    deadline_at = (
+        loop.time() + context.runtime.budget.max_elapsed_seconds
+    )
+    deadline = asyncio.timeout_at(deadline_at)
+
     try:
-        result = await Runner.run(
-            _create_agent(
-                model,
-                work_type=context.runtime.state.work_type,
-            ),
-            prompt,
-            context=context,
-            max_turns=context.runtime.budget.max_model_turns,
-            run_config=RunConfig(
-                tracing_disabled=True,
-                trace_include_sensitive_data=False,
-                tool_not_found_behavior="return_error_to_model",
-                tool_error_formatter=_unknown_tool_error,
-                tool_execution=ToolExecutionConfig(
-                    max_function_tool_concurrency=1,
+        async with deadline:
+            result = await Runner.run(
+                _create_agent(
+                    model,
+                    work_type=context.runtime.state.work_type,
+                    budget=context.runtime.budget,
                 ),
-            ),
-        )
+                prompt,
+                context=context,
+                max_turns=context.runtime.budget.max_model_turns,
+                hooks=_BudgetHooks(),
+                run_config=RunConfig(
+                    tracing_disabled=True,
+                    trace_include_sensitive_data=False,
+                    tool_not_found_behavior="return_error_to_model",
+                    tool_error_formatter=_unknown_tool_error,
+                    tool_execution=ToolExecutionConfig(
+                        max_function_tool_concurrency=1,
+                    ),
+                ),
+            )
+    except TimeoutError:
+        if deadline.expired() or loop.time() >= deadline_at:
+            if context.runtime.state.status is RunStatus.RUNNING:
+                context.runtime.store.append(
+                    RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+                )
+            raise BudgetExceeded(
+                RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+            ) from None
+        if context.runtime.state.status is RunStatus.RUNNING:
+            context.runtime.store.append(
+                RunFailed(code=RuntimeErrorCode.AGENT_RUN_FAILED.value)
+            )
+        raise
     except MaxTurnsExceeded:
+        if deadline.expired() or loop.time() >= deadline_at:
+            if context.runtime.state.status is RunStatus.RUNNING:
+                context.runtime.store.append(
+                    RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+                )
+            raise BudgetExceeded(
+                RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+            ) from None
         if context.runtime.state.status is RunStatus.RUNNING:
             context.runtime.store.append(
                 RunStopped(reason=StopReason.MAX_TURNS)
             )
         raise
     except Exception:
+        if deadline.expired() or loop.time() >= deadline_at:
+            if context.runtime.state.status is RunStatus.RUNNING:
+                context.runtime.store.append(
+                    RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+                )
+            raise BudgetExceeded(
+                RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+            ) from None
         if context.runtime.state.status is RunStatus.RUNNING:
             context.runtime.store.append(
                 RunFailed(code=RuntimeErrorCode.AGENT_RUN_FAILED.value)
             )
         raise
+
+    if deadline.expired() or loop.time() >= deadline_at:
+        if context.runtime.state.status is RunStatus.RUNNING:
+            context.runtime.store.append(
+                RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+            )
+        raise BudgetExceeded(
+            RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+        )
 
     final_output = result.final_output
     if not isinstance(final_output, str):
@@ -475,5 +788,6 @@ async def run_episode_organizer(
     return EpisodeOrganizerRunResult(
         final_output=final_output,
         state=context.runtime.state,
-        model_turns=result.context_wrapper.usage.requests,
+        model_turns=context.runtime.state.model_turns,
+        model_tokens=context.runtime.state.model_tokens,
     )

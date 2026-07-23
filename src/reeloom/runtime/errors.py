@@ -25,6 +25,11 @@ class RuntimeErrorCode(StrEnum):
     UNSUPPORTED_WORK_TYPE = "unsupported_work_type"
     SERIES_IDENTITY_UNAVAILABLE = "series_identity_unavailable"
     TOOL_OBSERVATION_TOO_LARGE = "tool_observation_too_large"
+    EPISODE_CATALOG_UNAVAILABLE = "episode_catalog_unavailable"
+    INVENTORY_NOT_OBSERVED = "inventory_not_observed"
+    SUBTITLE_SAMPLE_FAILED = "subtitle_sample_failed"
+    TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"
+    TIME_BUDGET_EXHAUSTED = "time_budget_exhausted"
 
 
 class RuntimeDomainError(RuntimeError):

@@ -30,6 +30,8 @@ class ErrorCode(StrEnum):
     EPISODE_RANGE_OVERLAP = "episode_range_overlap"
     DUPLICATE_SUBTITLE_MAPPING = "duplicate_subtitle_mapping"
     SUBTITLE_VIDEO_NOT_MAPPED = "subtitle_video_not_mapped"
+    SUBTITLE_VARIANT_REQUIRED = "subtitle_variant_required"
+    INVENTORY_CONFLICT = "inventory_conflict"
     INVALID_SERIES_TITLE = "invalid_series_title"
     INVALID_YEAR = "invalid_year"
     INVALID_TMDB_ID = "invalid_tmdb_id"
@@ -65,6 +67,7 @@ class ErrorCode(StrEnum):
             ErrorCode.DUPLICATE_VIDEO_MAPPING,
             ErrorCode.EPISODE_RANGE_OVERLAP,
             ErrorCode.DUPLICATE_SUBTITLE_MAPPING,
+            ErrorCode.INVENTORY_CONFLICT,
             ErrorCode.DUPLICATE_SPECIAL_VIDEO,
             ErrorCode.DUPLICATE_SPECIAL_EPISODE,
             ErrorCode.SPECIAL_EVIDENCE_CONFLICT,

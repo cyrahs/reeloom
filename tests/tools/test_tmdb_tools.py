@@ -395,3 +395,76 @@ def test_selected_series_can_query_specials_with_hints() -> None:
         episode["special_kind"]
         for episode in result["season"]["episodes"]
     ] == ["ova", "oad"]
+
+
+def test_season_tool_rejects_sparse_episode_numbers() -> None:
+    provider = _FakeTmdb(
+        search_results=(_candidate(100),),
+        series=TmdbSeriesDetails(
+            tmdb_id=100,
+            language=TmdbLanguage.ZH_CN,
+            localized_name="中文标题",
+            original_name="Original",
+            first_air_year=2020,
+            seasons=(),
+            work_type=TmdbWorkType.ANIME,
+        ),
+        season=TmdbSeasonDetails(
+            tmdb_id=100,
+            language=TmdbLanguage.ZH_CN,
+            season_number=1,
+            episodes=(
+                TmdbEpisode(
+                    season_number=1,
+                    episode_number=1,
+                    name="E01",
+                    overview="",
+                    special_kind=SpecialKind.UNKNOWN,
+                ),
+                TmdbEpisode(
+                    season_number=1,
+                    episode_number=3,
+                    name="E03",
+                    overview="",
+                    special_kind=SpecialKind.UNKNOWN,
+                ),
+            ),
+            work_type=TmdbWorkType.ANIME,
+        ),
+    )
+    runtime = _runtime()
+    asyncio.run(
+        search_tmdb(
+            runtime,
+            provider,
+            call_id="call-search",
+            query="title",
+            work_type=TmdbWorkType.ANIME,
+        )
+    )
+    asyncio.run(
+        select_series(
+            runtime,
+            provider,
+            call_id="call-select",
+            tmdb_id=100,
+            work_type=TmdbWorkType.ANIME,
+        )
+    )
+
+    result = json.loads(
+        asyncio.run(
+            get_tmdb_season(
+                runtime,
+                provider,
+                call_id="call-season",
+                tmdb_id=100,
+                work_type=TmdbWorkType.ANIME,
+                season_number=1,
+                language=TmdbLanguage.ZH_CN,
+            )
+        )
+    )
+
+    assert result["error"]["code"] == TmdbErrorCode.INVALID_RESPONSE.value
+    assert runtime.state.episode_catalog_counts == ()

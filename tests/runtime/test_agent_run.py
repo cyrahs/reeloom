@@ -23,7 +23,11 @@ from reeloom.kernel.candidates import (
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.budget import RunBudget
-from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
+from reeloom.runtime.errors import (
+    BudgetExceeded,
+    RuntimeDomainError,
+    RuntimeErrorCode,
+)
 from reeloom.runtime.events import ToolRejected
 from reeloom.runtime.policy import PhaseToolPolicy
 from reeloom.runtime.state import Phase, RunStatus, StopReason
@@ -373,6 +377,205 @@ def test_sdk_max_turns_is_a_domain_stop_condition() -> None:
 
     assert context.runtime.state.status is RunStatus.STOPPED
     assert context.runtime.state.stop_reason is StopReason.MAX_TURNS
+
+
+def test_token_budget_stops_after_recording_model_usage() -> None:
+    model = ScriptedModel((FinalStep(text="must not complete"),))
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        budget=RunBudget(max_total_tokens=1),
+    )
+
+    with pytest.raises(BudgetExceeded) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=model,
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.TOKEN_BUDGET_EXHAUSTED
+    assert context.runtime.state.model_turns == 1
+    assert context.runtime.state.model_tokens == 2
+    assert context.runtime.state.status is RunStatus.STOPPED
+    assert context.runtime.state.stop_reason is StopReason.BUDGET_EXHAUSTED
+
+
+def test_exact_token_budget_prevents_another_model_request() -> None:
+    model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="list_candidates",
+                arguments={"kind": "video", "cursor": 0, "limit": 10},
+                call_id="call-1",
+            ),
+            FinalStep(text="must not run"),
+        )
+    )
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        budget=RunBudget(max_total_tokens=2),
+    )
+
+    with pytest.raises(BudgetExceeded) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=model,
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.TOKEN_BUDGET_EXHAUSTED
+    assert model.consumed_steps == 1
+    assert context.runtime.state.model_tokens == 2
+    assert context.runtime.state.tool_calls == 1
+
+
+class _DelayedScriptedModel(ScriptedModel):
+    async def get_response(self, *args: object, **kwargs: object):
+        await asyncio.sleep(0.02)
+        return await super().get_response(*args, **kwargs)
+
+
+def test_elapsed_time_budget_stops_the_sdk_run() -> None:
+    model = _DelayedScriptedModel((FinalStep(text="too late"),))
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        budget=RunBudget(max_elapsed_seconds=0.001),
+    )
+
+    with pytest.raises(BudgetExceeded) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=model,
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+    assert context.runtime.state.status is RunStatus.STOPPED
+    assert context.runtime.state.stop_reason is StopReason.BUDGET_EXHAUSTED
+
+
+class _CancellationIgnoringModel(ScriptedModel):
+    async def get_response(self, *args: object, **kwargs: object):
+        try:
+            await asyncio.sleep(0.02)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.01)
+        return await super().get_response(*args, **kwargs)
+
+
+def test_elapsed_budget_rejects_result_after_cancellation_is_swallowed() -> None:
+    model = _CancellationIgnoringModel((FinalStep(text="too late"),))
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        budget=RunBudget(max_elapsed_seconds=0.001),
+    )
+
+    with pytest.raises(BudgetExceeded) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=model,
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+    assert context.runtime.state.stop_reason is StopReason.BUDGET_EXHAUSTED
+
+
+class _UpstreamTimeoutModel(ScriptedModel):
+    async def get_response(self, *args: object, **kwargs: object):
+        del args, kwargs
+        raise TimeoutError("upstream timeout")
+
+
+def test_upstream_timeout_is_not_misclassified_as_run_budget() -> None:
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+    )
+
+    with pytest.raises(TimeoutError, match="upstream timeout"):
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=_UpstreamTimeoutModel((FinalStep(text="unused"),)),
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert context.runtime.state.status is RunStatus.FAILED
+    assert context.runtime.state.failure_code == (
+        RuntimeErrorCode.AGENT_RUN_FAILED.value
+    )
+
+
+class _SlowCandidateSource:
+    def __init__(self) -> None:
+        self._source = _source()
+        self.snapshot_id = self._source.snapshot_id
+        self.candidate_count = self._source.candidate_count
+
+    async def page(
+        self,
+        *,
+        kind: CandidateKind,
+        cursor: int,
+        limit: int,
+    ) -> CandidatePage:
+        await asyncio.sleep(0.2)
+        return await self._source.page(
+            kind=kind,
+            cursor=cursor,
+            limit=limit,
+        )
+
+
+def test_elapsed_budget_cancels_and_clears_a_pending_tool_call() -> None:
+    model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="list_candidates",
+                arguments={"kind": "video", "cursor": 0, "limit": 10},
+                call_id="slow-call",
+            ),
+        )
+    )
+    context = create_organizer_context(
+        run_id="run-1",
+        candidate_source=_SlowCandidateSource(),
+        work_type=TmdbWorkType.ANIME,
+        budget=RunBudget(max_elapsed_seconds=0.05),
+    )
+
+    with pytest.raises(BudgetExceeded) as error:
+        asyncio.run(
+            run_episode_organizer(
+                context=context,
+                model=model,
+                prompt="Inspect the candidates.",
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+    assert context.runtime.state.tool_calls == 1
+    assert context.runtime.state.pending_tool_calls == frozenset()
+    assert context.runtime.state.stop_reason is StopReason.BUDGET_EXHAUSTED
 
 
 def test_same_script_produces_the_same_domain_event_transcript() -> None:

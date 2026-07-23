@@ -719,3 +719,68 @@ boolean。API key 本身没有可由 v3 key-only 请求读取的独立 “adult 
 生产 Agent 的 `search_tmdb` schema 没有 `include_adult` 字段，工具执行端固定
 传 true。模型既不需要主动开启，也不能关闭 adult 搜索；false 只用于 live
 diagnostic 的对照请求。
+
+## M4：模型提出答案，领域事件决定答案是否成立
+
+M4 的核心不是“让模型输出一段 JSON”，而是建立一个可纠错的闭环：
+
+```text
+Agent 提交 mapping
+        ↓
+确定性 kernel 校验
+        ├─ 失败 → bounded validation observation → Agent 修正
+        └─ 成功 → MappingSubmitted event → BUILD_PLAN
+```
+
+Pydantic strict schema 负责挡住错误形状和 extra keys；`MappingDraft` 负责
+candidate ID、episode boundary、range overlap 和字幕归属；`ExistingInventory`
+再拒绝目标库已占用的 episode。分层的意义是：模型可以犯语义错误，但不能绕过
+确定性不变量。
+
+### Observation 不是权限
+
+`get_existing_inventory` 返回 season/episode 元组，不返回 archive path。
+`detect_subtitle_variant` 接受 `subtitle:N`，filesystem adapter 根据内部
+capability table 定位文件，逐级 no-follow 打开，并最多读取 64 KiB。字幕正文
+被视为 prompt injection 输入，只在纯分类函数中使用；Agent observation 只有
+`chs/cht/chi`。
+
+因此模型看到的信息足以完成任务，但不足以把工具转化成任意文件读取器。
+
+这里还有两个容易被 `None` 掩盖的 capability 细节：
+
+- “没有 inventory provider”不是“已确认库存为空”；空库存也要显式构造；
+- `CandidateSnapshot` 对象本身不够，mapping 必须同时绑定当前 run 的
+  `snapshot_id` 和 candidate ID 集合。
+
+字幕文件在扫描时记录 device、inode、时间戳和 bounded prefix digest；检测时
+前后复核 identity 与 digest。同长度原地改写因此也会 fail closed，而不是只靠
+`st_size` 猜测文件没变。
+
+### 为什么成功必须是 event，而不是 final answer
+
+模型输出 “mapping 已完成” 只是文本。Reducer 只在收到经过工具校验构造的
+`MappingSubmitted` 时将 `MAP_EPISODES` 改为 `BUILD_PLAN`。这把控制面的自然
+语言与数据面的状态转换分开，也使相同 event transcript 可以确定性 replay。
+
+### 四种预算约束的职责
+
+- turn budget 限制模型推理轮数；
+- tool/failure budget 限制调查和反复试错；
+- token budget 限制累计模型消耗；
+- wall-clock budget 限制模型或 adapter 卡住的总时间。
+
+时间预算可能在工具执行中途取消 coroutine。此时 event log 中已经有
+`ToolRequested`，却没有 `ToolSucceeded/ToolRejected`。M4 允许
+`BUDGET_EXHAUSTED` stop event 明确清空这类已取消 pending call；其他 stop reason
+仍然携带 pending call 时 fail closed。
+
+`asyncio.timeout` 的取消是协作式的，外部 model 可能捕获 `CancelledError`。
+因此 runner 在 context manager 正常退出后仍检查绝对 deadline；上游自己抛出的
+`TimeoutError` 只有在本地 deadline 确实过期时才会被归类为预算耗尽。Token
+usage 只能在一次 provider response 返回后获知，所以 M4 在 response 后记账，
+并在下一次 LLM 调用前阻止已达到额度的 run；单次输出另有 `max_tokens` 上限。
+
+完整 M4 验收见 [M4 Definition of Done](m4-review.md)。下一步 M5 会把已验证的
+mapping 编译成 canonical、不可变且带 `plan_hash` 的 `RenamePlan`，仍不会让
+Agent 直接决定路径。
