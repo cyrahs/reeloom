@@ -10,6 +10,13 @@ from reeloom.tools.candidates import (
     ToolFailureCode,
     list_candidates,
 )
+from reeloom.tools.tmdb import (
+    get_tmdb_season,
+    get_tmdb_series,
+    search_tmdb,
+    select_series,
+)
+
 __all__ = [
     "CandidateSource",
     "CandidatePage",
@@ -19,4 +26,8 @@ __all__ = [
     "ToolExecutionError",
     "ToolFailureCode",
     "list_candidates",
+    "get_tmdb_season",
+    "get_tmdb_series",
+    "search_tmdb",
+    "select_series",
 ]

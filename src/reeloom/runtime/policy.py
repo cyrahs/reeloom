@@ -13,6 +13,12 @@ def _default_rules() -> Mapping[str, frozenset[Phase]]:
             "list_candidates": frozenset(
                 {Phase.IDENTIFY_SERIES, Phase.MAP_EPISODES}
             ),
+            "search_tmdb": frozenset({Phase.IDENTIFY_SERIES}),
+            "get_tmdb_series": frozenset(
+                {Phase.IDENTIFY_SERIES, Phase.MAP_EPISODES}
+            ),
+            "get_tmdb_season": frozenset({Phase.MAP_EPISODES}),
+            "select_series": frozenset({Phase.IDENTIFY_SERIES}),
         }
     )
 

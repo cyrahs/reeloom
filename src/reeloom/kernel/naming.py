@@ -7,6 +7,10 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 
 from reeloom.kernel.errors import DomainError, ErrorCode
+from reeloom.kernel.file_types import (
+    SUBTITLE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
 from reeloom.kernel.mapping import EpisodeSpan
 from reeloom.kernel.schema import check_fields
 
@@ -24,8 +28,6 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 _MAX_SAFE_TITLE_BYTES = 160
 _EXTENSION_PATTERN = re.compile(r"^\.[a-z0-9]{1,8}$")
-_VIDEO_EXTENSIONS = frozenset({".avi", ".m4v", ".mkv", ".mp4", ".ts", ".webm"})
-_SUBTITLE_EXTENSIONS = frozenset({".ass", ".srt", ".ssa", ".sup", ".vtt"})
 
 
 def _truncate_utf8(value: str, *, max_bytes: int) -> str:
@@ -158,7 +160,7 @@ def video_relative_path(
 
     canonical_extension = _canonical_extension(
         extension,
-        allowed=_VIDEO_EXTENSIONS,
+        allowed=VIDEO_EXTENSIONS,
     )
     return _relative_path(series, span, suffix=canonical_extension)
 
@@ -175,7 +177,7 @@ def subtitle_relative_path(
         raise DomainError(ErrorCode.INVALID_SUBTITLE_VARIANT)
     canonical_extension = _canonical_extension(
         extension,
-        allowed=_SUBTITLE_EXTENSIONS,
+        allowed=SUBTITLE_EXTENSIONS,
     )
     return _relative_path(
         series,

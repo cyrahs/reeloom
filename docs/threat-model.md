@@ -1,6 +1,6 @@
 # Reeloom 威胁模型
 
-版本：M0.5
+版本：M3
 
 日期：2026-07-23
 
@@ -13,7 +13,8 @@ Reeloom 的核心安全目标不是“让模型尽量谨慎”，而是确保模
 2. 执行时只移动精确计划中已批准的源到目标，永不删除、覆盖或临时改写目标。
 3. Agent 不能选择源路径、目标路径、授权根或网络目的地。
 4. 任意不确定、状态漂移、竞态、校验失败都 fail closed。
-5. `.env*` 永远不进入扫描、工具 observation、trace 或执行范围。
+5. `.env*` 永远不进入扫描、工具 observation、trace 或执行范围；唯一例外是
+   显式 live smoke no-follow 读取固定 `.env` 的单一 TMDB key。
 
 ## 2. 受保护资产
 
@@ -64,15 +65,21 @@ guardrail 可以改善行为，但不能替代 schema、policy、hash、审批�
 | 越权带入字幕 | 字幕关联未映射视频 | subtitle 必须指向当前 MappingDraft 中的视频 | M0 已覆盖 |
 | Plan 内碰撞 | 两个 source 生成同一目标 | 同字幕稳定消歧；其他 exact/casefold collision 拒绝 | M0 已覆盖 |
 | Plan 漂移或遗漏 | move 脱离 validated mapping，或 mapped candidate 没有 move | PlanDraft 绑定 mapping/单一 series，unmapped 由差集推导 | M0 已覆盖 |
-| 目录逃逸 | symlink 指向授权根之外 | scanner/executor 使用 containment 与 no-follow | M2/M6 待实现 |
+| 目录逃逸 | symlink 指向授权根之外 | scanner/executor 使用 containment 与 no-follow | scanner M2 已覆盖；executor M6 |
 | TOCTOU | 批准后源被替换或目标出现 | source identity 与 final preflight | M5/M6 待实现 |
 | Plan 篡改 | preview 后 destination 被修改 | canonical bytes 与 `plan_hash` | M5 待实现 |
 | 审批重放 | 重复执行同一批准 | expiry 与原子 one-time nonce claim | M6 待实现 |
 | 已有目标或部分失败 | destination 已存在或部分 rename | filesystem collision check、journal 先写、rollback | M5/M6 待实现 |
-| 任意网络访问 | 模型请求任意 URL | 只有 TMDB adapter 有业务网络 capability | M3 待实现 |
-| 资源耗尽 | 超大分页、文本或重试循环 | page/text/body/time/tool/token budgets | M1-M4 待实现 |
-| 状态伪造 | assistant 文本宣称任务完成 | 只有 typed domain event 能转换 phase | M1 待实现 |
-| 敏感信息泄漏 | `.env` 或字幕内容进入 trace | 字面与解析后 `.env*` 拒绝、限量 observation、trace 脱敏 | M2/M7 待实现 |
+| 任意网络访问 | 模型请求任意 URL | 只有固定 host/path 的 TMDB adapter 有业务网络 capability；tool schema 不接受 URL | M3 已覆盖 |
+| 伪造 TMDB capability | 模型直接选择猜测的 TMDB ID | 查询与选择只允许本 run 搜索 observation 已记录的候选 ID | M3 已覆盖 |
+| TMDB 类型混淆 | Movie 100 被当作 TV 100，或 anime 搜索回退到真人剧 | run 显式绑定 work_type；capability 使用 `(work_type, id)`；anime 要求 genre 16 且 details 再验证 | M3 已覆盖 |
+| 归档根越权 | 模型用 search filter 选择另一个类型的 dst | search filter 必须等于 trusted run work_type；未来 root→dst capability 由 bootstrap 绑定，不从模型文本推导 | filter M3；root route M5 |
+| TMDB 响应注入 | title/overview 包含指令、控制字符或超长文本 | adapter 转换为有限领域字段，控制字符中和，tool observation 再限长 | M3 已覆盖 |
+| 网络资源耗尽 | 慢响应、超大 body、过量结果或缓存增长 | HTTP timeout、streaming body 上限、结果/文本/observation 上限、TTL/LRU cache | M3 已覆盖 |
+| 资源耗尽 | 超大分页或工具/模型重试循环 | scan/page/display/tool/turn/failure budgets | M1-M2 已覆盖；token/time M4 |
+| 状态伪造 | assistant 文本宣称任务完成 | 只有 typed domain event 能转换 phase | M1 已覆盖 |
+| 敏感信息泄漏 | `.env` 或字幕内容进入 trace | scanner/Agent/executor 拒绝 `.env*`；live smoke 仅 no-follow 读取固定单键；限量 observation、trace 脱敏 | scanner M2、smoke M3；trace M7 |
+| TMDB 凭据泄漏 | 凭据进入模型输入、缓存 key 或错误链 | 凭据仅注入 HTTP adapter；live loader 有文件/大小/单键限制；不进入 observation/cache key/repr，网络异常去除 cause | M3 已覆盖 |
 
 ## 5. Specials/OVA/OAD 的证据规则
 

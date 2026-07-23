@@ -11,6 +11,7 @@ from reeloom.kernel.candidates import (
     CandidateKind,
     CandidateSnapshot,
 )
+from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import CandidateSnapshotCreated, RunStarted
 from reeloom.runtime.policy import PhaseToolPolicy
@@ -26,7 +27,9 @@ from reeloom.tools.candidates import (
 
 def _runtime(source: SnapshotCandidateSource) -> ToolRuntime:
     store = InMemoryEventStore()
-    store.append(RunStarted(run_id="run-1"))
+    store.append(
+        RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME)
+    )
     store.append(
         CandidateSnapshotCreated(
             snapshot_id=source.snapshot_id,

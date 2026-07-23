@@ -261,3 +261,461 @@ fixture 只复制用户可观察规则，不导入旧项目代码或绝对路径
 
 M1 将第一次引入 Agents SDK：实现 `RunState`、phase、typed events、reducer、
 tool policy、预算和 scripted fake model，并使用 SDK Runner 的真实 tool loop。
+
+## M1：让 SDK 管循环，让领域事件管业务
+
+### 这一步实现了什么
+
+- `RunStarted`、`ToolRequested`、`ToolSucceeded`、`ToolRejected`、
+  `RunStopped` 和 `RunFailed` 是不可变 typed events。
+- 纯 reducer 把事件折叠成 `RunState`；append-only 内存 store 只在 reduce
+  成功后追加事件。
+- `PhaseToolPolicy` 默认拒绝未知工具，`RunBudget` 同时限制模型轮数、工具调用
+  和重复失败。
+- `EpisodeOrganizerAgent` 使用 Agents SDK 的 `Agent`、`Runner` 和
+  `function_tool`，没有自建 while/tool-call loop。
+- `ScriptedModel` 实现 SDK `Model` protocol，以固定 transcript 离线驱动真正的
+  Runner。
+- M1 的 `list_candidates` 只从注入的 immutable snapshot 返回有界 opaque ID；
+  它不扫描目录，也不接收或返回路径。
+
+### Agent、tool 和 observation 分别是什么
+
+这次真实运行的数据流是：
+
+```text
+ScriptedModel 选择 list_candidates
+→ SDK Runner 校验并调度 function tool
+→ phase / budget / input guardrail
+→ 领域工具返回 JSON observation
+→ SDK 把 observation 放入下一轮模型输入
+→ 模型产生下一动作或最终文本
+```
+
+Agent 不是“一个模型对象”。它是 instructions、model、tools 和运行策略的组合；
+Runner 才负责重复调用模型、执行工具并把结果送回模型。Reeloom 不复制这套循环，
+只记录自己的领域事件。
+
+tool 也不是模型拥有的函数权限。模型只能提出一个带 schema 的调用请求；调用
+是否存在、当前 phase 是否允许、参数是否严格、预算是否足够，全部由本地代码
+决定。observation 是工具返回给模型的有限数据，不是真实对象本身，更不是新的
+权限。
+
+### State 与 event 为什么要分开
+
+event 表示已经发生的事实，state 是 reducer 对事实的投影：
+
+```text
+events: RunStarted → ToolRequested → ToolSucceeded → RunStopped
+                               reducer ↓
+state:  phase、status、tool_calls、failures、pending calls、stop reason
+```
+
+event store 没有时间戳等非确定字段，因此相同 transcript 可以逐项比较并稳定
+replay。reducer 还会拒绝“没有 request 却声称 tool succeeded”和“仍有 pending
+call 却停止”等非法序列。
+
+SDK 的 run 结束与业务完成是两个不同事实。M1 中模型的最终文本只产生
+`StopReason.MODEL_FINAL`，phase 仍是 `IDENTIFY_SERIES`。它不会进入
+`COMPLETED`；以后必须由有效领域动作产生成功事件，assistant 文本没有这项
+权限。
+
+### 为什么 schema 之外还要 guardrail
+
+SDK 会把 strict JSON Schema 提供给模型，但安全系统不能假设模型一定遵守。
+M1 的执行端 input guardrail 会再次检查：
+
+- JSON 必须是 object；
+- 字段集合必须精确等于 `{limit}`；
+- `limit` 必须是非 bool 的整数并位于 `1..50`；
+- 原始参数文本有长度上限。
+
+因此 extra key、错误类型、越界值和非法 JSON 都变成相同的有限结构化
+observation。未知工具、phase 不允许和 adapter 失败也使用稳定错误码；错误文本
+不会被当成控制指令。
+
+### Scripted fake model 与 mock 的区别
+
+`ScriptedModel` 不是另一套 Agent runtime。它只实现 SDK 要求的 model protocol，
+按脚本返回 Responses API 形状的 tool call 或 assistant message。模型/tool
+调度、observation 回填、最大轮数和异常包装仍由真正的 SDK Runner 完成。
+
+测试还可以要求某一步输入必须包含前一工具 observation。例如第二轮只有看到
+`video:1` 才返回最终文本，这证明多轮反馈闭环确实发生了。
+
+### 如何验证
+
+```bash
+.venv/bin/python -m pytest -q tests/runtime
+```
+
+完整 M1 验收见 [M1 Definition of Done](m1-review.md)。
+
+### 下一步
+
+M2 会把当前注入的 immutable snapshot 替换为安全 scanner，并补全 no-follow
+symlink、授权根 containment、`.env*` 拒绝、root identity 和真正的
+`list_candidates` 分页。
+
+## M2：把文件系统对象降级成 capability
+
+### 这一步实现了什么
+
+- `AuthorizedRoot` 只接受绝对、已存在、完整祖先链无 symlink 的目录，并记录
+  授权时的 root device/inode。
+- scanner 从根目录逐级使用 directory FD、`O_DIRECTORY` 和 `O_NOFOLLOW` 打开
+  子目录；file/dir symlink 都不会被遍历。
+- `.env*` component 在任何 `lstat`、open 或 stat 前按名称拒绝；unsupported
+  extension、special file 和 symlink entry 不进入快照。
+- 视频与字幕使用和 naming compiler 相同的 extension 白名单。
+- scanner 产出的 `ScannedFile` 先稳定排序，再分别分配 `video:N` 和
+  `subtitle:N`。
+- immutable snapshot 包含公开 `CandidateSnapshot` 与内部 exact relative-path
+  table；两者按 ID 一一绑定。
+- `CandidateSnapshotCreated` event 把 snapshot ID 与 candidate count 写入
+  `RunState`，并把 phase 从 `BOOTSTRAP` 推进到 `IDENTIFY_SERIES`。
+- `list_candidates` 升级为 `kind + cursor + limit` 的严格分页工具。
+- scanner 同时限制全部 directory entries、candidate 数、递归深度和相对路径
+  字节数；unsupported 文件也会消耗 scan budget。
+- candidate 工具只有在 `CandidateSnapshotCreated` 已进入当前 RunState 后才可用。
+
+### Capability 为什么比“清洗路径”更重要
+
+如果工具接受路径，模型始终可以尝试：
+
+```text
+../../outside
+/absolute/secret
+C:\other-root
+linked-dir/secret
+```
+
+逐个清洗这些字符串只是补洞。M2 采用更小的接口：
+
+```text
+filesystem path
+→ authorized scanner
+→ immutable snapshot
+→ run-scoped video:N / subtitle:N
+→ Agent tool
+```
+
+模型的工具 schema 中根本没有 path 字段。它只能枚举当前 run 已经授予的
+candidate。精确 relative path 留在内部 table，未来 kernel/executor 使用 ID
+查表；展示名永远不能反向决定操作路径。
+
+这就是 object capability 的基本思想：拿到一个不可伪造、作用域有限的引用，
+而不是拿到一段可以被重新解释成任意资源位置的字符串。
+
+### 为什么不能先 resolve 再判断
+
+`Path.resolve()` 会解释 symlink，因此不适合作为第一道授权检查。M2 的顺序是：
+
+```text
+词法检查 absolute / .. / Windows path / .env*
+→ 从 filesystem anchor 逐级 lstat
+→ 任意 symlink 立即拒绝
+→ 记录 root device/inode
+→ scanner 用 openat-style directory FD 逐级 O_NOFOLLOW
+```
+
+扫描过程中始终持有父目录 FD；打开子目录时使用相对该 FD 的名字。即使目录项在
+检查与打开之间被替换成 symlink，`O_NOFOLLOW` 也会使扫描失败，而不会跟随到
+授权根之外。平台如果不能提供这些 flags，adapter 会 fail closed。
+
+M6 的 Executor 仍要在真正移动前重新做 identity 与 containment preflight。
+扫描安全不能替代执行时校验。
+
+### Snapshot 为什么要同时有公开层和内部层
+
+公开层只包含：
+
+```text
+opaque id + kind + bounded display_name
+```
+
+内部层另外保存 exact relative path 和扫描时 size。Agent 的 observation 会把
+控制字符、换行和 bidi 控制符替换为可见占位符，并限制 UTF-8 字节数；内部文件
+名保持原样，不会用展示副本寻找文件。
+
+snapshot ID 是当前候选记录的 deterministic digest，用于事件关联和 replay。
+它还不是 M5 的 `plan_hash`，也不能被批准或执行。
+
+### 分页也是安全边界
+
+`list_candidates` 的输入字段集合必须精确等于：
+
+```text
+kind: video | subtitle
+cursor: 0..2^31-1
+limit: 1..50
+```
+
+cursor 只能移动到同 kind snapshot 的下一页，越过末尾会得到
+`invalid_cursor`。source 返回的 item 数、kind、ID uniqueness、next cursor 和
+最终 observation bytes 还会在工具层重新验证。
+
+即使有人绕过正常的 context factory 直接构造 `ToolRuntime`，缺少 snapshot
+event 时也只会得到 `capability_not_available`，不会访问传入的 source。
+
+这不只是性能优化。分页和文本上限防止模型一次调用把整个大目录塞入上下文，
+也让工具预算能够衡量调查成本。
+
+### 如何验证
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/policy tests/kernel/test_scanner.py \
+  tests/adapters/test_filesystem.py tests/tools/test_candidate_pagination.py \
+  tests/integration/test_candidate_agent.py
+```
+
+测试覆盖稳定 ID、kind 分页、page 上限、absolute/`..`/Windows path、
+root/file/parent symlink、指向 `.env*` 的 dangling symlink、scanner candidate
+上限和 prompt-injection filename。测试不会创建或读取真实 `.env*` 文件。
+
+完整 M2 验收见 [M2 Definition of Done](m2-review.md)。
+
+### 下一步
+
+M3 将接入唯一允许的业务网络 adapter：TMDB HTTP adapter。Agent 获得的仍是
+受 phase、schema、超时、缓存、调用数和 response-size 限制的 typed tools，
+而不是任意 URL 请求能力。
+
+## M3：让 Agent 选择调查路径，不选择网络权限
+
+### 这一步实现了什么
+
+- `TmdbProvider` port 定义 search、series details 和 season details 三种受限操作；
+  fake 与 HTTP adapter 实现相同协议。
+- HTTP adapter 的 host 固定为 TMDB API v3，只暴露固定 endpoint，不接受 base
+  URL、完整 URL、method 或任意参数。
+- adapter 限制 5 秒请求时间、1 MB response body、返回条目数、文本长度，以及
+  600 秒 / 128 项的 TTL/LRU cache。
+- `search_tmdb` 固定使用 `zh-CN`，并把有界
+  `(work_type, tmdb_id)` 搜索结果追加为 `TmdbCandidatesObserved`。
+- `get_tmdb_series` 只能检查已观察候选或已选剧集；`get_tmdb_season` 只能在
+  mapping phase 检查已选剧集。
+- `select_series` 只能选择当前 run 搜索过的 ID，并重新取得 zh-CN details；
+  有效的 `SeriesSelected` 事件才会进入 `MAP_EPISODES`。
+- zh-CN localized name 优先，缺失时回退 original name；缺失首播年份则
+  fail closed。
+- season episode 从中英文 name/overview 中只提取明确的 OVA/OAD 证据，season
+  number 不影响 hint，因此兼容 TMDB 将 OVA/OAD 放入常规 season 的情况。
+
+### HTTP adapter 为什么仍然是 Agent 的受控工具
+
+这里没有把 TMDB 变成固定 pipeline，也没有给 Agent 一个通用 HTTP client。
+实际控制流是：
+
+```text
+Agent 决定搜索词和调查顺序
+→ typed tool 校验 phase/schema/capability/budget
+→ provider port
+→ 固定 TMDB endpoint 的 HTTP adapter
+→ 有界领域模型
+→ 有界 observation
+→ Agent 决定下一步
+```
+
+因此 Agent 可以主动调用 TMDB，但只能使用 Reeloom 预先定义的四项业务能力。
+它不能改变 host、path、HTTP method，也不能把 TMDB 返回的 URL 当作新权限。
+这与接 MCP 的核心安全目标相同，但当前只有一个进程内 provider，HTTP adapter
+更小、更容易离线替换和审计；没有必要为了协议层而引入 MCP。
+
+### 搜索结果为什么要变成 capability
+
+只限制 `tmdb_id` 是正整数还不够，模型仍可猜测任意剧集 ID。M3 把 search 的
+结果转成领域事件：
+
+```text
+typed search result references
+→ TmdbCandidatesObserved
+→ RunState.tmdb_candidates
+→ inspect/select membership check
+```
+
+这与 M2 的 `video:N` 思路相同：数据被观察到之后，才获得当前 run 内的有限
+引用权。`select_series` 在调用 provider 前先做 membership check，所以伪造 ID
+不会产生网络请求。
+
+`SeriesSelected` 进一步展示 event-driven state：tool 返回的 assistant 文本或
+普通 observation 不能推进 phase；只有 reducer 接受的 typed event 可以。选中
+后，后续 season 查询又收窄到这一个 TMDB ID。
+
+### 外部数据和故障为什么也要降级
+
+TMDB title、overview 和错误响应都属于不可信输入。adapter 先做 Unicode
+normalization、控制字符替换、字段类型和唯一性校验，再转换成 frozen 领域模型；
+tool 只输出白名单字段并再次限制总字节数。
+
+网络异常不会把底层 request URL 或异常 cause 传给 Agent，只返回稳定错误码和
+`retryable`。401/403、404、429、5xx、timeout 和超大 body 都有确定映射，模型
+不需要解析供应商错误文本。
+
+凭据只通过构造器显式注入 `TmdbHttpAdapter`。Reeloom 不读取配置文件，凭据也
+不进入 cache key、`repr`、领域模型或 observation。自动化测试全部使用 fake
+provider 或 `httpx.MockTransport`，不访问真实 TMDB。
+
+### 如何验证
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/kernel/test_tmdb.py tests/adapters/test_tmdb_http.py \
+  tests/tools/test_tmdb_tools.py tests/integration/test_tmdb_agent.py \
+  tests/runtime
+```
+
+测试覆盖无/单/歧义候选、伪造 ID、zh-CN identity、OVA/OAD 中英文数据、
+固定 endpoint、cache、timeout、body 上限、HTTP 状态映射、extra URL 字段拒绝，
+以及真实 SDK Runner 驱动的 search → inspect → select → season tool loop。
+
+完整 M3 验收见 [M3 Definition of Done](m3-review.md)。
+
+### 下一步
+
+M4 会实现 `get_existing_inventory`、`detect_subtitle_variant` 和
+`submit_mapping`。模型提出语义 mapping，内核用候选 membership、TMDB 集数
+边界、range overlap、已有库存和字幕归属规则验证；只有成功的领域事件才能进入
+`BUILD_PLAN`。
+
+## M3 补全：作品类型不是一个字符串标签
+
+### 从 aninamer 保留了什么
+
+旧项目的 `search_tv_anime()` 使用 `/search/tv`，读取 `genre_ids` 并用 TMDB
+Animation genre 16 过滤；worker 则通过 trusted `watch_root.key` 将一个
+`input_root` 固定映射到一个 `output_root`。这两点都值得保留：
+
+```text
+source parent / watch root
+→ trusted archive category
+→ bounded TMDB filter
+→ fixed archive destination capability
+```
+
+Reeloom 没有保留旧实现“没有 anime 结果就返回所有 TV”的 fallback。显式
+`anime` filter 没有动画证据时返回空，因为类型不确定应该补充证据，而不是静默
+降级。
+
+### 为什么分成 media_type 与 work_type
+
+TMDB 的对象 namespace 是：
+
+```text
+media_type = tv | movie
+```
+
+用户的归档分类是：
+
+```text
+work_type = anime | tv_series | movie
+```
+
+`anime` 不是 TMDB 的第三种 media type，而是：
+
+```text
+media_type == tv AND genre_ids contains 16
+```
+
+因此 M3 同时返回两个字段。`anime` 和 `tv_series` 都走 TV endpoint；
+`movie` 走 Movie endpoint，并使用 `title/original_title/release_date` 字段。
+这避免把供应商数据模型和本地目录分类混为一谈，也为以后修改归档分类而不改
+TMDB port 留出空间。
+
+### 类型为什么必须进入 capability
+
+TMDB 的 TV 与 Movie 是不同 namespace，同一个整数可能分别代表两个对象。
+候选权限不能再写成：
+
+```text
+tmdb_id = 100
+```
+
+而必须是：
+
+```text
+(work_type, tmdb_id) = (anime, 100)
+```
+
+`RunStarted` 还必须显式携带 trusted `work_type`。`search_tmdb` 虽然公开 filter
+字段，但 filter 必须与 run 类型一致；它不能让 Agent 把位于 `anime/` source
+root 的内容改送到未来的 `movie` destination。Organizer instructions 会直接
+告诉模型本 run 被授权的类型，但真正 enforcement 仍在 tool 和 reducer。
+
+### 为什么目前只搜索 movie，不允许 select_series
+
+电影没有 season/episode，也不应该生成 `SxxExx`。当前确定性 kernel 只有
+`SeriesIdentity`、`EpisodeSpan` 和 episode plan contract。把 movie 直接推进
+`MAP_EPISODES` 会制造一个类型上说谎的状态。
+
+因此 movie search 已支持并返回完整类型信息，但 `get_tmdb_series`、
+`get_tmdb_season` 和 `select_series` 对 movie 返回结构化
+`unsupported_work_type`。后续需要先定义 movie identity、单视频约束、命名和
+plan compiler 分支，再开放 movie selection。归档父目录到 dst 的具体路径映射
+也必须由 trusted bootstrap/root capability 完成，而不是由 Agent 的
+`work_type` 字符串构造。
+
+### Fake 为什么还需要官方 contract fixture
+
+手写 fake 只能证明“代码和自己想象的 API 一致”，不能证明想象正确。M3 因此
+增加 `tests/fixtures/tmdb_api_v3_contract.json`，从 TMDB 官方 OpenAPI 示例投影
+出 adapter 实际使用的字段，并保留来源 URL 与抓取日期。
+
+这组 fixture 特意保留真实响应的结构差异：
+
+- TV search 使用 `name/original_name/first_air_date`；
+- Movie search 使用 `title/original_title/release_date`；
+- release date 可能是空字符串；
+- TV details 的 `genres` 是对象数组，`seasons` 含大量未使用字段；
+- Season details 顶层 `id` 是 season ID，episode 内另有 `show_id`、
+  `season_number` 和 `episode_number`；
+- adapter 必须忽略白名单之外的真实字段，而不是因多余字段失败。
+
+它仍是离线 contract test，不声称替代线上 smoke test。官方 schema 变化可以通过
+重新投影 fixture 和 code review 显式吸收；生产连通性、凭据有效性和未文档化
+服务端变化仍需要单独、显式 opt-in 的 smoke check。
+
+### 为什么 live smoke 不放进 pytest
+
+线上 smoke 的用途是验证“当前凭据 + 当前 TMDB 服务 + 当前 adapter”能够一起
+工作，它不是确定性的单元测试。把它放进 pytest 会让默认测试受网络、限流和服务
+状态影响，也可能让 CI 在不知情时使用真实凭据。
+
+因此 `scripts/tmdb_live_smoke.py` 同时要求：
+
+```text
+显式 --live
+AND
+进程环境或仓库根固定 .env 提供 TMDB_API_KEY
+```
+
+dotenv 读取是专门授权的 diagnostic 例外：仅在 `--live` 之后、仅固定仓库根
+`.env`、no-follow、64 KiB 上限、只解析唯一 `TMDB_API_KEY`，不执行变量展开。
+脚本不允许改变配置路径、host、endpoint、query 或预期 ID，也不输出 TMDB 返回
+的标题和简介。它用固定样本覆盖 Anime/TV/Movie search、TV details、Season
+details 和 adult 内容能力。这里体现的是 adapter 的两层验证策略：
+
+```text
+离线 fixture/MockTransport：稳定、详尽、覆盖失败路径
+显式 live smoke：稀疏、真实、发现服务端契约漂移
+```
+
+### adult capability 检查的准确语义
+
+TMDB 的 Movie/TV search 将 `include_adult` 定义为请求参数，供应商默认值是
+false；Reeloom adapter 的产品策略则默认 true。Movie details 返回一个 `adult`
+boolean。API key 本身没有可由 v3 key-only 请求读取的独立 “adult enabled”
+权限字段。
+
+因此 live smoke 不会把一次 HTTP 200 当作成功，而是验证：
+
+```text
+显式 include_adult=false → 固定 adult ID 不出现
+默认/显式 true           → 固定 adult ID 出现
+/movie/{id}                → metadata.adult is true
+```
+
+生产 Agent 的 `search_tmdb` schema 没有 `include_adult` 字段，工具执行端固定
+传 true。模型既不需要主动开启，也不能关闭 adult 搜索；false 只用于 live
+diagnostic 的对照请求。

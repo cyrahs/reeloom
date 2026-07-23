@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
+
+
 class Phase(StrEnum):
     BOOTSTRAP = "bootstrap"
     IDENTIFY_SERIES = "identify_series"
@@ -40,7 +44,11 @@ class RunState:
     tool_calls: int
     failures: int
     pending_tool_calls: frozenset[tuple[str, str]]
+    work_type: TmdbWorkType
     candidate_snapshot_id: str | None = None
     candidate_count: int = 0
+    tmdb_candidates: frozenset[TmdbCandidateRef] = frozenset()
+    selected_series: SeriesIdentity | None = None
+    selected_work_type: TmdbWorkType | None = None
     stop_reason: StopReason | None = None
     failure_code: str | None = None

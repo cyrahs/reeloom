@@ -9,33 +9,71 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M0 / 领域契约与威胁模型（已完成）**
+**M3 / 受控 TMDB 识别（已完成）**
 
-已经建立最小 Python 工程和第一批纯领域契约：
+M0-M2 的领域契约、真实 SDK tool loop 和安全候选快照之上，已经建立受控
+TMDB 识别闭环：
 
-- immutable `CandidateId`、`Candidate` 和 `CandidateSnapshot`；
-- `video:N` / `subtitle:N` opaque ID 的 canonical 校验；
-- extra keys、ID/kind 不一致和重复 ID 的结构化错误；
-- immutable episode mapping、provider-neutral 集数边界和 range overlap 校验；
-- mapping ID 必须来自当前 snapshot，字幕只能关联已映射视频；
-- 完整的 series/Sxx/单集/多集/字幕命名契约和跨平台路径组件清洗；
-- destination 与 episode title 不属于命名输入，扩展名必须来自类型白名单；
-- OVA/OAD hint 可跨 season 优先匹配、无 hint 只在 S00 稳定回退的 resolver；
-- mapping-bound immutable plan draft、自动 candidate 分区、稳定字幕消歧和跨平台
-  碰撞校验；
-- 明确区分已实现与待实现控制的仓库威胁模型；
-- 对正常输入、失败输入和 prompt-injection 风格文件名的离线测试。
+- provider-neutral TMDB port 可以由真实 HTTP adapter 或离线 fake 实现；
+- HTTP adapter 固定访问 TMDB API v3，不接受模型提供的 URL，并限制超时、响应体
+  和缓存；
+- TMDB 的 `media_type`（`tv/movie`）与本地 `work_type`
+  （`anime/tv_series/movie`）分离；每个 run 必须显式绑定一个可信
+  `work_type`；
+- `search_tmdb`、`get_tmdb_series`、`get_tmdb_season` 和 `select_series` 都经过
+  strict schema、phase、capability、预算和 observation 大小校验；
+- 搜索 filter 必须匹配 run 的 `work_type`；搜索到的
+  `(work_type, tmdb_id)` 才成为候选 capability；
+- `anime` 使用 TV search 并严格保留 TMDB Animation genre 16，`movie` 使用
+  Movie search；结果同时返回 `work_type` 与 `media_type`；
+- Movie metadata adapter 返回有界标题、年份、语言、genre IDs 和严格布尔
+  `adult` 标记；该能力尚未暴露为 Agent 工具；
+- Agent 的 `search_tmdb` 不暴露 adult 开关，执行端固定启用
+  `include_adult=true`；
+- `SeriesSelected` typed event 是进入 `MAP_EPISODES` 的唯一成功路径；
+- zh-CN 名称优先，年份必填；TMDB season episode 会提取有限的 OVA/OAD hint；
+- 真实 Agents SDK Runner + scripted model + fake TMDB 的完整识别循环离线通过。
+- HTTP parsing 还会回放从 TMDB 官方 OpenAPI 示例投影出的 TV search、Movie
+  search、TV details 和 Season details 契约 fixture。
 
-尚未接入模型、Agents SDK、TMDB、文件扫描或真实文件操作。
+adapter 只接受调用方显式注入的凭据，不加载配置文件。自动化测试不访问真实
+网络，也没有任何移动、重命名或删除能力。
+
+M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允许
+`anime/tv_series`。电影选择、单文件 mapping 和电影命名必须先建立独立领域
+契约，不能伪装成 `SxxExx` 流程。
 
 详细路线见 [初步实施计划](docs/initial-plan.md)，M0 验收结论见
-[M0 Definition of Done](docs/m0-review.md)。
+[M0 Definition of Done](docs/m0-review.md)，M1 验收结论见
+[M1 Definition of Done](docs/m1-review.md)，M2 验收结论见
+[M2 Definition of Done](docs/m2-review.md)，M3 验收结论见
+[M3 Definition of Done](docs/m3-review.md)。
 
 ## 本地验证
 
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+### 显式 opt-in 的 TMDB 线上 smoke
+
+pytest 始终离线，不会收集或调用线上检查。需要核对真实 TMDB API 行为时，
+显式执行：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/tmdb_live_smoke.py --live
+```
+
+脚本优先使用进程环境中的 `TMDB_API_KEY`，不存在时才 no-follow 读取仓库根目录
+固定 `.env` 中的同名单键。它不执行 dotenv 变量展开，不接受自定义文件或 URL，
+也不会输出凭据和 TMDB 文本。脚本以固定查询和已知 ID 检查 Anime/TV/Movie
+search、TV details、Season details，以及 adult 内容在显式关闭时隐藏、启用时
+可搜索和 Movie metadata 的 `adult=true`。生产 adapter 与 Agent 搜索默认启用
+adult；false 请求仅用于 live 对照验证。缺少 `--live` 或两处都没有凭据时，会
+在发起网络请求前退出。
+
+TMDB 将 adult 搜索建模为请求参数，不是 API key 的独立权限字段。脚本报告的
+`adult_capability=available` 表示当前 key 的真实请求可以完成上述完整检查。
 
 开发过程中的 Agent 概念说明见
 [开发学习日志](docs/development-journal.md)，安全边界见
@@ -68,7 +106,8 @@ Isolated Executor
 - Agent 不能直接删除、覆盖、移动或改写文件。
 - LLM 负责不确定的语义判断；代码负责所有安全约束。
 - 所有对用户媒体和输出树的副作用必须绑定不可变 `plan_hash` 和一次性审批。
-- 不读取、修改或访问任何 `.env` 文件。
+- 除显式 `--live` smoke 对仓库根 `.env` 的受限单键只读外，不读取、修改或访问
+  任何 `.env*` 文件。
 - 测试默认离线，TMDB、模型和文件系统适配器都必须可替换。
 
 ## 计划中的技术方向

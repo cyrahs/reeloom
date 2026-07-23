@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
@@ -9,6 +11,8 @@ from reeloom.runtime.events import (
     RunStarted,
     RunStopped,
     RuntimeEvent,
+    SeriesSelected,
+    TmdbCandidatesObserved,
     ToolRejected,
     ToolRequested,
     ToolSucceeded,
@@ -45,7 +49,10 @@ def reduce_event(
     if isinstance(event, RunStarted):
         if state is not None:
             raise RuntimeDomainError(RuntimeErrorCode.RUN_ALREADY_STARTED)
-        if not event.run_id:
+        if (
+            not event.run_id
+            or not isinstance(event.work_type, TmdbWorkType)
+        ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
         return RunState(
             run_id=event.run_id,
@@ -55,6 +62,7 @@ def reduce_event(
             tool_calls=0,
             failures=0,
             pending_tool_calls=frozenset(),
+            work_type=event.work_type,
         )
 
     if state is None:
@@ -99,6 +107,55 @@ def reduce_event(
             tool_calls=state.tool_calls + 1,
             pending_tool_calls=state.pending_tool_calls
             | {(event.call_id, event.tool_name)},
+        )
+
+    if isinstance(event, TmdbCandidatesObserved):
+        if (
+            state.phase is not Phase.IDENTIFY_SERIES
+            or not isinstance(event.candidates, tuple)
+            or len(event.candidates) > 20
+            or len(set(event.candidates)) != len(event.candidates)
+            or any(
+                not isinstance(candidate, TmdbCandidateRef)
+                or candidate.work_type is not state.work_type
+                for candidate in event.candidates
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        candidates = state.tmdb_candidates | frozenset(
+            event.candidates
+        )
+        if len(candidates) > 200:
+            raise RuntimeDomainError(
+                RuntimeErrorCode.TMDB_CANDIDATE_LIMIT_EXCEEDED
+            )
+        return replace(
+            state,
+            event_count=event_count,
+            tmdb_candidates=candidates,
+        )
+
+    if isinstance(event, SeriesSelected):
+        series = event.series
+        if (
+            state.phase is not Phase.IDENTIFY_SERIES
+            or state.selected_series is not None
+            or not isinstance(series, SeriesIdentity)
+            or not isinstance(event.work_type, TmdbWorkType)
+            or event.work_type is not state.work_type
+            or TmdbCandidateRef(
+                work_type=event.work_type,
+                tmdb_id=series.tmdb_id,
+            )
+            not in state.tmdb_candidates
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return replace(
+            state,
+            phase=Phase.MAP_EPISODES,
+            event_count=event_count,
+            selected_series=series,
+            selected_work_type=event.work_type,
         )
 
     if isinstance(event, ToolSucceeded):

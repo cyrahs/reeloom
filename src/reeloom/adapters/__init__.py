@@ -5,9 +5,12 @@ from reeloom.adapters.filesystem import (
     FilesystemScanner,
     ScanLimits,
 )
+from reeloom.adapters.tmdb import TmdbHttpAdapter, TmdbHttpLimits
 
 __all__ = [
     "FilesystemScanResult",
     "FilesystemScanner",
     "ScanLimits",
+    "TmdbHttpAdapter",
+    "TmdbHttpLimits",
 ]

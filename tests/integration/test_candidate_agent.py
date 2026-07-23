@@ -13,6 +13,7 @@ from reeloom.agents.scripted_model import (
     ScriptedModel,
     ToolCallStep,
 )
+from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.state import StopReason
 from reeloom.tools.candidates import SnapshotCandidateSource
@@ -27,6 +28,7 @@ def test_fake_agent_can_page_a_real_safe_snapshot(tmp_path: Path) -> None:
     context = create_organizer_context(
         run_id="run-1",
         candidate_source=source,
+        work_type=TmdbWorkType.ANIME,
     )
     model = ScriptedModel(
         (

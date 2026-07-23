@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from reeloom.kernel.candidates import CandidateKind, CandidateSnapshot
+from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import CandidateSnapshotCreated, RunStarted
 from reeloom.runtime.policy import PhaseToolPolicy
@@ -14,7 +15,9 @@ from reeloom.tools.candidates import SnapshotCandidateSource, list_candidates
 
 def test_candidate_tool_requires_snapshot_event_binding() -> None:
     store = InMemoryEventStore()
-    store.append(RunStarted(run_id="run-1"))
+    store.append(
+        RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME)
+    )
     runtime = ToolRuntime(
         store=store,
         budget=RunBudget(),

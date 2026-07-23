@@ -3,18 +3,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.state import StopReason
 
 
 @dataclass(frozen=True, slots=True)
 class RunStarted:
     run_id: str
+    work_type: TmdbWorkType
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateSnapshotCreated:
     snapshot_id: str
     candidate_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TmdbCandidatesObserved:
+    candidates: tuple[TmdbCandidateRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesSelected:
+    series: SeriesIdentity
+    work_type: TmdbWorkType
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +64,8 @@ class RunFailed:
 RuntimeEvent: TypeAlias = (
     RunStarted
     | CandidateSnapshotCreated
+    | TmdbCandidatesObserved
+    | SeriesSelected
     | ToolRequested
     | ToolSucceeded
     | ToolRejected

@@ -4,15 +4,13 @@
 
 日期：2026-07-23
 
-当前进度：M0 已完成。M0.1 建立最小 Python 工程、candidate opaque ID、
-immutable candidate snapshot、结构化错误与离线失败测试；M0.2 完成严格
-episode mapping、季集边界、range overlap、snapshot membership 和字幕关联
-校验；M0.3 完成命名契约、路径组件清洗、类型化扩展名白名单和纯相对
-destination 编译；M0.4 完成跨 season OVA/OAD typed hint、S00-only fallback、
-显式 unmapped/unused 与威胁模型；M0.5 完成与 validated mapping/单一 series
-绑定的 immutable plan 契约骨架、自动 candidate 分区、collision 模型、稳定
-字幕消歧和带旧项目 provenance 的行为 fixture。commit review 后补齐顶层
-object schema 与 candidate ordinal 上限。下一步为 M1 最小 Agents SDK Run。
+当前进度：M0、M1、M2、M3 已完成。M0 建立纯领域契约；M1 建立 typed runtime
+events、预算和真实 Agents SDK tool loop；M2 建立安全 scanner、immutable
+candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
+port、固定目的地 HTTP adapter、候选 ID capability、受 phase 限制的识别工具，
+由 trusted run `work_type` 限制的 anime/tv/movie 搜索，以及由
+`SeriesSelected` 驱动的 `MAP_EPISODES` 转换。下一步为 M4 剧集与字幕映射；
+movie 的选择、mapping 和命名需要独立领域契约，不能复用 episode mapping。
 
 ## 1. 项目目标
 
@@ -86,6 +84,7 @@ SDK。
 | Agent 数量 | MVP 单 Agent | 当前任务有一个清晰目标，多 Agent 暂无收益 |
 | 领域逻辑 | provider-neutral Safety Kernel | 可离线测试，也可替换模型供应商 |
 | 文件访问 | run-scoped capability + opaque ID | 不向模型暴露任意文件系统能力 |
+| 归档分类 | trusted source root → work_type → output root | 延续 aninamer 多 watch-root 思路，Agent 不能借类型选择路径 |
 | mapping | Agent 提交语义映射，代码校验 | LLM 做判断，代码做 enforcement |
 | 路径 | 只由 plan compiler 构造 | 永不接受模型生成路径 |
 | apply | 独立审批和 Executor | 将副作用与 Agent 推理隔离 |
@@ -107,10 +106,12 @@ guardrails 和可恢复审批的方案：
 RunState
 ├── run_id
 ├── phase
+├── work_type
 ├── authorized_series_root
 ├── authorized_output_root
 ├── candidate_snapshot_id
-├── selected_tmdb_id
+├── tmdb_candidates: (work_type, tmdb_id)
+├── selected_work_type / selected_tmdb_id
 ├── mapping_draft
 ├── validation_issues
 ├── plan_id / plan_hash
@@ -160,9 +161,9 @@ APPLYING → ROLLED_BACK
 | 工具 | Phase | 输入 | 输出与限制 |
 | --- | --- | --- | --- |
 | `list_candidates` | IDENTIFY/MAP | kind、cursor、limit | opaque ID、相对展示名、有限元数据；分页有上限 |
-| `search_tmdb` | IDENTIFY | query | 类型化候选；只能访问 TMDB adapter |
-| `get_tmdb_series` | IDENTIFY/MAP | tmdb_id、language | 白名单字段和大小受限的文本 |
-| `get_tmdb_season` | MAP | tmdb_id、season、language | 集号、标题、限长 overview |
+| `search_tmdb` | IDENTIFY | query、work_type | 类型化候选；filter 必须匹配 run；只能访问 TMDB adapter |
+| `get_tmdb_series` | IDENTIFY/MAP | work_type、tmdb_id、language | 仅 series 类型；白名单字段和大小受限的文本 |
+| `get_tmdb_season` | MAP | work_type、tmdb_id、season、language | 仅已选 series；集号、标题、限长 overview |
 | `get_existing_inventory` | MAP | selected tmdb_id | 已占用 season/episode 集合 |
 | `detect_subtitle_variant` | MAP | subtitle_id | `chs`、`cht` 或 `chi`；限字节采样 |
 | `select_series` | IDENTIFY | tmdb_id | 领域事件；ID 必须来自当前候选 |
@@ -345,6 +346,11 @@ tests/
 - mockable TMDB adapter；
 - search/series/season 工具；
 - `select_series` 领域动作；
+- TMDB `media_type` 与 archive `work_type` 分离；
+- run-scoped `anime/tv_series/movie` search filter；
+- `anime` 严格映射为 TV + Animation genre 16，不做类型降级；
+- 候选 capability 使用 `(work_type, tmdb_id)`，避免 TV/Movie ID namespace
+  混淆；
 - zh-CN 标题优先和年份规则；
 - 请求超时、缓存与结果大小限制。
 
@@ -498,7 +504,7 @@ approve exact run_id + plan_hash
 - 测试离线、确定、可 replay。
 - 新能力只暴露最小权限。
 - trace 和错误信息不包含凭据或不必要的文件内容。
-- 不读取或访问 `.env`。
+- 除显式 opt-in TMDB live smoke 的固定单键只读例外外，不读取或访问 `.env*`。
 - 未映射文件和非目标资源保持不变。
 - 文档同步更新状态、决策和下一步。
 - 不提前实现后续里程碑。

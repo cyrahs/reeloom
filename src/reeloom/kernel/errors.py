@@ -55,6 +55,8 @@ class ErrorCode(StrEnum):
     DUPLICATE_SCANNED_PATH = "duplicate_scanned_path"
     SCAN_FAILED = "scan_failed"
     SCAN_LIMIT_EXCEEDED = "scan_limit_exceeded"
+    INVALID_TMDB_DATA = "invalid_tmdb_data"
+    INVALID_TMDB_LANGUAGE = "invalid_tmdb_language"
 
     @property
     def category(self) -> ErrorCategory:
