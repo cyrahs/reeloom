@@ -45,6 +45,16 @@ class ErrorCode(StrEnum):
     DESTINATION_COLLISION = "destination_collision"
     PLAN_MAPPING_MISMATCH = "plan_mapping_mismatch"
     MISSING_PLAN_CANDIDATES = "missing_plan_candidates"
+    PATH_NOT_ABSOLUTE = "path_not_absolute"
+    PATH_NOT_FOUND = "path_not_found"
+    PATH_NOT_DIRECTORY = "path_not_directory"
+    PATH_NOT_FILE = "path_not_file"
+    PATH_ESCAPE = "path_escape"
+    SYMLINK_NOT_ALLOWED = "symlink_not_allowed"
+    ENV_PATH_FORBIDDEN = "env_path_forbidden"
+    DUPLICATE_SCANNED_PATH = "duplicate_scanned_path"
+    SCAN_FAILED = "scan_failed"
+    SCAN_LIMIT_EXCEEDED = "scan_limit_exceeded"
 
     @property
     def category(self) -> ErrorCategory:

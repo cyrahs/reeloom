@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import unicodedata
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from reeloom.kernel.candidates import (
     CandidateSnapshot,
 )
 from reeloom.kernel.errors import DomainError
+from reeloom.kernel.scanner import ScannedCandidateSnapshot
 from reeloom.runtime.errors import (
     RuntimeDomainError,
     RuntimeErrorCode,
@@ -66,18 +68,48 @@ class CandidateSource(Protocol):
     ) -> CandidatePage: ...
 
 
+def _candidate_snapshot_id(snapshot: CandidateSnapshot) -> str:
+    canonical = json.dumps(
+        [
+            {
+                "id": str(candidate.id),
+                "kind": candidate.kind.value,
+                "display_name": candidate.display_name,
+            }
+            for candidate in snapshot.candidates
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "candidate-snapshot-v1:" + hashlib.sha256(canonical).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class SnapshotCandidateSource:
     """A bounded view over one immutable, run-scoped snapshot."""
 
     snapshot: CandidateSnapshot
-    snapshot_id: str
+    snapshot_id: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot, CandidateSnapshot):
             raise TypeError("snapshot must be CandidateSnapshot")
-        if not isinstance(self.snapshot_id, str) or not self.snapshot_id:
-            raise TypeError("snapshot_id must be a non-empty string")
+        if not self.snapshot_id:
+            object.__setattr__(
+                self,
+                "snapshot_id",
+                _candidate_snapshot_id(self.snapshot),
+            )
+        elif not isinstance(self.snapshot_id, str):
+            raise TypeError("snapshot_id must be a string")
+
+    @classmethod
+    def from_scanned(
+        cls,
+        snapshot: ScannedCandidateSnapshot,
+    ) -> SnapshotCandidateSource:
+        return cls(snapshot.candidates, snapshot.snapshot_id)
 
     @property
     def candidate_count(self) -> int:
