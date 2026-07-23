@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Agent-native animation episode organizer"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = [
+    "openai-agents>=0.18.3,<0.19",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
