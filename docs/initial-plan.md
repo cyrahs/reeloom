@@ -4,15 +4,17 @@
 
 日期：2026-07-23
 
-当前进度：M0、M1、M2、M3、M4 已完成。M0 建立纯领域契约；M1 建立 typed runtime
+当前进度：M0、M1、M2、M3、M4、M5 已完成。M0 建立纯领域契约；M1 建立 typed runtime
 events、预算和真实 Agents SDK tool loop；M2 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
 port、固定目的地 HTTP adapter、候选 ID capability、受 phase 限制的识别工具，
 由 trusted run `work_type` 限制的 anime/tv/movie 搜索，以及由
 `SeriesSelected` 驱动的 `MAP_EPISODES` 转换；M4 建立 inventory、字幕变体检测、
-strict mapping submission、结构化纠错和 token/time budget。下一步为 M5
-确定性 Plan Compiler；movie 的选择、mapping 和命名需要独立领域契约，不能
-复用 episode mapping。
+strict mapping submission、结构化纠错和 token/time budget；M5 建立只读的
+确定性 Plan Compiler、完整 source/root binding、canonical `RenamePlan`、
+`plan_hash` 和 `AWAITING_APPROVAL` 暂停边界。下一步为 M6 审批、Executor 与
+Rollback；movie 的选择、mapping 和命名需要独立领域契约，不能复用 episode
+mapping。
 
 ## 1. 项目目标
 

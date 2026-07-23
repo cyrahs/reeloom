@@ -77,6 +77,22 @@ def _run(
     return context, result
 
 
+def test_plan_compiler_must_match_the_run_candidate_snapshot() -> None:
+    class ForeignCompiler:
+        snapshot_id = "candidate-snapshot-v1:foreign"
+        candidate_count = 1
+
+    with pytest.raises(RuntimeDomainError) as raised:
+        create_organizer_context(
+            run_id="run-1",
+            candidate_source=_source(),
+            work_type=TmdbWorkType.ANIME,
+            plan_compiler=ForeignCompiler(),  # type: ignore[arg-type]
+        )
+
+    assert raised.value.code is RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
+
+
 def test_sdk_runner_completes_a_multi_turn_tool_loop() -> None:
     model = ScriptedModel(
         (

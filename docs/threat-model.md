@@ -66,10 +66,10 @@ guardrail 可以改善行为，但不能替代 schema、policy、hash、审批�
 | Plan 内碰撞 | 两个 source 生成同一目标 | 同字幕稳定消歧；其他 exact/casefold collision 拒绝 | M0 已覆盖 |
 | Plan 漂移或遗漏 | move 脱离 validated mapping，或 mapped candidate 没有 move | PlanDraft 绑定 mapping/单一 series，unmapped 由差集推导 | M0 已覆盖 |
 | 目录逃逸 | symlink 指向授权根之外 | scanner/executor 使用 containment 与 no-follow | scanner M2 已覆盖；executor M6 |
-| TOCTOU | 批准后源被替换或目标出现 | source identity 与 final preflight | M5/M6 待实现 |
-| Plan 篡改 | preview 后 destination 被修改 | canonical bytes 与 `plan_hash` | M5 待实现 |
+| TOCTOU | 批准后源被替换或目标出现 | plan 绑定 source/root identity；Executor final preflight | M5 绑定完成，M6 final preflight 待实现 |
+| Plan 篡改 | preview 后 destination 被修改 | canonical bytes 与 `plan_hash` | M5 已覆盖 |
 | 审批重放 | 重复执行同一批准 | expiry 与原子 one-time nonce claim | M6 待实现 |
-| 已有目标或部分失败 | destination 已存在或部分 rename | filesystem collision check、journal 先写、rollback | M5/M6 待实现 |
+| 已有目标或部分失败 | destination 已存在或部分 rename | M5 只读 collision check；M6 journal 先写、rollback | M5 collision 完成，M6 执行恢复待实现 |
 | 任意网络访问 | 模型请求任意 URL | 只有固定 host/path 的 TMDB adapter 有业务网络 capability；tool schema 不接受 URL | M3 已覆盖 |
 | 伪造 TMDB capability | 模型直接选择猜测的 TMDB ID | 查询与选择只允许本 run 搜索 observation 已记录的候选 ID | M3 已覆盖 |
 | TMDB 类型混淆 | Movie 100 被当作 TV 100，或 anime 搜索回退到真人剧 | run 显式绑定 work_type；capability 使用 `(work_type, id)`；anime 要求 genre 16 且 details 再验证 | M3 已覆盖 |

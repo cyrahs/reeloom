@@ -7,6 +7,7 @@ from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
+from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 
 
@@ -30,6 +31,7 @@ class RunStatus(StrEnum):
 
 class StopReason(StrEnum):
     MODEL_FINAL = "model_final"
+    AWAITING_APPROVAL = "awaiting_approval"
     MAX_TURNS = "max_turns"
     BUDGET_EXHAUSTED = "budget_exhausted"
     FATAL_ERROR = "fatal_error"
@@ -97,6 +99,8 @@ class RunState:
     candidate_snapshot_id: str | None = None
     candidate_count: int = 0
     candidate_ids: tuple[CandidateId, ...] | None = None
+    authorized_source_root: RootBinding | None = None
+    authorized_output_root: RootBinding | None = None
     tmdb_candidates: frozenset[TmdbCandidateRef] = frozenset()
     selected_series: SeriesIdentity | None = None
     selected_work_type: TmdbWorkType | None = None
@@ -107,6 +111,8 @@ class RunState:
         ...,
     ] = ()
     mapping_draft: MappingDraft | None = None
+    rename_plan: RenamePlan | None = None
+    plan_hash: str | None = None
     validation_issues: tuple[MappingValidationIssue, ...] = ()
     model_turns: int = 0
     model_tokens: int = 0

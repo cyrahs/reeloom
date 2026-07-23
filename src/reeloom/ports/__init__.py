@@ -9,10 +9,12 @@ from reeloom.ports.subtitles import (
     SubtitleSample,
     SubtitleSampleProvider,
 )
+from reeloom.ports.plans import PlanCompiler
 
 __all__ = [
     "SubtitleSample",
     "SubtitleSampleProvider",
+    "PlanCompiler",
     "TmdbErrorCode",
     "TmdbProvider",
     "TmdbProviderError",

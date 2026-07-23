@@ -47,6 +47,8 @@ class ErrorCode(StrEnum):
     DESTINATION_COLLISION = "destination_collision"
     PLAN_MAPPING_MISMATCH = "plan_mapping_mismatch"
     MISSING_PLAN_CANDIDATES = "missing_plan_candidates"
+    INCOMPLETE_SOURCE_IDENTITY = "incomplete_source_identity"
+    PLAN_PREFLIGHT_MISMATCH = "plan_preflight_mismatch"
     PATH_NOT_ABSOLUTE = "path_not_absolute"
     PATH_NOT_FOUND = "path_not_found"
     PATH_NOT_DIRECTORY = "path_not_directory"
@@ -74,6 +76,7 @@ class ErrorCode(StrEnum):
             ErrorCode.DUPLICATE_PLAN_SOURCE,
             ErrorCode.DESTINATION_COLLISION,
             ErrorCode.PLAN_MAPPING_MISMATCH,
+            ErrorCode.PLAN_PREFLIGHT_MISMATCH,
         }:
             return ErrorCategory.CONFLICT
         return ErrorCategory.INVALID_INPUT

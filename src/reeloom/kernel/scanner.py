@@ -106,6 +106,8 @@ class CandidateRecord:
         _validate_relative_path(self.relative_path)
         if (
             not isinstance(self.candidate, Candidate)
+            or self.candidate.display_name
+            != self.relative_path.as_posix()
             or type(self.size_bytes) is not int
             or self.size_bytes < 0
         ):

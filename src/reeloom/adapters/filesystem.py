@@ -4,17 +4,26 @@ import hashlib
 import os
 import stat
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.file_types import candidate_kind_for_filename
+from reeloom.kernel.mapping import MappingDraft
+from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
+from reeloom.kernel.rename_plan import (
+    RenamePlan,
+    RootBinding,
+    compile_plan_draft,
+)
 from reeloom.kernel.scanner import (
     CandidateRecord,
     ScannedCandidateSnapshot,
     ScannedFile,
     build_candidate_snapshot,
 )
+from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import (
     AuthorizedRoot,
     is_forbidden_env_name,
@@ -61,6 +70,145 @@ class _ScanProgress:
 class FilesystemScanResult:
     authorized_root: AuthorizedRoot
     snapshot: ScannedCandidateSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemPlanCompiler:
+    """Compile one read-only plan for a fixed scan and output root."""
+
+    scan: FilesystemScanResult
+    output_root: AuthorizedRoot
+
+    @property
+    def snapshot_id(self) -> str:
+        return self.scan.snapshot.snapshot_id
+
+    @property
+    def candidate_count(self) -> int:
+        return len(self.scan.snapshot.records)
+
+    @property
+    def source_root_binding(self) -> RootBinding:
+        return self._root_binding(self.scan.authorized_root)
+
+    @property
+    def output_root_binding(self) -> RootBinding:
+        return self._root_binding(self.output_root)
+
+    def compile(
+        self,
+        *,
+        run_id: str,
+        work_type: TmdbWorkType,
+        series: SeriesIdentity,
+        mapping: MappingDraft,
+        subtitle_variants: tuple[
+            tuple[CandidateId, SubtitleVariant],
+            ...,
+        ],
+        created_at: datetime,
+    ) -> RenamePlan:
+        draft = compile_plan_draft(
+            series=series,
+            mapping=mapping,
+            candidates=self.scan.snapshot,
+            subtitle_variants=subtitle_variants,
+        )
+        checked = self._check_destinations(
+            tuple(move.destination for move in draft.moves)
+        )
+        return RenamePlan.create(
+            run_id=run_id,
+            work_type=work_type,
+            created_at=created_at,
+            source_root=self.source_root_binding,
+            output_root=self.output_root_binding,
+            candidate_snapshot=self.scan.snapshot,
+            subtitle_variants=subtitle_variants,
+            draft=draft,
+            checked_destinations=checked,
+        )
+
+    @staticmethod
+    def _root_binding(root: AuthorizedRoot) -> RootBinding:
+        return RootBinding(
+            path=PurePosixPath(root.path.as_posix()),
+            device=root.device,
+            inode=root.inode,
+        )
+
+    def _check_destinations(
+        self,
+        destinations: tuple[PurePosixPath, ...],
+    ) -> tuple[PurePosixPath, ...]:
+        root_fd = FilesystemScanner._open_root(self.output_root)
+        try:
+            for destination in destinations:
+                self._check_destination(root_fd, destination)
+        finally:
+            os.close(root_fd)
+        return destinations
+
+    @staticmethod
+    def _check_destination(
+        root_fd: int,
+        destination: PurePosixPath,
+    ) -> None:
+        current_fd = root_fd
+        try:
+            for part in destination.parts[:-1]:
+                try:
+                    metadata = os.stat(
+                        part,
+                        dir_fd=current_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    return
+                except OSError:
+                    raise DomainError(ErrorCode.SCAN_FAILED) from None
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise DomainError(ErrorCode.SYMLINK_NOT_ALLOWED)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise DomainError(ErrorCode.DESTINATION_COLLISION)
+                next_fd = FilesystemScanner._open_directory(
+                    part,
+                    parent_fd=current_fd,
+                )
+                try:
+                    opened = os.fstat(next_fd)
+                except OSError:
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                    raise DomainError(ErrorCode.SCAN_FAILED) from None
+                if (
+                    opened.st_dev != metadata.st_dev
+                    or opened.st_ino != metadata.st_ino
+                ):
+                    os.close(next_fd)
+                    raise DomainError(ErrorCode.SCAN_FAILED)
+                if current_fd != root_fd:
+                    os.close(current_fd)
+                current_fd = next_fd
+
+            try:
+                metadata = os.stat(
+                    destination.name,
+                    dir_fd=current_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                return
+            except OSError:
+                raise DomainError(ErrorCode.SCAN_FAILED) from None
+            if stat.S_ISLNK(metadata.st_mode):
+                raise DomainError(ErrorCode.SYMLINK_NOT_ALLOWED)
+            raise DomainError(ErrorCode.DESTINATION_COLLISION)
+        finally:
+            if current_fd != root_fd:
+                os.close(current_fd)
 
 
 @dataclass(frozen=True, slots=True)

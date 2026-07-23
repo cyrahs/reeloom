@@ -93,3 +93,20 @@ def test_candidate_record_rejects_absolute_path() -> None:
         )
 
     assert error.value.code is ErrorCode.PATH_ESCAPE
+
+
+def test_candidate_record_display_name_must_match_relative_path() -> None:
+    candidate = Candidate(
+        id=CandidateId(CandidateKind.VIDEO, 1),
+        kind=CandidateKind.VIDEO,
+        display_name="different-agent-visible-name.mkv",
+    )
+
+    with pytest.raises(DomainError) as error:
+        CandidateRecord(
+            candidate=candidate,
+            relative_path=PurePosixPath("episode.mkv"),
+            size_bytes=10,
+        )
+
+    assert error.value.code is ErrorCode.INVALID_FIELD_TYPE

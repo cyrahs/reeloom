@@ -1,11 +1,13 @@
 """Reeloom run state, events, policies, and event storage."""
 
 from reeloom.runtime.events import (
+    ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
     MappingRejected,
     MappingSubmitted,
     ModelUsageRecorded,
+    PlanBuilt,
     RunFailed,
     RunStarted,
     RunStopped,
@@ -30,6 +32,7 @@ from reeloom.runtime.store import InMemoryEventStore, StoredEvent
 
 __all__ = [
     "InMemoryEventStore",
+    "ApprovalRequested",
     "CandidateSnapshotCreated",
     "ExistingInventoryObserved",
     "MappingRejected",
@@ -37,6 +40,7 @@ __all__ = [
     "MappingValidationIssue",
     "ModelUsageRecorded",
     "Phase",
+    "PlanBuilt",
     "RunFailed",
     "RunStarted",
     "RunState",

@@ -7,6 +7,7 @@ from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
+from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.state import MappingValidationIssue, StopReason
 
@@ -22,6 +23,8 @@ class CandidateSnapshotCreated:
     snapshot_id: str
     candidate_count: int
     candidate_ids: tuple[CandidateId, ...] | None = None
+    source_root: RootBinding | None = None
+    output_root: RootBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,16 @@ class MappingSubmitted:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanBuilt:
+    plan: RenamePlan
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalRequested:
+    plan_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class ModelUsageRecorded:
     input_tokens: int
     output_tokens: int
@@ -119,6 +132,8 @@ RuntimeEvent: TypeAlias = (
     | SubtitleVariantDetected
     | MappingRejected
     | MappingSubmitted
+    | PlanBuilt
+    | ApprovalRequested
     | ModelUsageRecorded
     | ToolRequested
     | ToolSucceeded

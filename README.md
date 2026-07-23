@@ -9,24 +9,24 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M4 / 剧集与字幕映射（已完成）**
+**M5 / 确定性 Plan Compiler（已完成）**
 
-M0-M3 的领域契约、真实 SDK tool loop、安全候选快照和受控 TMDB 识别之上，
-已经建立“模型做 mapping、代码做 enforcement”的反馈闭环：
+M0-M4 的领域契约、真实 SDK tool loop、安全扫描、受控 TMDB 识别和 strict
+mapping 之上，已经能把 Agent 的语义结果编译为可精确审批的事务输入：
 
-- Agent 可调用 `get_existing_inventory`、`detect_subtitle_variant` 和
-  `submit_mapping`，但工具只接受 run-scoped ID 和 strict schema；
-- TMDB season observation 建立 episode boundary，纯 kernel 强制检查边界、
-  multi-episode overlap、重复/未知 ID、字幕归属和已有库存冲突；
-- 字幕 adapter 只 no-follow 读取 snapshot 内文件的 64 KiB 前缀，并复核扫描时
-  identity 与摘要；Agent 只看到 `.chs/.cht/.chi`，看不到正文或路径；
-- validation failure 返回有界结构化 issue，并保持 `MAP_EPISODES`；模型修正后
-  重新提交；
-- 只有 `MappingSubmitted` 领域事件能进入 `BUILD_PLAN`，普通 assistant 文本
-  不能改变成功状态；
-- run 同时限制模型轮数、工具数、失败数、累计 token 和 wall-clock time；
-- 真实 Agents SDK Runner + scripted model 的离线集成测试覆盖首次错误、读取
-  observation 后修正并成功提交。
+- Plan Compiler 不是 Agent 工具；mapping 成功后由确定性代码根据 snapshot
+  relative path 和扩展名生成 destination，模型没有路径输入通道；
+- `RenamePlan` 绑定 run、source/output root identity、完整 candidate/source
+  identity、trusted work type、mapping、字幕变体、moves、未映射清单、策略
+  版本和注入时间；
+- canonical JSON bytes 使用固定字段和排序计算 `sha256` `plan_hash`，任何被
+  绑定内容的变化都会得到不同 hash 或验证失败；
+- 文件系统 adapter 只读检查目标不存在、父目录不是 symlink，并拒绝已有目标；
+  M6 执行前仍会进行最终 preflight；
+- `PlanBuilt` 和精确 hash 的 `ApprovalRequested` 事件将 run 停在
+  `AWAITING_APPROVAL`；普通模型文本不能建立或批准计划；
+- preview 只展示确定性 source/destination 和未映射文件，整个 dry-run 不创建
+  目录、不移动、不覆盖文件。
 
 adapter 只接受调用方显式注入的凭据，不加载配置文件。自动化测试不访问真实
 网络，也没有任何移动、重命名或删除能力。
@@ -40,7 +40,8 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M1 Definition of Done](docs/m1-review.md)，M2 验收结论见
 [M2 Definition of Done](docs/m2-review.md)，M3 验收结论见
 [M3 Definition of Done](docs/m3-review.md)，M4 验收结论见
-[M4 Definition of Done](docs/m4-review.md)。
+[M4 Definition of Done](docs/m4-review.md)，M5 验收结论见
+[M5 Definition of Done](docs/m5-review.md)。
 
 ## 本地验证
 

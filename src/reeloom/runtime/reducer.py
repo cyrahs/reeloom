@@ -8,14 +8,17 @@ from reeloom.kernel.inventory import MAX_INVENTORY_EPISODES
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
+from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
+    ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
     MappingRejected,
     MappingSubmitted,
     ModelUsageRecorded,
+    PlanBuilt,
     RunFailed,
     RunStarted,
     RunStopped,
@@ -119,6 +122,13 @@ def reduce_event(
                 )
             )
         )
+        valid_roots = (
+            event.source_root is None
+            and event.output_root is None
+        ) or (
+            isinstance(event.source_root, RootBinding)
+            and isinstance(event.output_root, RootBinding)
+        )
         if (
             state.candidate_snapshot_id is not None
             or state.tool_calls != 0
@@ -129,6 +139,7 @@ def reduce_event(
             or type(event.candidate_count) is not int
             or event.candidate_count < 0
             or not valid_candidate_ids
+            or not valid_roots
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
         return replace(
@@ -138,6 +149,8 @@ def reduce_event(
             candidate_snapshot_id=event.snapshot_id,
             candidate_count=event.candidate_count,
             candidate_ids=event.candidate_ids,
+            authorized_source_root=event.source_root,
+            authorized_output_root=event.output_root,
         )
 
     if isinstance(event, ToolRequested):
@@ -389,6 +402,57 @@ def reduce_event(
             observed_tool_calls=observed,
         )
 
+    if isinstance(event, PlanBuilt):
+        plan = event.plan
+        if (
+            state.phase is not Phase.BUILD_PLAN
+            or state.rename_plan is not None
+            or state.plan_hash is not None
+            or state.pending_tool_calls
+            or not isinstance(plan, RenamePlan)
+            or not plan.verify_hash()
+            or plan.run_id != state.run_id
+            or plan.work_type is not state.work_type
+            or plan.candidate_snapshot_id
+            != state.candidate_snapshot_id
+            or plan.draft.series != state.selected_series
+            or plan.draft.mapping != state.mapping_draft
+            or plan.source_root != state.authorized_source_root
+            or plan.output_root != state.authorized_output_root
+            or state.candidate_ids is None
+            or {
+                source.candidate_id for source in plan.sources
+            }
+            != set(state.candidate_ids)
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            event_count=event_count,
+            rename_plan=plan,
+            plan_hash=plan.plan_hash,
+        )
+
+    if isinstance(event, ApprovalRequested):
+        if (
+            state.phase is not Phase.BUILD_PLAN
+            or state.rename_plan is None
+            or state.plan_hash is None
+            or event.plan_hash != state.plan_hash
+            or not state.rename_plan.verify_hash()
+            or state.pending_tool_calls
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            phase=Phase.AWAITING_APPROVAL,
+            event_count=event_count,
+        )
+
     if isinstance(event, ModelUsageRecorded):
         if (
             type(event.input_tokens) is not int
@@ -440,6 +504,15 @@ def reduce_event(
     if isinstance(event, RunStopped):
         if (
             state.pending_tool_calls
+            and event.reason is not StopReason.BUDGET_EXHAUSTED
+        ) or (
+            event.reason is StopReason.AWAITING_APPROVAL
+            and state.phase is not Phase.AWAITING_APPROVAL
+        ) or (
+            state.phase is Phase.AWAITING_APPROVAL
+            and event.reason is not StopReason.AWAITING_APPROVAL
+        ) or (
+            state.phase is Phase.BUILD_PLAN
             and event.reason is not StopReason.BUDGET_EXHAUSTED
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)

@@ -784,3 +784,52 @@ usage 只能在一次 provider response 返回后获知，所以 M4 在 response
 完整 M4 验收见 [M4 Definition of Done](m4-review.md)。下一步 M5 会把已验证的
 mapping 编译成 canonical、不可变且带 `plan_hash` 的 `RenamePlan`，仍不会让
 Agent 直接决定路径。
+
+## M5：从语义结果到可审批事务输入
+
+M4 的 `MappingDraft` 回答“哪个候选对应哪一集”，但它还不能被执行。M5 增加
+一条不经过模型的确定性链路：
+
+```text
+MappingSubmitted
+→ compile PlanDraft destinations
+→ read-only destination preflight
+→ canonical RenamePlan
+→ PlanBuilt(plan_hash)
+→ ApprovalRequested(exact plan_hash)
+→ AWAITING_APPROVAL
+```
+
+### 为什么 compiler 不是 Agent 工具
+
+工具调用属于 Agent 的选择空间。如果把 `build_plan` 暴露成工具，模型就可以
+决定是否编译、漏掉哪些输入，或者在错误 phase 反复调用。计划编译没有语义
+不确定性，因此 `submit_mapping` 成功进入 `BUILD_PLAN` 后，SDK 立即结束 tool
+loop 并由代码强制执行。Agent 提交的 schema 里始终没有 source path、
+destination path、root 或 policy version。
+
+### canonical bytes 与 hash 绑定什么
+
+`RenamePlan` 显式序列化 schema/policy version、run ID、trusted work type、UTC
+创建时间、两端 root path 和 directory identity、candidate snapshot ID、全部
+source relative path 和 stat identity、mapping、字幕变体、moves、目标检查
+结果与未映射清单。
+JSON 固定 `sort_keys`、separator 和 ASCII escaping，然后计算：
+
+```text
+plan_hash = sha256(canonical_bytes)
+```
+
+这里不依赖 Python 对 dataclass 或 dict 的隐式序列化，因此字段新增必须成为
+显式的 schema/policy 变更。相同领域输入与相同注入时钟会得到完全相同的 bytes。
+
+### 为什么 M5 preflight 之后 M6 还要再检查
+
+M5 只读确认目标当时不存在、已有父目录不是 symlink，并把结果写进 plan。检查
+结束后文件系统仍可能变化，所以这不是执行许可。M6 必须在消费一次性审批后、
+任何移动前重新验证 plan hash、roots、source identity、symlink 和 collision。
+这就是 TOCTOU 防御中的“计划时观察 + 执行时最终验证”。
+
+M5 的 scripted integration 已从错误 mapping 修正一路运行到
+`AWAITING_APPROVAL`，同时确认输出目录为空。完整验收见
+[M5 Definition of Done](m5-review.md)。

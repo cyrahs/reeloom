@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated
 
 from agents import (
@@ -15,6 +19,7 @@ from agents import (
     ToolGuardrailFunctionOutput,
     ToolInputGuardrailData,
     ToolErrorFormatterArgs,
+    ToolsToFinalOutputResult,
     function_tool,
     tool_input_guardrail,
 )
@@ -22,13 +27,17 @@ from agents.items import ModelResponse, TResponseInputItem
 from agents.lifecycle import RunHooksBase
 from agents.model_settings import ModelSettings
 from agents.run_context import RunContextWrapper
+from agents.tool import FunctionToolResult
 from agents.tool_context import ToolContext
 from pydantic import BaseModel, ConfigDict, Field
 
 from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.errors import DomainError
 from reeloom.kernel.inventory import ExistingInventory
+from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.kernel.tmdb import TmdbLanguage, TmdbWorkType
 from reeloom.ports.subtitles import SubtitleSampleProvider
+from reeloom.ports.plans import PlanCompiler
 from reeloom.ports.tmdb import TmdbProvider
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.errors import (
@@ -37,14 +46,16 @@ from reeloom.runtime.errors import (
     RuntimeErrorCode,
 )
 from reeloom.runtime.events import (
+    ApprovalRequested,
     CandidateSnapshotCreated,
     ModelUsageRecorded,
+    PlanBuilt,
     RunFailed,
     RunStarted,
     RunStopped,
 )
 from reeloom.runtime.policy import PhaseToolPolicy
-from reeloom.runtime.state import RunState, RunStatus, StopReason
+from reeloom.runtime.state import Phase, RunState, RunStatus, StopReason
 from reeloom.runtime.store import InMemoryEventStore
 from reeloom.runtime.tool_runtime import ToolRuntime
 from reeloom.tools.candidates import (
@@ -83,6 +94,11 @@ only the reported issue and submit again.
 _WORK_TYPE_VALUES = frozenset(
     work_type.value for work_type in TmdbWorkType
 )
+_MAPPING_ACCEPTED_OUTPUT = "Mapping accepted."
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +108,8 @@ class OrganizerContext:
     tmdb_provider: TmdbProvider | None = None
     inventory: ExistingInventory | None = None
     subtitle_provider: SubtitleSampleProvider | None = None
+    plan_compiler: PlanCompiler | None = None
+    clock: Callable[[], datetime] = _utc_now
 
 
 @dataclass(frozen=True, slots=True)
@@ -619,8 +637,18 @@ def create_organizer_context(
     tmdb_provider: TmdbProvider | None = None,
     inventory: ExistingInventory | None = None,
     subtitle_provider: SubtitleSampleProvider | None = None,
+    plan_compiler: PlanCompiler | None = None,
+    clock: Callable[[], datetime] | None = None,
     budget: RunBudget | None = None,
 ) -> OrganizerContext:
+    if plan_compiler is not None and (
+        plan_compiler.snapshot_id != candidate_source.snapshot_id
+        or plan_compiler.candidate_count
+        != candidate_source.candidate_count
+    ):
+        raise RuntimeDomainError(
+            RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
+        )
     store = InMemoryEventStore()
     store.append(RunStarted(run_id=run_id, work_type=work_type))
     store.append(
@@ -638,6 +666,16 @@ def create_organizer_context(
                 )
                 else None
             ),
+            source_root=(
+                plan_compiler.source_root_binding
+                if plan_compiler is not None
+                else None
+            ),
+            output_root=(
+                plan_compiler.output_root_binding
+                if plan_compiler is not None
+                else None
+            ),
         )
     )
     return OrganizerContext(
@@ -650,6 +688,122 @@ def create_organizer_context(
         tmdb_provider=tmdb_provider,
         inventory=inventory,
         subtitle_provider=subtitle_provider,
+        plan_compiler=plan_compiler,
+        clock=clock or _utc_now,
+    )
+
+
+def _compile_plan(context: OrganizerContext) -> RenamePlan:
+    compiler = context.plan_compiler
+    state = context.runtime.state
+    if (
+        compiler is None
+        or state.selected_series is None
+        or state.mapping_draft is None
+    ):
+        raise RuntimeDomainError(
+            RuntimeErrorCode.PLAN_COMPILER_UNAVAILABLE
+        )
+
+    mapped_subtitle_ids = {
+        item.subtitle_id for item in state.mapping_draft.subtitles
+    }
+    variants = tuple(
+        (candidate_id, variant)
+        for candidate_id, variant in state.subtitle_variants
+        if candidate_id in mapped_subtitle_ids
+    )
+    return compiler.compile(
+        run_id=state.run_id,
+        work_type=state.work_type,
+        series=state.selected_series,
+        mapping=state.mapping_draft,
+        subtitle_variants=variants,
+        created_at=context.clock(),
+    )
+
+
+async def _compile_plan_async(
+    context: OrganizerContext,
+) -> RenamePlan:
+    """Keep blocking read-only I/O outside the event loop and domain store."""
+
+    completed: queue.SimpleQueue[RenamePlan | Exception] = (
+        queue.SimpleQueue()
+    )
+
+    def compile_in_background() -> None:
+        try:
+            completed.put(_compile_plan(context))
+        except Exception as error:
+            completed.put(error)
+
+    threading.Thread(
+        target=compile_in_background,
+        name="reeloom-plan-compiler",
+        daemon=True,
+    ).start()
+    while True:
+        try:
+            result = completed.get_nowait()
+        except queue.Empty:
+            await asyncio.sleep(0.001)
+            continue
+        if isinstance(result, Exception):
+            raise result
+        if not isinstance(result, RenamePlan):
+            raise TypeError("PlanCompiler must return RenamePlan")
+        return result
+
+
+async def _build_plan_for_approval(
+    context: OrganizerContext,
+    *,
+    deadline_at: float,
+) -> None:
+    try:
+        plan = await _compile_plan_async(context)
+    except Exception as error:
+        if context.runtime.state.status is RunStatus.RUNNING:
+            context.runtime.store.append(
+                RunFailed(
+                    code=(
+                        error.code.value
+                        if isinstance(
+                            error,
+                            (DomainError, RuntimeDomainError),
+                        )
+                        else RuntimeErrorCode.PLAN_BUILD_FAILED.value
+                    )
+                )
+            )
+        raise
+    if asyncio.get_running_loop().time() >= deadline_at:
+        raise TimeoutError
+    context.runtime.store.append(PlanBuilt(plan=plan))
+    context.runtime.store.append(
+        ApprovalRequested(plan_hash=plan.plan_hash)
+    )
+    context.runtime.store.append(
+        RunStopped(reason=StopReason.AWAITING_APPROVAL)
+    )
+
+
+def _finish_after_valid_mapping(
+    context: RunContextWrapper[OrganizerContext],
+    tool_results: list[FunctionToolResult],
+) -> ToolsToFinalOutputResult:
+    if context.context.runtime.state.phase is Phase.BUILD_PLAN and any(
+        result.tool.name == "submit_mapping"
+        for result in tool_results
+    ):
+        return ToolsToFinalOutputResult(
+            is_final_output=True,
+            final_output=_MAPPING_ACCEPTED_OUTPUT,
+        )
+    return ToolsToFinalOutputResult(
+        is_final_output=False,
+        final_output=None,
     )
 
 
@@ -679,6 +833,7 @@ def _create_agent(
             _detect_subtitle_variant_tool,
             _submit_mapping_tool,
         ],
+        tool_use_behavior=_finish_after_valid_mapping,
     )
 
 
@@ -701,26 +856,55 @@ async def run_episode_organizer(
 
     try:
         async with deadline:
-            result = await Runner.run(
-                _create_agent(
-                    model,
-                    work_type=context.runtime.state.work_type,
-                    budget=context.runtime.budget,
-                ),
-                prompt,
-                context=context,
-                max_turns=context.runtime.budget.max_model_turns,
-                hooks=_BudgetHooks(),
-                run_config=RunConfig(
-                    tracing_disabled=True,
-                    trace_include_sensitive_data=False,
-                    tool_not_found_behavior="return_error_to_model",
-                    tool_error_formatter=_unknown_tool_error,
-                    tool_execution=ToolExecutionConfig(
-                        max_function_tool_concurrency=1,
+            try:
+                result = await Runner.run(
+                    _create_agent(
+                        model,
+                        work_type=context.runtime.state.work_type,
+                        budget=context.runtime.budget,
                     ),
-                ),
-            )
+                    prompt,
+                    context=context,
+                    max_turns=context.runtime.budget.max_model_turns,
+                    hooks=_BudgetHooks(),
+                    run_config=RunConfig(
+                        tracing_disabled=True,
+                        trace_include_sensitive_data=False,
+                        tool_not_found_behavior="return_error_to_model",
+                        tool_error_formatter=_unknown_tool_error,
+                        tool_execution=ToolExecutionConfig(
+                            max_function_tool_concurrency=1,
+                        ),
+                    ),
+                )
+                final_output = result.final_output
+            except MaxTurnsExceeded:
+                if context.runtime.state.phase is not Phase.BUILD_PLAN:
+                    raise
+                final_output = _MAPPING_ACCEPTED_OUTPUT
+
+            if deadline.expired() or loop.time() >= deadline_at:
+                raise TimeoutError
+            if not isinstance(final_output, str):
+                if context.runtime.state.status is RunStatus.RUNNING:
+                    context.runtime.store.append(
+                        RunFailed(
+                            code=RuntimeErrorCode.AGENT_RUN_FAILED.value
+                        )
+                    )
+                raise TypeError(
+                    "EpisodeOrganizerAgent final output must be text"
+                )
+            if context.runtime.state.status is RunStatus.RUNNING:
+                if context.runtime.state.phase is Phase.BUILD_PLAN:
+                    await _build_plan_for_approval(
+                        context,
+                        deadline_at=deadline_at,
+                    )
+                else:
+                    context.runtime.store.append(
+                        RunStopped(reason=StopReason.MODEL_FINAL)
+                    )
     except TimeoutError:
         if deadline.expired() or loop.time() >= deadline_at:
             if context.runtime.state.status is RunStatus.RUNNING:
@@ -763,27 +947,6 @@ async def run_episode_organizer(
                 RunFailed(code=RuntimeErrorCode.AGENT_RUN_FAILED.value)
             )
         raise
-
-    if deadline.expired() or loop.time() >= deadline_at:
-        if context.runtime.state.status is RunStatus.RUNNING:
-            context.runtime.store.append(
-                RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
-            )
-        raise BudgetExceeded(
-            RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
-        )
-
-    final_output = result.final_output
-    if not isinstance(final_output, str):
-        if context.runtime.state.status is RunStatus.RUNNING:
-            context.runtime.store.append(
-                RunFailed(code=RuntimeErrorCode.AGENT_RUN_FAILED.value)
-            )
-        raise TypeError("EpisodeOrganizerAgent final output must be text")
-    if context.runtime.state.status is RunStatus.RUNNING:
-        context.runtime.store.append(
-            RunStopped(reason=StopReason.MODEL_FINAL)
-        )
 
     return EpisodeOrganizerRunResult(
         final_output=final_output,

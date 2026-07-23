@@ -28,6 +28,8 @@ class RuntimeErrorCode(StrEnum):
     EPISODE_CATALOG_UNAVAILABLE = "episode_catalog_unavailable"
     INVENTORY_NOT_OBSERVED = "inventory_not_observed"
     SUBTITLE_SAMPLE_FAILED = "subtitle_sample_failed"
+    PLAN_COMPILER_UNAVAILABLE = "plan_compiler_unavailable"
+    PLAN_BUILD_FAILED = "plan_build_failed"
     TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"
     TIME_BUDGET_EXHAUSTED = "time_budget_exhausted"
 
