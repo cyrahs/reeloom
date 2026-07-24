@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from reeloom.runtime.events import RuntimeEvent
 from reeloom.runtime.reducer import reduce_event
@@ -11,6 +12,20 @@ from reeloom.runtime.state import RunState
 class StoredEvent:
     sequence: int
     event: RuntimeEvent
+
+
+class EventStore(Protocol):
+    """One run's append-only, replayable domain event boundary."""
+
+    @property
+    def state(self) -> RunState | None: ...
+
+    @property
+    def events(self) -> tuple[StoredEvent, ...]: ...
+
+    def append(self, event: RuntimeEvent) -> RunState: ...
+
+    def replay(self) -> RunState | None: ...
 
 
 class InMemoryEventStore:

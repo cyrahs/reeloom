@@ -10,7 +10,7 @@ nonce` 的一次性批准能启动无 LLM Executor；plan、approval、journal �
 
 - [x] canonical `ApprovalRecord` 严格绑定 run、plan、scope、UTC expiry 和
   nonce；字段、编码或 identity 篡改被拒绝。
-- [x] approval store 使用授权根、no-follow、有界读取和 `O_EXCL` claim；
+- [x] approval store 使用授权根、no-follow、有界读取和原子 no-replace claim；
   wrong binding/expiry 不消费，并发与重放只有一个成功。
 - [x] content-addressed plan store 只接受有效 `RenamePlan`，Executor API 只
   接受持久化 `plan_hash + approval_id`，不接受自然语言、路径或新 moves。

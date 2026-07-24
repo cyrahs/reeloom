@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -46,12 +47,24 @@ class FilesystemApprovalStore:
 
         root_fd = self._open_root()
         try:
-            self._write_exclusive(
-                root_fd,
-                self._approval_name(approval.approval_id),
-                approval.canonical_bytes(),
-                exists_code=ApprovalErrorCode.ALREADY_EXISTS,
-            )
+            name = self._approval_name(approval.approval_id)
+            content = approval.canonical_bytes()
+            try:
+                self._write_exclusive(
+                    root_fd,
+                    name,
+                    content,
+                    exists_code=ApprovalErrorCode.ALREADY_EXISTS,
+                )
+            except ApprovalError as error:
+                if error.code is not ApprovalErrorCode.ALREADY_EXISTS:
+                    raise
+                existing = self._read_approval(root_fd, name)
+                if not hmac.compare_digest(
+                    existing.canonical_bytes(),
+                    content,
+                ):
+                    raise
         finally:
             os.close(root_fd)
 

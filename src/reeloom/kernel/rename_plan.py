@@ -13,12 +13,19 @@ from typing import cast
 
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
-from reeloom.kernel.mapping import MappingDraft
+from reeloom.kernel.mapping import (
+    EpisodeCatalog,
+    MappingDraft,
+    VideoMapping,
+)
 from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
 from reeloom.kernel.plan import PlanDraft, PlannedMove
+from reeloom.kernel.schema import check_fields
 from reeloom.kernel.scanner import (
     CandidateRecord,
+    ScannedFile,
     ScannedCandidateSnapshot,
+    build_candidate_snapshot,
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 
@@ -27,6 +34,53 @@ CURRENT_RENAME_PLAN_POLICY_VERSION = "m5-v1"
 
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_RUN_ID_BYTES = 128
+_MAX_CANONICAL_PLAN_BYTES = 8 * 1024 * 1024
+_PLAN_FIELDS = frozenset(
+    {
+        "candidate_snapshot_id",
+        "created_at",
+        "draft_policy_version",
+        "draft_schema_version",
+        "mapping",
+        "moves",
+        "policy_version",
+        "roots",
+        "run_id",
+        "schema_version",
+        "series",
+        "sources",
+        "subtitle_variants",
+        "unmapped_candidate_ids",
+        "work_type",
+    }
+)
+_ROOTS_FIELDS = frozenset({"output", "source"})
+_ROOT_FIELDS = frozenset({"device", "inode", "path"})
+_SOURCE_FIELDS = frozenset(
+    {
+        "candidate_id",
+        "ctime_ns",
+        "device",
+        "inode",
+        "kind",
+        "mtime_ns",
+        "relative_path",
+        "sample_digest",
+        "size_bytes",
+    }
+)
+_MOVE_FIELDS = frozenset(
+    {
+        "destination",
+        "destination_preflight",
+        "episode_end",
+        "episode_start",
+        "season",
+        "source_id",
+        "video_id",
+    }
+)
+_VARIANT_FIELDS = frozenset({"subtitle_id", "variant"})
 
 
 def _candidate_sort_key(candidate_id: CandidateId) -> tuple[int, int]:
@@ -321,6 +375,165 @@ def verify_plan_bytes(canonical_bytes: bytes, plan_hash: str) -> bool:
     return hmac.compare_digest(_plan_hash(canonical_bytes), plan_hash)
 
 
+def _reject_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate key")
+        payload[key] = value
+    return payload
+
+
+def _decode_canonical_plan(canonical_bytes: bytes) -> dict[str, object]:
+    if (
+        not isinstance(canonical_bytes, bytes)
+        or not 0 < len(canonical_bytes) <= _MAX_CANONICAL_PLAN_BYTES
+    ):
+        raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+    try:
+        payload = json.loads(
+            canonical_bytes,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise DomainError(ErrorCode.INVALID_FIELD_TYPE) from None
+    return dict(check_fields(payload, _PLAN_FIELDS, field="rename_plan"))
+
+
+def _require_list(value: object, *, field: str) -> list[object]:
+    if not isinstance(value, list):
+        raise DomainError(
+            ErrorCode.INVALID_FIELD_TYPE,
+            context={"field": field, "expected": "list"},
+        )
+    return value
+
+
+def _require_str(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise DomainError(
+            ErrorCode.INVALID_FIELD_TYPE,
+            context={"field": field, "expected": "str"},
+        )
+    return value
+
+
+def _parse_root(value: object, *, field: str) -> RootBinding:
+    payload = check_fields(value, _ROOT_FIELDS, field=field)
+    path = PurePosixPath(_require_str(payload["path"], field=f"{field}.path"))
+    return RootBinding(
+        path=path,
+        device=payload["device"],  # type: ignore[arg-type]
+        inode=payload["inode"],  # type: ignore[arg-type]
+    )
+
+
+def _parse_sources(value: object) -> ScannedCandidateSnapshot:
+    raw_sources = _require_list(value, field="sources")
+    scanned: list[ScannedFile] = []
+    expected_ids: list[CandidateId] = []
+    for index, item in enumerate(raw_sources):
+        field = f"sources[{index}]"
+        payload = check_fields(item, _SOURCE_FIELDS, field=field)
+        raw_kind = _require_str(payload["kind"], field=f"{field}.kind")
+        try:
+            kind = CandidateKind(raw_kind)
+        except ValueError:
+            raise DomainError(ErrorCode.INVALID_CANDIDATE_KIND) from None
+        expected_ids.append(CandidateId.parse(payload["candidate_id"]))
+        scanned.append(
+            ScannedFile(
+                relative_path=PurePosixPath(
+                    _require_str(
+                        payload["relative_path"],
+                        field=f"{field}.relative_path",
+                    )
+                ),
+                kind=kind,
+                size_bytes=payload["size_bytes"],  # type: ignore[arg-type]
+                device=payload["device"],  # type: ignore[arg-type]
+                inode=payload["inode"],  # type: ignore[arg-type]
+                mtime_ns=payload["mtime_ns"],  # type: ignore[arg-type]
+                ctime_ns=payload["ctime_ns"],  # type: ignore[arg-type]
+                sample_digest=payload["sample_digest"],  # type: ignore[arg-type]
+            )
+        )
+    snapshot = build_candidate_snapshot(scanned)
+    if tuple(expected_ids) != tuple(
+        record.candidate.id for record in snapshot.records
+    ):
+        raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)
+    return snapshot
+
+
+def _parse_mapping(
+    value: object,
+    *,
+    candidates: ScannedCandidateSnapshot,
+) -> MappingDraft:
+    payload = check_fields(
+        value,
+        frozenset({"videos", "subtitles"}),
+        field="mapping",
+    )
+    raw_videos = _require_list(payload["videos"], field="mapping.videos")
+    counts: dict[int, int] = {}
+    for item in raw_videos:
+        video = VideoMapping.from_dict(item)
+        counts[video.span.season] = max(
+            counts.get(video.span.season, 0),
+            video.span.episode_end,
+        )
+    return MappingDraft.from_dict(
+        payload,
+        candidates=candidates.candidates,
+        catalog=EpisodeCatalog.from_counts(counts),
+    )
+
+
+def _parse_variants(
+    value: object,
+) -> tuple[tuple[CandidateId, SubtitleVariant], ...]:
+    variants: list[tuple[CandidateId, SubtitleVariant]] = []
+    for index, item in enumerate(
+        _require_list(value, field="subtitle_variants")
+    ):
+        field = f"subtitle_variants[{index}]"
+        payload = check_fields(item, _VARIANT_FIELDS, field=field)
+        raw_variant = _require_str(
+            payload["variant"],
+            field=f"{field}.variant",
+        )
+        try:
+            variant = SubtitleVariant(raw_variant)
+        except ValueError:
+            raise DomainError(ErrorCode.INVALID_SUBTITLE_VARIANT) from None
+        variants.append(
+            (CandidateId.parse(payload["subtitle_id"]), variant)
+        )
+    return tuple(variants)
+
+
+def _parse_checked_destinations(value: object) -> tuple[PurePosixPath, ...]:
+    destinations: list[PurePosixPath] = []
+    for index, item in enumerate(_require_list(value, field="moves")):
+        field = f"moves[{index}]"
+        payload = check_fields(item, _MOVE_FIELDS, field=field)
+        if payload["destination_preflight"] != "absent":
+            raise DomainError(ErrorCode.PLAN_PREFLIGHT_MISMATCH)
+        destinations.append(
+            PurePosixPath(
+                _require_str(
+                    payload["destination"],
+                    field=f"{field}.destination",
+                )
+            )
+        )
+    return tuple(destinations)
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class RenamePlan:
     """Canonical, immutable transaction input suitable for exact approval."""
@@ -441,6 +654,70 @@ class RenamePlan:
             "plan_hash",
             _plan_hash(plan.canonical_bytes()),
         )
+        return plan
+
+    @classmethod
+    def from_canonical_bytes(
+        cls,
+        canonical_bytes: bytes,
+        *,
+        plan_hash: str,
+    ) -> RenamePlan:
+        """Rebuild a plan through the existing deterministic compiler."""
+
+        if not verify_plan_bytes(canonical_bytes, plan_hash):
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        payload = _decode_canonical_plan(canonical_bytes)
+        roots = check_fields(
+            payload["roots"],
+            _ROOTS_FIELDS,
+            field="roots",
+        )
+        candidates = _parse_sources(payload["sources"])
+        mapping = _parse_mapping(
+            payload["mapping"],
+            candidates=candidates,
+        )
+        series = SeriesIdentity.from_dict(payload["series"])
+        variants = _parse_variants(payload["subtitle_variants"])
+        draft = compile_plan_draft(
+            series=series,
+            mapping=mapping,
+            candidates=candidates,
+            subtitle_variants=variants,
+        )
+        created_at_text = _require_str(
+            payload["created_at"],
+            field="created_at",
+        )
+        try:
+            created_at = datetime.fromisoformat(
+                created_at_text.replace("Z", "+00:00")
+            )
+            work_type = TmdbWorkType(
+                _require_str(payload["work_type"], field="work_type")
+            )
+        except ValueError:
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE) from None
+
+        plan = cls.create(
+            run_id=_require_str(payload["run_id"], field="run_id"),
+            work_type=work_type,
+            created_at=created_at,
+            source_root=_parse_root(roots["source"], field="roots.source"),
+            output_root=_parse_root(roots["output"], field="roots.output"),
+            candidate_snapshot=candidates,
+            subtitle_variants=variants,
+            draft=draft,
+            checked_destinations=_parse_checked_destinations(
+                payload["moves"]
+            ),
+        )
+        if (
+            plan.plan_hash != plan_hash
+            or plan.canonical_bytes() != canonical_bytes
+        ):
+            raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)
         return plan
 
     def canonical_bytes(self) -> bytes:

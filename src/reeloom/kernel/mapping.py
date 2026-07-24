@@ -16,6 +16,10 @@ _VIDEO_MAPPING_FIELDS = frozenset(
     {"video_id", "season", "episode_start", "episode_end"}
 )
 _SUBTITLE_MAPPING_FIELDS = frozenset({"subtitle_id", "video_id"})
+MAX_SEASON_NUMBER = 999
+MAX_EPISODE_NUMBER = 100_000
+MAX_CATALOG_SEASONS = 100
+MAX_MAPPED_EPISODES = 100_000
 
 
 def _require_list(value: object, *, field: str) -> list[object]:
@@ -50,8 +54,11 @@ class EpisodeSpan:
             raise DomainError(ErrorCode.INVALID_EPISODE_RANGE)
         if (
             self.season < 0
+            or self.season > MAX_SEASON_NUMBER
             or self.episode_start < 1
+            or self.episode_start > MAX_EPISODE_NUMBER
             or self.episode_end < self.episode_start
+            or self.episode_end > MAX_EPISODE_NUMBER
         ):
             raise DomainError(
                 ErrorCode.INVALID_EPISODE_RANGE,
@@ -76,6 +83,8 @@ class EpisodeCatalog:
     def __post_init__(self) -> None:
         if not isinstance(self.season_episode_counts, tuple):
             raise DomainError(ErrorCode.INVALID_EPISODE_CATALOG)
+        if len(self.season_episode_counts) > MAX_CATALOG_SEASONS:
+            raise DomainError(ErrorCode.INVALID_EPISODE_CATALOG)
 
         previous_season = -1
         for entry in self.season_episode_counts:
@@ -87,7 +96,13 @@ class EpisodeCatalog:
             ):
                 raise DomainError(ErrorCode.INVALID_EPISODE_CATALOG)
             season, episode_count = entry
-            if season < 0 or episode_count < 1 or season <= previous_season:
+            if (
+                season < 0
+                or season > MAX_SEASON_NUMBER
+                or episode_count < 1
+                or episode_count > MAX_EPISODE_NUMBER
+                or season <= previous_season
+            ):
                 raise DomainError(ErrorCode.INVALID_EPISODE_CATALOG)
             previous_season = season
 
@@ -281,6 +296,15 @@ class MappingDraft:
         candidate_ids = {candidate.id for candidate in candidates.candidates}
         seen_video_ids: set[CandidateId] = set()
         occupied_episodes: dict[tuple[int, int], CandidateId] = {}
+        mapped_episode_count = sum(
+            mapping.span.episode_end
+            - mapping.span.episode_start
+            + 1
+            for mapping in videos
+            if isinstance(mapping, VideoMapping)
+        )
+        if mapped_episode_count > MAX_MAPPED_EPISODES:
+            raise DomainError(ErrorCode.INVALID_EPISODE_RANGE)
 
         for mapping in videos:
             if not isinstance(mapping, VideoMapping):

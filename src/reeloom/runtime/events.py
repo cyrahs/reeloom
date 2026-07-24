@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TypeAlias
 
 from reeloom.kernel.candidates import CandidateId
@@ -9,13 +10,18 @@ from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
+from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.state import MappingValidationIssue, StopReason
+
+_DEFAULT_DEADLINE = datetime.max.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
 class RunStarted:
     run_id: str
     work_type: TmdbWorkType
+    budget: RunBudget = RunBudget()
+    deadline_at: datetime = _DEFAULT_DEADLINE
 
 
 @dataclass(frozen=True, slots=True)

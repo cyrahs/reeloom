@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
-from agents import MaxTurnsExceeded, UserError
+from agents import MaxTurnsExceeded, ModelSettings, UserError
 
+from reeloom.adapters.agent_session import FilesystemAgentSession
+from reeloom.adapters.event_store import FilesystemEventStore
 from reeloom.agents.organizer import (
     create_organizer_context,
     run_episode_organizer,
@@ -22,13 +26,14 @@ from reeloom.kernel.candidates import (
     CandidateSnapshot,
 )
 from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.errors import (
     BudgetExceeded,
     RuntimeDomainError,
     RuntimeErrorCode,
 )
-from reeloom.runtime.events import ToolRejected
+from reeloom.runtime.events import ModelUsageRecorded, ToolRejected
 from reeloom.runtime.policy import PhaseToolPolicy
 from reeloom.runtime.state import Phase, RunStatus, StopReason
 from reeloom.tools.candidates import (
@@ -66,6 +71,7 @@ def _run(
         candidate_source=_source(),
         work_type=TmdbWorkType.ANIME,
         budget=budget,
+        clock=lambda: datetime(2026, 7, 24, tzinfo=UTC),
     )
     result = asyncio.run(
         run_episode_organizer(
@@ -111,6 +117,208 @@ def test_plan_compiler_requires_plan_persistence() -> None:
     assert raised.value.code is RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
 
 
+def test_organizer_context_recovers_from_persistent_events(
+    tmp_path: Path,
+) -> None:
+    event_path = tmp_path / "events"
+    event_path.mkdir()
+    root = AuthorizedRoot.create(event_path)
+    source = _source()
+    first_store = FilesystemEventStore(root, run_id="run-1")
+    first = create_organizer_context(
+        run_id="run-1",
+        candidate_source=source,
+        work_type=TmdbWorkType.ANIME,
+        event_store=first_store,
+    )
+
+    second_store = FilesystemEventStore(root, run_id="run-1")
+    second = create_organizer_context(
+        run_id="run-1",
+        candidate_source=source,
+        work_type=TmdbWorkType.ANIME,
+        event_store=second_store,
+    )
+
+    assert second.runtime.state == first.runtime.state
+    assert len(second.runtime.store.events) == 2
+
+
+def test_recovered_context_reuses_original_budget(
+    tmp_path: Path,
+) -> None:
+    event_path = tmp_path / "events"
+    event_path.mkdir()
+    root = AuthorizedRoot.create(event_path)
+    original_budget = RunBudget(
+        max_model_turns=1,
+        max_elapsed_seconds=30,
+    )
+    first_store = FilesystemEventStore(root, run_id="run-budget")
+    first = create_organizer_context(
+        run_id="run-budget",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        event_store=first_store,
+        budget=original_budget,
+        clock=lambda: datetime(2026, 7, 24, tzinfo=UTC),
+    )
+
+    recovered = create_organizer_context(
+        run_id="run-budget",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        event_store=FilesystemEventStore(root, run_id="run-budget"),
+        clock=lambda: datetime(2026, 7, 24, tzinfo=UTC),
+    )
+
+    assert first.runtime.budget == original_budget
+    assert recovered.runtime.budget == original_budget
+    with pytest.raises(RuntimeDomainError) as raised:
+        create_organizer_context(
+            run_id="run-budget",
+            candidate_source=_source(),
+            work_type=TmdbWorkType.ANIME,
+            event_store=FilesystemEventStore(
+                root,
+                run_id="run-budget",
+            ),
+            budget=RunBudget(max_model_turns=2),
+        )
+    assert raised.value.code is RuntimeErrorCode.INVALID_TRANSITION
+
+
+def test_recovered_run_receives_only_remaining_turns(
+    tmp_path: Path,
+) -> None:
+    event_path = tmp_path / "events"
+    event_path.mkdir()
+    root = AuthorizedRoot.create(event_path)
+    context = create_organizer_context(
+        run_id="run-turns",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        event_store=FilesystemEventStore(root, run_id="run-turns"),
+        budget=RunBudget(max_model_turns=1),
+        clock=lambda: datetime(2026, 7, 24, tzinfo=UTC),
+    )
+    context.runtime.store.append(ModelUsageRecorded(1, 1, 2))
+    recovered = create_organizer_context(
+        run_id="run-turns",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        event_store=FilesystemEventStore(root, run_id="run-turns"),
+        clock=lambda: datetime(2026, 7, 24, tzinfo=UTC),
+    )
+    model = ScriptedModel((FinalStep(text="must not run"),))
+
+    with pytest.raises(MaxTurnsExceeded):
+        asyncio.run(
+            run_episode_organizer(
+                context=recovered,
+                model=model,
+                prompt="Continue.",
+            )
+        )
+
+    assert model.consumed_steps == 0
+    assert recovered.runtime.state.stop_reason is StopReason.MAX_TURNS
+
+
+def test_recovered_run_keeps_absolute_deadline(
+    tmp_path: Path,
+) -> None:
+    event_path = tmp_path / "events"
+    event_path.mkdir()
+    root = AuthorizedRoot.create(event_path)
+    started_at = datetime(2026, 7, 24, tzinfo=UTC)
+    create_organizer_context(
+        run_id="run-deadline",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        event_store=FilesystemEventStore(root, run_id="run-deadline"),
+        budget=RunBudget(max_elapsed_seconds=1),
+        clock=lambda: started_at,
+    )
+    recovered = create_organizer_context(
+        run_id="run-deadline",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        event_store=FilesystemEventStore(root, run_id="run-deadline"),
+        clock=lambda: started_at + timedelta(seconds=2),
+    )
+    model = ScriptedModel((FinalStep(text="must not run"),))
+
+    with pytest.raises(BudgetExceeded) as raised:
+        asyncio.run(
+            run_episode_organizer(
+                context=recovered,
+                model=model,
+                prompt="Continue.",
+            )
+        )
+
+    assert raised.value.code is RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+    assert model.consumed_steps == 0
+
+
+def test_sdk_session_persists_model_history_separately(
+    tmp_path: Path,
+) -> None:
+    session_path = tmp_path / "session"
+    session_path.mkdir()
+    root = AuthorizedRoot.create(session_path)
+    session = FilesystemAgentSession(root, session_id="run-session")
+    context = create_organizer_context(
+        run_id="run-session",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+        agent_session=session,
+    )
+    model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="list_candidates",
+                arguments={"kind": "video", "cursor": 0, "limit": 10},
+                call_id="call-1",
+            ),
+            FinalStep(text="done", expect_input_contains="video:1"),
+        )
+    )
+
+    asyncio.run(
+        run_episode_organizer(
+            context=context,
+            model=model,
+            prompt="Inspect.",
+        )
+    )
+    persisted = asyncio.run(session.get_items())
+    restarted = FilesystemAgentSession(root, session_id="run-session")
+
+    assert persisted
+    assert asyncio.run(restarted.get_items()) == persisted
+
+
+def test_sdk_session_must_be_bound_to_run_id(tmp_path: Path) -> None:
+    session_path = tmp_path / "session"
+    session_path.mkdir()
+    session = FilesystemAgentSession(
+        AuthorizedRoot.create(session_path),
+        session_id="another-run",
+    )
+
+    with pytest.raises(RuntimeDomainError) as raised:
+        create_organizer_context(
+            run_id="run-1",
+            candidate_source=_source(),
+            work_type=TmdbWorkType.ANIME,
+            agent_session=session,
+        )
+
+    assert raised.value.code is RuntimeErrorCode.RUN_ID_MISMATCH
+
+
 def test_sdk_runner_completes_a_multi_turn_tool_loop() -> None:
     model = ScriptedModel(
         (
@@ -136,6 +344,65 @@ def test_sdk_runner_completes_a_multi_turn_tool_loop() -> None:
     assert result.state.tool_calls == 1
     assert model.exhausted
     assert context.runtime.store.replay() == result.state
+
+
+def test_runner_enforces_private_sequential_responses_settings() -> None:
+    class CapturingModel(ScriptedModel):
+        captured: ModelSettings | None = None
+
+        async def get_response(
+            self,
+            *args: object,
+            **kwargs: object,
+        ):
+            self.captured = (
+                kwargs.get("model_settings")
+                if isinstance(
+                    kwargs.get("model_settings"),
+                    ModelSettings,
+                )
+                else args[2]
+            )  # type: ignore[assignment]
+            return await super().get_response(  # type: ignore[arg-type]
+                *args,
+                **kwargs,
+            )
+
+    model = CapturingModel((FinalStep(text="done"),))
+    context = create_organizer_context(
+        run_id="run-settings",
+        candidate_source=_source(),
+        work_type=TmdbWorkType.ANIME,
+    )
+
+    asyncio.run(
+        run_episode_organizer(
+            context=context,
+            model=model,
+            prompt="Inspect.",
+            model_settings=ModelSettings(
+                max_tokens=99_999,
+                parallel_tool_calls=True,
+                store=True,
+                extra_body={
+                    "store": True,
+                    "tools": [{"type": "web_search"}],
+                },
+                extra_headers={"Authorization": "Bearer attacker"},
+                extra_args={"max_output_tokens": 99_999},
+                extra_query={"unsafe": "true"},
+            ),
+        )
+    )
+
+    assert model.captured is not None
+    assert model.captured.max_tokens == 8_192
+    assert model.captured.parallel_tool_calls is False
+    assert model.captured.store is False
+    assert model.captured.extra_body is None
+    assert model.captured.extra_headers is None
+    assert model.captured.extra_args is None
+    assert model.captured.extra_query is None
 
 
 def test_unknown_tool_is_a_structured_observation() -> None:

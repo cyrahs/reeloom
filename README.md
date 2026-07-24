@@ -9,7 +9,7 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M6 / 审批、Executor 与 Rollback（已完成）**
+**M7 / 持久状态、Trace 与 Eval（已完成）**
 
 M0-M5 已能把 Agent 的语义结果编译为可精确审批的事务输入；M6 建立了独立于
 Agent/LLM 的审批消费、最终检查、执行与恢复边界：
@@ -30,8 +30,8 @@ Agent/LLM 的审批消费、最终检查、执行与恢复边界：
   目录、不移动、不覆盖文件。
 - `ApprovalRecord` canonical 绑定 `run_id + plan_hash + scope + expiry +
   nonce`，严格拒绝多余字段、非规范编码和记录篡改；
-- filesystem approval store 只在独立授权根中 no-follow、有界读取记录，并用
-  `O_CREAT | O_EXCL` 在任何未来移动前原子创建持久 claim；
+- filesystem approval store 只在独立授权根中 no-follow、有界读取记录，并以
+  匿名 inode + no-replace link 在任何未来移动前原子发布持久 claim；
 - wrong binding 和 expiry 不消费批准；并发 claim 只有一个成功，重启后的重放
   仍被拒绝。
 - content-addressed plan store 只按 `plan_hash` 保存和 no-follow 读取 canonical
@@ -42,7 +42,7 @@ Agent/LLM 的审批消费、最终检查、执行与恢复边界：
 - 每个 move 的 source 与目标现存父目录必须处于同一文件系统；MVP 不提供
   copy/unlink 跨文件系统降级。
 - apply 在任何目录创建和 rename 前持久化显式 rollback manifest；journal
-  event 使用独立 `O_EXCL` 文件 append-only 记录，不原地覆盖状态；
+  event 使用原子发布的独立 immutable 文件 append-only 记录，不原地覆盖状态；
 - media rename 使用 Linux `renameat2(RENAME_NOREPLACE)`，目标在最终检查后
   临时出现也不会被覆盖；系统不支持安全原语时直接 fail closed；
 - partial failure 自动逆序 rollback；崩溃恢复依据 exact plan、claimed
@@ -59,6 +59,27 @@ adapter 只接受调用方显式注入的凭据，不加载配置文件。自动
 `ApprovalResumeService` 将停止的 run 转换为 `PlanApproved → ApplyStarted →
 RunCompleted/RollbackCompleted`，不会把 apply 暴露为 Agent tool。
 
+M7 将全部 runtime event 编码为严格、版本化的 canonical envelope，并新增
+run-scoped filesystem checkpoint store。每条事件在 reducer 验证后先写匿名
+inode 并 `fsync`，再以 no-replace link 原子发布；sequence、run binding、
+前序 digest、record digest 或 replay transition 任一不一致都会 fail closed。
+Organizer 和审批恢复现在依赖 `EventStore` 协议，因此同一领域流程可使用内存
+测试 store 或在进程重启后恢复的文件 store，而不把 checkpoint 细节泄漏给
+Agent。
+
+Agents SDK 对话 history 使用单独的 append-only `Session` adapter；`add`、
+`pop` 和 `clear` 都是不可变操作记录，不删除旧数据，也不参与领域 phase 判定。
+版本化 scripted transcript 与固定 eval dataset 通过真实 SDK Runner 离线重放，
+并输出语义 mapping、validator/tool、input/output token、延迟、成本估算、
+人工澄清、unmapped 保留和类型化安全拒绝指标。
+redacted trace 只投影 allowlist 元数据，不包含 prompt、tool observation、文件名、
+字幕正文或 TMDB 标题。
+
+真实 OpenAI adapter 使用显式注入的 key 与 model 配置、官方 Responses API
+endpoint，并强制 `store=False` 和单一顺序 tool call。线上 eval 必须显式
+`--live --model ...`，只读取进程环境的 `OPENAI_API_KEY`；pytest 和默认 eval
+始终离线。
+
 M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允许
 `anime/tv_series`。电影选择、单文件 mapping 和电影命名必须先建立独立领域
 契约，不能伪装成 `SxxExx` 流程。
@@ -70,12 +91,26 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M3 Definition of Done](docs/m3-review.md)，M4 验收结论见
 [M4 Definition of Done](docs/m4-review.md)，M5 验收结论见
 [M5 Definition of Done](docs/m5-review.md)，M6 验收结论见
-[M6 Definition of Done](docs/m6-review.md)。
+[M6 Definition of Done](docs/m6-review.md)，M7 验收结论见
+[M7 Definition of Done](docs/m7-review.md)。
 
 ## 本地验证
 
 ```bash
 .venv/bin/python -m pytest -q
+```
+
+固定离线 Agent eval：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_offline_eval.py
+```
+
+显式 opt-in 的 OpenAI 线上对比（不读取 `.env`）：
+
+```bash
+OPENAI_API_KEY=... PYTHONPATH=src .venv/bin/python \
+  scripts/openai_live_smoke.py --live --model gpt-5.6
 ```
 
 ### 显式 opt-in 的 TMDB 线上 smoke

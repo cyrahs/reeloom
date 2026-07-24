@@ -4,7 +4,7 @@
 
 日期：2026-07-23
 
-当前进度：M0、M1、M2、M3、M4、M5、M6 已完成。M0 建立纯领域
+当前进度：M0、M1、M2、M3、M4、M5、M6、M7 已完成。M0 建立纯领域
 契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -17,9 +17,11 @@ strict mapping submission、结构化纠错和 token/time budget；M5 建立只�
 `ApprovalRecord`、expiry/binding 校验与持久化原子 one-time claim；M6.2 建立
 content-addressed plan store 和无 LLM、no-follow 的 Executor final
 preflight；M6.3 建立 append-only journal、no-replace rename、rollback、
-result、transaction lease、typed approval resume 和幂等崩溃恢复。下一步为
-M7 真实模型配置、持久 checkpoint、trace 与 eval。movie 的选择、mapping 和
-命名需要独立领域契约，不能复用 episode mapping。
+result、transaction lease、typed approval resume 和幂等崩溃恢复。M7 已完成：
+严格版本化的 runtime event codec、no-follow append-only checkpoint 与 SDK
+session、进程重启 replay、scripted transcript、固定 eval dataset、脱敏 trace、
+任务指标、显式 OpenAI Responses provider 配置和 opt-in live eval 均已建立。
+movie 的选择、mapping 和命名需要独立领域契约，不能复用 episode mapping。
 
 ## 1. 项目目标
 

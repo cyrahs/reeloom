@@ -1,6 +1,6 @@
 # Reeloom 威胁模型
 
-版本：M6
+版本：M7
 
 日期：2026-07-23
 
@@ -68,11 +68,11 @@ guardrail 可以改善行为，但不能替代 schema、policy、hash、审批�
 | 目录逃逸 | symlink 指向授权根之外 | scanner/executor 使用 containment 与 no-follow | scanner M2、Executor preflight M6.2 已覆盖 |
 | TOCTOU | 批准后源被替换或目标出现 | final preflight 与每步重检；atomic no-replace rename；post-rename identity | M6 已覆盖 |
 | Plan 篡改 | preview 后 destination 被修改 | canonical bytes 与 `plan_hash` | M5 已覆盖 |
-| 审批重放 | 重复执行同一批准 | canonical binding、expiry 与 `O_EXCL` 原子 one-time claim | M6.1 已覆盖 |
+| 审批重放 | 重复执行同一批准 | canonical binding、expiry 与 no-replace 原子 one-time claim | M6.1 已覆盖 |
 | 已有目标或部分失败 | destination 已存在或部分 rename | rollback manifest 先写；`RENAME_NOREPLACE`；append-only events；逆序 rollback/recovery | M6 已覆盖 |
 | 执行/恢复竞争 | live apply 期间另一进程启动 recover | transaction-scoped process lease；竞争立即 fail closed | M6 已覆盖 |
 | Journal 终态不确定 | completed 已写出但目录 fsync 报错 | terminal commit 后不自动 rollback；双终态拒绝；恢复复核文件 identity | M6 已覆盖 |
-| 任意网络访问 | 模型请求任意 URL | 只有固定 host/path 的 TMDB adapter 有业务网络 capability；tool schema 不接受 URL | M3 已覆盖 |
+| 任意网络访问 | 模型请求任意 URL | 只有固定 host/path 的 TMDB business adapter 与显式 OpenAI model adapter 可联网；tool schema 不接受 URL，模型没有 hosted/MCP/shell tool | M3、M7 已覆盖 |
 | 伪造 TMDB capability | 模型直接选择猜测的 TMDB ID | 查询与选择只允许本 run 搜索 observation 已记录的候选 ID | M3 已覆盖 |
 | TMDB 类型混淆 | Movie 100 被当作 TV 100，或 anime 搜索回退到真人剧 | run 显式绑定 work_type；capability 使用 `(work_type, id)`；anime 要求 genre 16 且 details 再验证 | M3 已覆盖 |
 | 归档根越权 | 模型用 search filter 选择另一个类型的 dst | search filter 必须等于 trusted run work_type；未来 root→dst capability 由 bootstrap 绑定，不从模型文本推导 | filter M3；root route M5 |
@@ -82,6 +82,10 @@ guardrail 可以改善行为，但不能替代 schema、policy、hash、审批�
 | 状态伪造 | assistant 文本宣称任务完成 | 只有 typed domain event 能转换 phase | M1 已覆盖 |
 | 敏感信息泄漏 | `.env` 或字幕内容进入 trace | scanner/Agent/executor 拒绝 `.env*`；live smoke 仅 no-follow 读取固定单键；限量 observation、trace 脱敏 | scanner M2、smoke M3；trace M7 |
 | TMDB 凭据泄漏 | 凭据进入模型输入、缓存 key 或错误链 | 凭据仅注入 HTTP adapter；live loader 有文件/大小/单键限制；不进入 observation/cache key/repr，网络异常去除 cause | M3 已覆盖 |
+| Checkpoint 篡改 | 替换 event/session record、暴露半写记录或制造 sequence gap | 授权 root、no-follow、匿名 inode 完整写入后 no-replace 原子发布、canonical schema、run binding、连续 sequence 与 digest chain；append 前完整重验和 reducer replay | M7 已覆盖 |
+| 对话记录越权 | SDK session 文本伪造领域成功或批准 | session 与 domain event store 分离；只有 reducer event 能改变 phase，Executor 仍只接受 plan hash 与 approval ID | M7 已覆盖 |
+| Trace 泄漏 | Plan、prompt、tool observation 或未知字符串进入观测系统 | trace 从 event replay 生成显式 allowlist projection；路径、标题、正文、prompt 和未知 token 不复制 | M7 已覆盖 |
+| OpenAI 配置劫持 | base URL、custom header/body/query 改写模型请求 | adapter 固定官方 API endpoint，只接受显式 key/model/scope；caller 扩展不透传并拒绝环境 custom headers；live script 不读取 `.env`，SDK trace 和 response store 关闭 | M7 已覆盖 |
 
 ## 5. Specials/OVA/OAD 的证据规则
 

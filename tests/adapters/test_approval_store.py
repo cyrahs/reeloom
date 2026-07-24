@@ -60,6 +60,21 @@ def test_approval_claim_is_persistent_and_one_time(
     assert raised.value.code is ApprovalErrorCode.ALREADY_CLAIMED
 
 
+def test_issuing_the_same_approval_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    store = FilesystemApprovalStore(root=root, clock=lambda: _NOW)
+    approval = _approval()
+
+    store.issue(approval)
+    store.issue(approval)
+
+    assert tuple(path.name for path in root.path.iterdir()) == (
+        f"{approval.approval_id}.approval.json",
+    )
+
+
 def test_wrong_binding_does_not_consume_approval(tmp_path: Path) -> None:
     store = FilesystemApprovalStore(
         root=_root(tmp_path),

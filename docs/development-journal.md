@@ -1004,3 +1004,100 @@ RunCompleted/RollbackCompleted`。它调用不含模型的 Executor；Agent 的�
 完整验收见 [M6 Definition of Done](m6-review.md)。下一步 M7 将处理真实模型
 配置、持久 checkpoint、脱敏 trace 与离线 eval；这些能力不会改变 Executor
 已经建立的确定性权限边界。
+
+## M7.1：Checkpoint 是领域事件日志，不是模型聊天记录
+
+M1 的 `InMemoryEventStore` 已证明 typed events 可以确定性 replay，但进程退出后
+状态会丢失。M7.1 先持久化 Reeloom 自己拥有的领域事实，不把 Agents SDK 的内部
+对象、自然语言或 provider response 当作权威状态。
+
+所有 runtime event 使用显式、版本化 schema 编解码。复杂事件也不会绕过领域
+构造器：`MappingDraft` 重新执行结构校验；`PlanBuilt` 从 source identity 重建
+candidate snapshot，经现有 mapping validator 和 plan compiler 重建
+`RenamePlan`，最后要求 canonical bytes 与 `plan_hash` 完全一致。
+
+filesystem event store 绑定一个授权 root 和固定 `run_id`。事件先经过 reducer，
+再写入独立的 `event-NNNNNNNN.json`；记录先在匿名 inode 中完整写入并 fsync，
+再用 no-replace link 原子发布，不会暴露半写 checkpoint 或覆盖旧记录。每次
+append 也先重验既有日志。记录包含连续 sequence、前序 digest 和自身 digest。
+重启加载时出现 gap、symlink、非 canonical event、run 不匹配、digest 断链或
+非法状态转换都会停止恢复。
+
+`EventStore` protocol 把领域 runtime 与存储方式解耦：
+
+```text
+typed event
+→ reducer validates transition
+→ immutable record commit
+→ in-memory projection advances
+
+restart
+→ verify ordered immutable records
+→ decode typed events
+→ reducer replay
+→ recover exact RunState
+```
+
+这里恢复的是确定性领域 checkpoint，不等于恢复模型的隐式思考。后续 M7.2 会用
+固定 scripted transcript 描述可重放的模型输入/工具调用/输出，并建立 eval task
+和指标；两者共享领域事件结果，但职责保持分离。
+
+## M7.2：Eval 固定任务，不伪造第二套 Agent loop
+
+`ScriptedTranscript` 把 model step 编码成严格版本化的 canonical artifact。tool
+arguments 保存为固定 JSON 字符串，因此既能重放正常调用，也能重放 malformed
+arguments 验证 guardrail；创建 transcript 后修改原始 Python dict 不会改变基线。
+
+固定 dataset 将 scenario、prompt、trusted work type、transcript 和 terminal
+expectation 绑定在一起。离线 runner 仍调用 Agents SDK `Runner.run` 和生产工具；
+scripted model 只实现 SDK `Model` protocol。当前 mapping-correction task 覆盖：
+
+```text
+list candidates → identify TMDB series → inspect season/inventory/subtitle
+→ submit out-of-bounds mapping → receive structured rejection
+→ correct mapping → build exact plan → stop awaiting approval
+```
+
+因此以后替换真实 model 时，scenario、工具、validator 和评分器都不变，只替换
+model factory。dataset hash 标识本次比较使用的精确任务版本。
+
+## M7.3：Trace 是最小投影，不是 event dump
+
+`PlanBuilt` 包含 source relative path、系列标题和完整 mapping；SDK session 还
+包含 prompt 与 tool observation。它们都不能被直接复制到 trace。M7.3 从已验证
+event replay 生成 allowlist record，只保留 phase/status、计数、枚举、plan hash
+和已知工具/错误类别；未知模型字符串统一映射为 `unknown/other`。
+
+mapping 成功必须精确匹配 dataset 标注的 TMDB ID、episode spans、字幕关联和
+unmapped partition，而不是仅看是否生成 plan。scripted replay 额外核对固定工具
+调用和 `kind + call_id + code` 拒绝标签；live model 不因采用更短的正确流程被
+扣分。任务指标包括 validator 首次/最终通过、validator/tool rejection、工具
+调用、input/output/total tokens、延迟、人工澄清、未映射保留率和标注安全拒绝
+误报/漏报。成本不硬编码会过期的价格；调用方显式提供 input/output 每百万
+token USD rate，报告输出稳定的 micro-USD 估算。
+
+## M7.4：真实模型只替换 Model，不改变权限边界
+
+真实 adapter 显式构造 official OpenAI Responses client，不使用 SDK 全局 provider
+或可变 base URL。library 接受显式 API key、model、timeout/retry、可选
+organization/project、reasoning effort 和 verbosity；它不读取任何配置文件。
+Agent 侧覆盖任何调用方设置，强制：
+
+```text
+store = false
+parallel_tool_calls = false
+max_tokens <= run budget
+SDK tracing disabled + sensitive tracing disabled
+```
+
+这意味着真实模型得到的仍只有八个受控 Reeloom function tools，不会获得 hosted
+web、MCP、shell、文件或 apply capability。SDK conversation 使用独立
+`FilesystemAgentSession`：`add/pop/clear` 都原子发布新的 no-follow immutable
+record，从不删除旧会话文件；它可恢复模型历史，但不能改变领域 `RunState`。
+
+`scripts/openai_live_smoke.py` 必须显式传 `--live --model`，且只从进程环境读取
+`OPENAI_API_KEY`。它在与离线基线相同的 dataset/scenario 上运行真实 model，
+输出 dataset hash、model settings 和脱敏指标；pytest 永远不会调用它的网络
+路径。模型选择与工具调用遵循 OpenAI 当前的
+[model guidance](https://developers.openai.com/api/docs/guides/latest-model)
+和 [Responses tools guidance](https://developers.openai.com/api/docs/guides/tools)。

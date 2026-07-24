@@ -11,12 +11,14 @@ from reeloom.agents.scripted_model import (
     ScriptedModel,
     ToolCallStep,
 )
+from reeloom.agents.transcript import ScriptedTranscript
 
 __all__ = [
     "EpisodeOrganizerRunResult",
     "FinalStep",
     "OrganizerContext",
     "ScriptedModel",
+    "ScriptedTranscript",
     "ToolCallStep",
     "create_organizer_context",
     "run_episode_organizer",

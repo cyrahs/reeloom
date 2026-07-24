@@ -17,14 +17,14 @@ from reeloom.runtime.events import (
 )
 from reeloom.runtime.policy import PhaseToolPolicy
 from reeloom.runtime.state import RunState, RunStatus, StopReason
-from reeloom.runtime.store import InMemoryEventStore
+from reeloom.runtime.store import EventStore
 
 
 @dataclass(slots=True)
 class ToolRuntime:
     """Enforces run policy before domain tool code is entered."""
 
-    store: InMemoryEventStore
+    store: EventStore
     budget: RunBudget
     policy: PhaseToolPolicy
 

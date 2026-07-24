@@ -30,6 +30,9 @@ class RuntimeErrorCode(StrEnum):
     SUBTITLE_SAMPLE_FAILED = "subtitle_sample_failed"
     PLAN_COMPILER_UNAVAILABLE = "plan_compiler_unavailable"
     PLAN_BUILD_FAILED = "plan_build_failed"
+    EVENT_STORE_CORRUPT = "event_store_corrupt"
+    EVENT_STORE_CONFLICT = "event_store_conflict"
+    EVENT_STORE_FAILURE = "event_store_failure"
     TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"
     TIME_BUDGET_EXHAUSTED = "time_budget_exhausted"
 

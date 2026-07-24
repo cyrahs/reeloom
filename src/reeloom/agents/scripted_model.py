@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
-from typing import TypeAlias
 
 from agents import Model, ModelResponse
 from agents.agent_output import AgentOutputSchemaBase
@@ -20,28 +18,23 @@ from openai.types.responses import (
 )
 from openai.types.responses.response_prompt_param import ResponsePromptParam
 
-
-@dataclass(frozen=True, slots=True)
-class ToolCallStep:
-    name: str
-    arguments: Mapping[str, object] | str
-    call_id: str
-    expect_input_contains: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class FinalStep:
-    text: str
-    expect_input_contains: str | None = None
-
-
-ScriptStep: TypeAlias = ToolCallStep | FinalStep
+from reeloom.agents.transcript import (
+    FinalStep,
+    ScriptedTranscript,
+    ScriptStep,
+    ToolCallStep,
+)
 
 
 class ScriptedModel(Model):
     """An offline SDK model whose responses are fixed by a test transcript."""
 
-    def __init__(self, steps: tuple[ScriptStep, ...]) -> None:
+    def __init__(
+        self,
+        steps: tuple[ScriptStep, ...] | ScriptedTranscript,
+    ) -> None:
+        if isinstance(steps, ScriptedTranscript):
+            steps = steps.steps
         if not steps:
             raise ValueError("script must contain at least one step")
         self._steps = steps

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reeloom.adapters.approval import FilesystemApprovalStore
+from reeloom.adapters.event_store import FilesystemEventStore
 from reeloom.adapters.filesystem import (
     FilesystemPlanCompiler,
     FilesystemScanner,
@@ -58,7 +59,7 @@ class _Environment:
     output: Path
     plan: RenamePlan
     approval: ApprovalRecord
-    runtime: InMemoryEventStore
+    runtime: FilesystemEventStore
     service: ApprovalResumeService
 
 
@@ -126,18 +127,161 @@ def test_crashed_apply_resumes_through_typed_rollback(
     ) == (ApplyFailed, RollbackCompleted)
 
 
+def test_crash_after_approval_issue_can_retry_same_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path)
+    original_append = FilesystemEventStore.append
+
+    def crash_before_plan_approved(
+        store: FilesystemEventStore,
+        event: object,
+    ) -> object:
+        if isinstance(event, PlanApproved):
+            raise KeyboardInterrupt
+        return original_append(store, event)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        FilesystemEventStore,
+        "append",
+        crash_before_plan_approved,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        environment.service.approve_and_apply(
+            environment.approval
+        )
+    monkeypatch.undo()
+
+    result = _restart_service(environment).approve_and_apply(
+        environment.approval
+    )
+
+    assert result.status is ApplyStatus.COMPLETED
+
+
+def test_crash_after_plan_approved_recovers_before_apply_started(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path)
+    original_append = FilesystemEventStore.append
+
+    def crash_before_apply_started(
+        store: FilesystemEventStore,
+        event: object,
+    ) -> object:
+        if isinstance(event, ApplyStarted):
+            raise KeyboardInterrupt
+        return original_append(store, event)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        FilesystemEventStore,
+        "append",
+        crash_before_apply_started,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        environment.service.approve_and_apply(
+            environment.approval
+        )
+    monkeypatch.undo()
+
+    result = _restart_service(environment).recover()
+
+    assert result.status is ApplyStatus.COMPLETED
+
+
+def test_crash_after_apply_started_recovers_before_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path)
+
+    def crash_before_apply(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FilesystemExecutor, "apply", crash_before_apply)
+    with pytest.raises(KeyboardInterrupt):
+        environment.service.approve_and_apply(
+            environment.approval
+        )
+    monkeypatch.undo()
+
+    result = _restart_service(environment).recover()
+
+    assert result.status is ApplyStatus.COMPLETED
+
+
+def test_crash_after_journal_recovers_before_approval_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path)
+
+    def crash_before_claim(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        FilesystemApprovalStore,
+        "claim",
+        crash_before_claim,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        environment.service.approve_and_apply(
+            environment.approval
+        )
+    monkeypatch.undo()
+
+    result = _restart_service(environment).recover()
+
+    assert result.status is ApplyStatus.COMPLETED
+
+
+def test_crash_after_executor_terminal_recovers_domain_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path)
+
+    def crash_before_domain_terminal(*args: object) -> None:
+        del args
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        ApprovalResumeService,
+        "_finish",
+        crash_before_domain_terminal,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        environment.service.approve_and_apply(
+            environment.approval
+        )
+    monkeypatch.undo()
+
+    result = _restart_service(environment).recover()
+    state = _restart_service(environment).runtime.state
+
+    assert result.status is ApplyStatus.COMPLETED
+    assert state is not None
+    assert state.phase is Phase.COMPLETED
+
+
 def _setup(tmp_path: Path) -> _Environment:
     source = tmp_path / "incoming"
     output = tmp_path / "anime"
     plans_root = tmp_path / "plans"
     approvals_root = tmp_path / "approvals"
     journals_root = tmp_path / "journals"
+    events_root = tmp_path / "events"
     for root in (
         source,
         output,
         plans_root,
         approvals_root,
         journals_root,
+        events_root,
     ):
         root.mkdir()
     (source / "episode.mkv").write_bytes(b"video")
@@ -176,7 +320,15 @@ def _setup(tmp_path: Path) -> _Environment:
     )
     plans.save(plan)
 
-    runtime = _awaiting_runtime(plan, scan.snapshot.candidates)
+    runtime = FilesystemEventStore(
+        AuthorizedRoot.create(events_root),
+        run_id=plan.run_id,
+    )
+    _populate_awaiting_runtime(
+        runtime,
+        plan,
+        scan.snapshot.candidates,
+    )
     approval = ApprovalRecord.create(
         run_id=plan.run_id,
         plan_hash=plan.plan_hash,
@@ -209,11 +361,24 @@ def _setup(tmp_path: Path) -> _Environment:
     )
 
 
-def _awaiting_runtime(
+def _restart_service(
+    environment: _Environment,
+) -> ApprovalResumeService:
+    return ApprovalResumeService(
+        runtime=FilesystemEventStore(
+            environment.runtime.root,
+            run_id=environment.plan.run_id,
+        ),
+        approvals=environment.service.approvals,
+        executor=environment.service.executor,
+    )
+
+
+def _populate_awaiting_runtime(
+    runtime: InMemoryEventStore | FilesystemEventStore,
     plan: RenamePlan,
     candidates: CandidateSnapshot,
-) -> InMemoryEventStore:
-    runtime = InMemoryEventStore()
+) -> None:
     candidate_ids = tuple(
         candidate.id for candidate in candidates.candidates
     )
@@ -316,4 +481,3 @@ def _awaiting_runtime(
     runtime.append(
         RunStopped(reason=StopReason.AWAITING_APPROVAL)
     )
-    return runtime

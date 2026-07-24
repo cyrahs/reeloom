@@ -184,6 +184,8 @@ def test_mapping_rejects_id_outside_candidate_snapshot() -> None:
         (1, 4, 5, ErrorCode.EPISODE_OUT_OF_BOUNDS),
         (1, 0, 1, ErrorCode.INVALID_EPISODE_RANGE),
         (1, 3, 2, ErrorCode.INVALID_EPISODE_RANGE),
+        (1000, 1, 1, ErrorCode.INVALID_EPISODE_RANGE),
+        (1, 1, 100_001, ErrorCode.INVALID_EPISODE_RANGE),
     ],
 )
 def test_mapping_rejects_invalid_episode_ranges(

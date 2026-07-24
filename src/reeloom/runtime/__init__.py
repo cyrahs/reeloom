@@ -35,10 +35,11 @@ from reeloom.runtime.state import (
     RunStatus,
     StopReason,
 )
-from reeloom.runtime.store import InMemoryEventStore, StoredEvent
+from reeloom.runtime.store import EventStore, InMemoryEventStore, StoredEvent
 
 __all__ = [
     "InMemoryEventStore",
+    "EventStore",
     "ApplyFailed",
     "ApplyStarted",
     "ApprovalRequested",

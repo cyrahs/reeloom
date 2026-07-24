@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 
 from reeloom.kernel.approval import ApprovalRecord
 from reeloom.kernel.candidates import CandidateId, CandidateKind
@@ -12,6 +13,7 @@ from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
+from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import (
     ApplyFailed,
     ApplyStarted,
@@ -105,6 +107,10 @@ def reduce_event(
         if (
             not event.run_id
             or not isinstance(event.work_type, TmdbWorkType)
+            or not isinstance(event.budget, RunBudget)
+            or not isinstance(event.deadline_at, datetime)
+            or event.deadline_at.tzinfo is None
+            or event.deadline_at.utcoffset() is None
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
         return RunState(
@@ -117,6 +123,8 @@ def reduce_event(
             pending_tool_calls=frozenset(),
             observed_tool_calls=frozenset(),
             work_type=event.work_type,
+            budget=event.budget,
+            deadline_at=event.deadline_at,
         )
 
     if state is None:

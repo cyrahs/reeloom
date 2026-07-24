@@ -6,7 +6,7 @@ import queue
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from agents import (
@@ -15,6 +15,7 @@ from agents import (
     Model,
     RunConfig,
     Runner,
+    Session,
     ToolExecutionConfig,
     ToolGuardrailFunctionOutput,
     ToolInputGuardrailData,
@@ -56,7 +57,7 @@ from reeloom.runtime.events import (
 )
 from reeloom.runtime.policy import PhaseToolPolicy
 from reeloom.runtime.state import Phase, RunState, RunStatus, StopReason
-from reeloom.runtime.store import InMemoryEventStore
+from reeloom.runtime.store import EventStore, InMemoryEventStore
 from reeloom.runtime.tool_runtime import ToolRuntime
 from reeloom.tools.candidates import (
     CandidateSource,
@@ -110,6 +111,7 @@ class OrganizerContext:
     subtitle_provider: SubtitleSampleProvider | None = None
     plan_compiler: PlanCompiler | None = None
     plan_store: PlanStore | None = None
+    agent_session: Session | None = None
     clock: Callable[[], datetime] = _utc_now
 
 
@@ -642,6 +644,8 @@ def create_organizer_context(
     plan_store: PlanStore | None = None,
     clock: Callable[[], datetime] | None = None,
     budget: RunBudget | None = None,
+    event_store: EventStore | None = None,
+    agent_session: Session | None = None,
 ) -> OrganizerContext:
     if plan_compiler is not None and (
         plan_compiler.snapshot_id != candidate_source.snapshot_id
@@ -655,39 +659,86 @@ def create_organizer_context(
         raise RuntimeDomainError(
             RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
         )
-    store = InMemoryEventStore()
-    store.append(RunStarted(run_id=run_id, work_type=work_type))
-    store.append(
-        CandidateSnapshotCreated(
-            snapshot_id=candidate_source.snapshot_id,
-            candidate_count=candidate_source.candidate_count,
-            candidate_ids=(
-                tuple(
-                    candidate.id
-                    for candidate in candidate_source.snapshot.candidates
-                )
-                if isinstance(
-                    candidate_source,
-                    SnapshotCandidateSource,
-                )
-                else None
-            ),
-            source_root=(
-                plan_compiler.source_root_binding
-                if plan_compiler is not None
-                else None
-            ),
-            output_root=(
-                plan_compiler.output_root_binding
-                if plan_compiler is not None
-                else None
-            ),
+    if (
+        agent_session is not None
+        and agent_session.session_id != run_id
+    ):
+        raise RuntimeDomainError(RuntimeErrorCode.RUN_ID_MISMATCH)
+    store = event_store or InMemoryEventStore()
+    resolved_clock = clock or _utc_now
+    if store.state is None:
+        resolved_budget = budget or RunBudget()
+        started_at = resolved_clock()
+        if (
+            not isinstance(started_at, datetime)
+            or started_at.tzinfo is None
+            or started_at.utcoffset() is None
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        store.append(
+            RunStarted(
+                run_id=run_id,
+                work_type=work_type,
+                budget=resolved_budget,
+                deadline_at=(
+                    started_at.astimezone(UTC)
+                    + timedelta(
+                        seconds=resolved_budget.max_elapsed_seconds
+                    )
+                ),
+            )
         )
+    state = store.state
+    if state is None or state.run_id != run_id:
+        raise RuntimeDomainError(RuntimeErrorCode.RUN_ID_MISMATCH)
+    if state.work_type is not work_type:
+        raise RuntimeDomainError(
+            RuntimeErrorCode.WORK_TYPE_NOT_AUTHORIZED
+        )
+    if budget is not None and budget != state.budget:
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+    candidate_ids = (
+        tuple(
+            candidate.id
+            for candidate in candidate_source.snapshot.candidates
+        )
+        if isinstance(candidate_source, SnapshotCandidateSource)
+        else None
     )
+    source_root = (
+        plan_compiler.source_root_binding
+        if plan_compiler is not None
+        else None
+    )
+    output_root = (
+        plan_compiler.output_root_binding
+        if plan_compiler is not None
+        else None
+    )
+    if state.candidate_snapshot_id is None:
+        store.append(
+            CandidateSnapshotCreated(
+                snapshot_id=candidate_source.snapshot_id,
+                candidate_count=candidate_source.candidate_count,
+                candidate_ids=candidate_ids,
+                source_root=source_root,
+                output_root=output_root,
+            )
+        )
+    elif (
+        state.candidate_snapshot_id != candidate_source.snapshot_id
+        or state.candidate_count != candidate_source.candidate_count
+        or state.candidate_ids != candidate_ids
+        or state.authorized_source_root != source_root
+        or state.authorized_output_root != output_root
+    ):
+        raise RuntimeDomainError(
+            RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
+        )
     return OrganizerContext(
         runtime=ToolRuntime(
             store=store,
-            budget=budget or RunBudget(),
+            budget=state.budget,
             policy=PhaseToolPolicy(),
         ),
         candidate_source=candidate_source,
@@ -696,7 +747,8 @@ def create_organizer_context(
         subtitle_provider=subtitle_provider,
         plan_compiler=plan_compiler,
         plan_store=plan_store,
-        clock=clock or _utc_now,
+        agent_session=agent_session,
+        clock=resolved_clock,
     )
 
 
@@ -823,8 +875,17 @@ def _create_agent(
     model: Model,
     *,
     work_type: TmdbWorkType,
-    budget: RunBudget,
+    remaining_tokens: int,
+    model_settings: ModelSettings | None = None,
 ) -> Agent[OrganizerContext]:
+    requested_settings = model_settings or ModelSettings()
+    resolved_settings = ModelSettings(
+        reasoning=requested_settings.reasoning,
+        verbosity=requested_settings.verbosity,
+        max_tokens=min(remaining_tokens, 8_192),
+        parallel_tool_calls=False,
+        store=False,
+    )
     return Agent(
         name="EpisodeOrganizerAgent",
         instructions=(
@@ -832,9 +893,7 @@ def _create_agent(
             f"This run's authorized work_type is {work_type.value}."
         ),
         model=model,
-        model_settings=ModelSettings(
-            max_tokens=min(budget.max_total_tokens, 8_192),
-        ),
+        model_settings=resolved_settings,
         tools=[
             _list_candidates_tool,
             _search_tmdb_tool,
@@ -854,16 +913,52 @@ async def run_episode_organizer(
     context: OrganizerContext,
     model: Model,
     prompt: str,
+    model_settings: ModelSettings | None = None,
 ) -> EpisodeOrganizerRunResult:
     """Run the real SDK loop while Reeloom records only domain events."""
 
     if context.runtime.state.status is not RunStatus.RUNNING:
         raise RuntimeDomainError(RuntimeErrorCode.RUN_NOT_ACTIVE)
 
-    loop = asyncio.get_running_loop()
-    deadline_at = (
-        loop.time() + context.runtime.budget.max_elapsed_seconds
+    state = context.runtime.state
+    remaining_turns = (
+        context.runtime.budget.max_model_turns - state.model_turns
     )
+    remaining_tokens = (
+        context.runtime.budget.max_total_tokens - state.model_tokens
+    )
+    now = context.clock()
+    if (
+        not isinstance(now, datetime)
+        or now.tzinfo is None
+        or now.utcoffset() is None
+    ):
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+    remaining_seconds = (
+        state.deadline_at - now.astimezone(UTC)
+    ).total_seconds()
+    if remaining_turns <= 0:
+        context.runtime.store.append(
+            RunStopped(reason=StopReason.MAX_TURNS)
+        )
+        raise MaxTurnsExceeded("run model turn budget exhausted")
+    if remaining_tokens <= 0:
+        context.runtime.store.append(
+            RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+        )
+        raise BudgetExceeded(
+            RuntimeErrorCode.TOKEN_BUDGET_EXHAUSTED
+        )
+    if remaining_seconds <= 0:
+        context.runtime.store.append(
+            RunStopped(reason=StopReason.BUDGET_EXHAUSTED)
+        )
+        raise BudgetExceeded(
+            RuntimeErrorCode.TIME_BUDGET_EXHAUSTED
+        )
+
+    loop = asyncio.get_running_loop()
+    deadline_at = loop.time() + remaining_seconds
     deadline = asyncio.timeout_at(deadline_at)
 
     try:
@@ -873,11 +968,12 @@ async def run_episode_organizer(
                     _create_agent(
                         model,
                         work_type=context.runtime.state.work_type,
-                        budget=context.runtime.budget,
+                        remaining_tokens=remaining_tokens,
+                        model_settings=model_settings,
                     ),
                     prompt,
                     context=context,
-                    max_turns=context.runtime.budget.max_model_turns,
+                    max_turns=remaining_turns,
                     hooks=_BudgetHooks(),
                     run_config=RunConfig(
                         tracing_disabled=True,
@@ -888,6 +984,7 @@ async def run_episode_organizer(
                             max_function_tool_concurrency=1,
                         ),
                     ),
+                    session=context.agent_session,
                 )
                 final_output = result.final_output
             except MaxTurnsExceeded:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, tzinfo
 from pathlib import PurePosixPath
 
@@ -200,6 +202,66 @@ def test_tampering_with_canonical_bytes_invalidates_hash() -> None:
 
     assert tampered != plan.canonical_bytes()
     assert not verify_plan_bytes(tampered, plan.plan_hash)
+
+
+def test_canonical_plan_can_be_reconstructed_without_external_state() -> None:
+    plan = _plan()
+
+    restored = RenamePlan.from_canonical_bytes(
+        plan.canonical_bytes(),
+        plan_hash=plan.plan_hash,
+    )
+
+    assert restored == plan
+    assert restored.canonical_bytes() == plan.canonical_bytes()
+
+
+def test_plan_decoder_rejects_semantically_tampered_canonical_data() -> None:
+    plan = _plan()
+    payload = json.loads(plan.canonical_bytes())
+    payload["moves"][0]["destination"] = (
+        "正确动画 (2024) {tmdb-200}/S01/attacker-selected.mkv"
+    )
+    tampered = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    tampered_hash = f"sha256:{hashlib.sha256(tampered).hexdigest()}"
+
+    with pytest.raises(DomainError):
+        RenamePlan.from_canonical_bytes(
+            tampered,
+            plan_hash=tampered_hash,
+        )
+
+
+def test_plan_decoder_rejects_noncanonical_or_extra_fields() -> None:
+    plan = _plan()
+    noncanonical = plan.canonical_bytes() + b"\n"
+    noncanonical_hash = (
+        f"sha256:{hashlib.sha256(noncanonical).hexdigest()}"
+    )
+    payload = json.loads(plan.canonical_bytes())
+    payload["unexpected"] = True
+    extra = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    extra_hash = f"sha256:{hashlib.sha256(extra).hexdigest()}"
+
+    for content, plan_hash in (
+        (noncanonical, noncanonical_hash),
+        (extra, extra_hash),
+    ):
+        with pytest.raises(DomainError):
+            RenamePlan.from_canonical_bytes(
+                content,
+                plan_hash=plan_hash,
+            )
 
 
 def test_plan_rejects_unchecked_destination() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 from reeloom.kernel.candidates import CandidateId
@@ -9,6 +10,7 @@ from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
+from reeloom.runtime.budget import RunBudget
 
 
 class Phase(StrEnum):
@@ -96,6 +98,8 @@ class RunState:
     pending_tool_calls: frozenset[tuple[str, str]]
     observed_tool_calls: frozenset[tuple[str, str]]
     work_type: TmdbWorkType
+    budget: RunBudget
+    deadline_at: datetime
     candidate_snapshot_id: str | None = None
     candidate_count: int = 0
     candidate_ids: tuple[CandidateId, ...] | None = None

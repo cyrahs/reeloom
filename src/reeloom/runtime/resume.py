@@ -9,6 +9,7 @@ from reeloom.executor.apply import (
 )
 from reeloom.executor.errors import (
     ApprovalError,
+    ApprovalErrorCode,
     ExecutorError,
 )
 from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
@@ -23,14 +24,14 @@ from reeloom.runtime.events import (
     RunCompleted,
 )
 from reeloom.runtime.state import Phase, RunState, RunStatus, StopReason
-from reeloom.runtime.store import InMemoryEventStore
+from reeloom.runtime.store import EventStore
 
 
 @dataclass(frozen=True, slots=True)
 class ApprovalResumeService:
     """Resume one stopped run without exposing apply to the Agent."""
 
-    runtime: InMemoryEventStore
+    runtime: EventStore
     approvals: ApprovalStore
     executor: FilesystemExecutor
 
@@ -38,9 +39,10 @@ class ApprovalResumeService:
         self,
         approval: ApprovalRecord,
     ) -> ApplyResult:
-        state = self._awaiting_state()
+        state = self.runtime.state
         if (
-            not isinstance(approval, ApprovalRecord)
+            state is None
+            or not isinstance(approval, ApprovalRecord)
             or not approval.verify_id()
             or approval.run_id != state.run_id
             or approval.plan_hash != state.plan_hash
@@ -49,34 +51,53 @@ class ApprovalResumeService:
             raise RuntimeDomainError(
                 RuntimeErrorCode.INVALID_TRANSITION
             )
-        self.approvals.issue(approval)
-        self.runtime.append(
-            PlanApproved(
-                plan_hash=approval.plan_hash,
-                approval_id=approval.approval_id,
+        if (
+            state.status is RunStatus.STOPPED
+            and state.phase is Phase.AWAITING_APPROVAL
+            and state.stop_reason is StopReason.AWAITING_APPROVAL
+            and state.approval_id is None
+        ):
+            self.approvals.issue(approval)
+            self.runtime.append(
+                PlanApproved(
+                    plan_hash=approval.plan_hash,
+                    approval_id=approval.approval_id,
+                )
             )
-        )
-        self.runtime.append(
-            ApplyStarted(
-                plan_hash=approval.plan_hash,
-                approval_id=approval.approval_id,
+        elif not (
+            state.status is RunStatus.RUNNING
+            and state.phase in {Phase.AWAITING_APPROVAL, Phase.APPLYING}
+            and state.approval_id == approval.approval_id
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
             )
-        )
-        return self._execute(approval.approval_id, recover=False)
+        self._start_apply_if_needed()
+        return self._execute(approval.approval_id)
 
     def recover(self) -> ApplyResult:
+        state = self.runtime.state
+        if (
+            state is None
+            or state.status is not RunStatus.RUNNING
+            or state.phase
+            not in {Phase.AWAITING_APPROVAL, Phase.APPLYING}
+            or state.approval_id is None
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        self._start_apply_if_needed()
         state = self._applying_state()
         if state.approval_id is None:
             raise RuntimeDomainError(
                 RuntimeErrorCode.INVALID_TRANSITION
             )
-        return self._execute(state.approval_id, recover=True)
+        return self._execute(state.approval_id)
 
     def _execute(
         self,
         approval_id: str,
-        *,
-        recover: bool,
     ) -> ApplyResult:
         state = self._applying_state()
         if state.plan_hash is None:
@@ -84,20 +105,39 @@ class ApprovalResumeService:
                 RuntimeErrorCode.INVALID_TRANSITION
             )
         try:
-            operation = (
-                self.executor.recover
-                if recover
-                else self.executor.apply
-            )
-            result = operation(
-                plan_hash=state.plan_hash,
-                approval_id=approval_id,
-            )
+            try:
+                result = self.executor.apply(
+                    plan_hash=state.plan_hash,
+                    approval_id=approval_id,
+                )
+            except ApprovalError as error:
+                if error.code is not ApprovalErrorCode.ALREADY_CLAIMED:
+                    raise
+                result = self.executor.recover(
+                    plan_hash=state.plan_hash,
+                    approval_id=approval_id,
+                )
         except (ApprovalError, ExecutorError) as error:
             self._record_failure(error.code.value)
             raise
         self._finish(result)
         return result
+
+    def _start_apply_if_needed(self) -> None:
+        state = self.runtime.state
+        if (
+            state is not None
+            and state.status is RunStatus.RUNNING
+            and state.phase is Phase.AWAITING_APPROVAL
+            and state.plan_hash is not None
+            and state.approval_id is not None
+        ):
+            self.runtime.append(
+                ApplyStarted(
+                    plan_hash=state.plan_hash,
+                    approval_id=state.approval_id,
+                )
+            )
 
     def _finish(self, result: ApplyResult) -> None:
         state = self._applying_state()
@@ -139,20 +179,6 @@ class ApprovalResumeService:
         state = self._applying_state()
         if state.failure_code is None:
             self.runtime.append(ApplyFailed(code=code))
-
-    def _awaiting_state(self) -> RunState:
-        state = self.runtime.state
-        if (
-            state is None
-            or state.status is not RunStatus.STOPPED
-            or state.phase is not Phase.AWAITING_APPROVAL
-            or state.stop_reason is not StopReason.AWAITING_APPROVAL
-            or state.plan_hash is None
-        ):
-            raise RuntimeDomainError(
-                RuntimeErrorCode.INVALID_TRANSITION
-            )
-        return state
 
     def _applying_state(self) -> RunState:
         state = self.runtime.state
