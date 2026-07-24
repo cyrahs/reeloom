@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.rename_plan import (
@@ -18,9 +19,13 @@ from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
+    ApplyStarted,
     ApprovalRequested,
     CandidateSnapshotCreated,
+    MoveApplied,
     PlanBuilt,
+    PlanApproved,
+    RunCompleted,
     RunStarted,
     RunStopped,
 )
@@ -172,5 +177,82 @@ def test_plan_event_must_match_the_bootstrap_root_capabilities() -> None:
 
     with pytest.raises(RuntimeDomainError) as raised:
         reduce_event(state, PlanBuilt(plan=plan))
+
+    assert raised.value.code is RuntimeErrorCode.INVALID_TRANSITION
+
+
+def test_approved_plan_reaches_typed_completion_events() -> None:
+    plan, state = _plan_and_state()
+    state = reduce_event(state, PlanBuilt(plan=plan))
+    state = reduce_event(
+        state,
+        ApprovalRequested(plan_hash=plan.plan_hash),
+    )
+    state = reduce_event(
+        state,
+        RunStopped(reason=StopReason.AWAITING_APPROVAL),
+    )
+    approval = ApprovalRecord.create(
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+        scope=ApprovalScope.APPLY,
+        expires_at=datetime(2026, 7, 24, tzinfo=UTC),
+        nonce="r" * 32,
+    )
+
+    state = reduce_event(
+        state,
+        PlanApproved(
+            plan_hash=plan.plan_hash,
+            approval_id=approval.approval_id,
+        ),
+    )
+    assert state.status is RunStatus.RUNNING
+    assert state.phase is Phase.AWAITING_APPROVAL
+    state = reduce_event(
+        state,
+        ApplyStarted(
+            plan_hash=plan.plan_hash,
+            approval_id=approval.approval_id,
+        ),
+    )
+    state = reduce_event(
+        state,
+        MoveApplied(source_id=plan.draft.moves[0].source_id),
+    )
+    state = reduce_event(
+        state,
+        RunCompleted(
+            transaction_id="txn-v1-" + "a" * 64,
+            applied_count=1,
+        ),
+    )
+
+    assert state.phase is Phase.COMPLETED
+    assert state.status is RunStatus.STOPPED
+    assert state.approval_id == approval.approval_id
+    assert state.applied_count == 1
+
+
+def test_plan_approval_must_match_stopped_run_hash() -> None:
+    plan, state = _plan_and_state()
+    state = reduce_event(state, PlanBuilt(plan=plan))
+    state = reduce_event(
+        state,
+        ApprovalRequested(plan_hash=plan.plan_hash),
+    )
+    state = reduce_event(
+        state,
+        RunStopped(reason=StopReason.AWAITING_APPROVAL),
+    )
+
+    with pytest.raises(RuntimeDomainError) as raised:
+        reduce_event(
+            state,
+            PlanApproved(
+                plan_hash="sha256:" + "0" * 64,
+                approval_id="approval-v1-" + "a" * 64,
+            ),
+        )
 
     assert raised.value.code is RuntimeErrorCode.INVALID_TRANSITION

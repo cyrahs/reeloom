@@ -49,6 +49,7 @@ class ErrorCode(StrEnum):
     MISSING_PLAN_CANDIDATES = "missing_plan_candidates"
     INCOMPLETE_SOURCE_IDENTITY = "incomplete_source_identity"
     PLAN_PREFLIGHT_MISMATCH = "plan_preflight_mismatch"
+    INVALID_APPROVAL = "invalid_approval"
     PATH_NOT_ABSOLUTE = "path_not_absolute"
     PATH_NOT_FOUND = "path_not_found"
     PATH_NOT_DIRECTORY = "path_not_directory"

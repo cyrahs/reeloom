@@ -305,11 +305,17 @@ def _plan_hash(canonical_bytes: bytes) -> str:
     return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
+def is_valid_plan_hash(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and _HASH_PATTERN.fullmatch(value) is not None
+    )
+
+
 def verify_plan_bytes(canonical_bytes: bytes, plan_hash: str) -> bool:
     if (
         not isinstance(canonical_bytes, bytes)
-        or not isinstance(plan_hash, str)
-        or _HASH_PATTERN.fullmatch(plan_hash) is None
+        or not is_valid_plan_hash(plan_hash)
     ):
         return False
     return hmac.compare_digest(_plan_hash(canonical_bytes), plan_hash)

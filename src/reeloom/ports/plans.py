@@ -38,3 +38,11 @@ class PlanCompiler(Protocol):
         ],
         created_at: datetime,
     ) -> RenamePlan: ...
+
+
+class PlanStore(Protocol):
+    """Content-addressed persistence; callers load plans only by hash."""
+
+    def save(self, plan: RenamePlan) -> None: ...
+
+    def load(self, plan_hash: str) -> bytes: ...

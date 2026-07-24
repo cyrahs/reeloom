@@ -833,3 +833,174 @@ M5 只读确认目标当时不存在、已有父目录不是 symlink，并把结
 M5 的 scripted integration 已从错误 mapping 修正一路运行到
 `AWAITING_APPROVAL`，同时确认输出目录为空。完整验收见
 [M5 Definition of Done](m5-review.md)。
+
+## M6.1：批准不是一句“可以”，而是一项一次性 capability
+
+M5 把 run 暂停在 `AWAITING_APPROVAL`，但自然语言中的“同意”不能直接成为
+执行权限。M6.1 将批准建模为 canonical `ApprovalRecord`，精确绑定：
+
+```text
+run_id + plan_hash + scope + expiry + nonce
+                    ↓ canonical JSON + SHA-256
+                 approval_id
+```
+
+其中 `scope` 第一版只有 `apply`。`expiry` 使用规范 UTC 时间，nonce 有固定的
+安全格式；字段缺失、多余字段、非 canonical bytes 或任何绑定内容被改动都会
+fail closed。这里的 hash 用来给不可变记录建立稳定 identity，而不是让模型
+自行签发权限；记录只能由独立的审批入口创建。
+
+### 为什么“检查未使用，再写 used=true”仍然不安全
+
+两个 Executor 可能同时读到 `used=false`，然后都开始移动。M6.1 不做
+read-modify-write，而是在批准 store 内创建唯一的 claim 文件：
+
+```text
+read + validate exact approval
+→ reject wrong binding / expiry
+→ open(claim, O_CREAT | O_EXCL | O_NOFOLLOW)
+→ fsync claim and directory
+→ only one caller may continue
+```
+
+`O_EXCL` 把竞争交给文件系统原子裁决：一个调用成功，其他并发调用和之后的
+重放都得到 `already_claimed`。claim 必须在未来任何媒体移动之前持久化；若写入
+过程中发生不确定错误，残留 claim 也不会被自动删除，因为“可能已经消费”必须
+按已消费处理。
+
+批准文件通过授权目录句柄、`O_NOFOLLOW` 和有界读取打开，并在读取前后核对
+device、inode、size、mtime 和 ctime。错误 hash、run 或 scope 不会抢先消耗
+正确批准，过期批准也不会建立 claim。
+
+M6.1 仍然不会移动媒体。M6.2 将接入不依赖 LLM 的 Executor，并在 claim 后、
+任何 rename 前对 plan、root、source identity、symlink、目标不存在和同一文件
+系统做最终 preflight。
+
+## M6.2：Executor 只接收 capability，不接收新的路径
+
+M6.2 增加 content-addressed plan store。写入端只接受已经由 M5 compiler
+构造且能复核 hash 的 `RenamePlan`；读取端只有 `load(plan_hash)`，文件名由
+严格 hash 格式确定。Executor 的公开输入因此保持为：
+
+```text
+persisted plan_hash + approval_id
+```
+
+它不接收 `source`、`destination`、move 列表或自然语言。canonical bytes 在
+no-follow、有界读取前后核对文件 identity，并再次计算 hash；随后严格解析出只含
+执行所需字段的 manifest。plan bytes 篡改会在 claim 前失败，不会消耗正确批准。
+
+### 为什么 transaction intent 位于 claim 之前
+
+动态 preflight 读到的是某一瞬间的文件系统状态。如果两个 Executor 都先完成
+检查、再竞争批准，它们会重复做昂贵工作，也会给后续副作用留下更复杂的状态。
+最终 apply 在验证静态 plan 后先持久化 transaction/rollback intent，再原子
+claim，最后执行动态检查：
+
+```text
+load + verify persisted plan
+→ acquire transaction lease
+→ persist rollback manifest
+→ claim exact approval
+→ reopen authorized roots with no-follow
+→ verify every mapped and unmapped source identity
+→ verify subtitle bounded-prefix digest
+→ verify destination absent and parents are directories
+→ verify each rename remains on one filesystem
+```
+
+source 使用目录句柄逐级打开；最终文件在 `lstat → O_NOFOLLOW open → fstat →
+bounded read → fstat` 前后核对 device、inode、size、mtime 和 ctime。即使文件
+在检查与 open 之间被换成 symlink，也只会得到结构化失败。目标路径同样逐级
+拒绝 symlink 和非目录，任何已出现的目标都会成为 collision，绝不覆盖。
+
+MVP 明确拒绝跨文件系统 move。这里没有退化为 copy + unlink，因为那会引入
+部分复制、源删除和更复杂的崩溃恢复语义。
+
+### 本步骤为什么仍不 rename
+
+M6.2 只建立可离线验证的只读 advisory preflight，不消费 approval、不创建归档
+目录、不移动媒体。独立 preflight 返回后，文件系统仍可能再次变化，所以它
+不能单独成为长期有效的“检查凭证”。M6.3 在同一个 Executor apply 流程中重新
+执行这些检查，并为部分失败提供幂等恢复。
+
+## M6.3：副作用是一项事务，不是一个 move 工具
+
+M6.3 没有给 Agent 增加 `apply` 或 `move_file`。唯一执行入口
+`FilesystemExecutor.apply` 仍只接受持久化 `plan_hash + approval_id`，然后在
+无模型、无网络的 effect plane 中完成：
+
+```text
+load exact plan
+→ acquire transaction lease
+→ persist rollback manifest
+→ atomically claim approval
+→ final preflight
+→ rename one move with no-replace
+→ fsync directories
+→ append immutable move event
+→ persist completed result
+```
+
+rollback manifest 在任何归档目录创建和 rename 之前写入，包含反向顺序的
+destination、source 和 source identity。journal 不维护一个反复覆盖的
+`status.json`；header、move、failure、rollback 和 terminal result 都是独立的
+`O_EXCL` canonical 文件。相同事件重试时只有 exact bytes 相同才视为幂等，
+内容冲突、symlink 或部分记录都会 fail closed。
+
+apply 与 recover 必须持有同一个 transaction lease。approval claim 只表达
+“该 capability 已被消费”，不能阻止 recovery 与仍在运行的 apply 并发。lease
+由打开的文件描述符持有，进程退出时自动释放；竞争者得到结构化
+`transaction_busy`，不会观察并改写半完成事务。
+
+completed event 的持久化一旦开始，apply 不再自动 rollback，因为目录 fsync
+报错不能证明 event 没有落盘。current move 的 post-rename identity 或即时恢复
+不确定时也不会写 `rolled-back`；恢复必须观察 exact source/destination identity。
+`completed` 与 `rolled-back` 同时存在属于冲突终态，直接 fail closed。
+
+### 为什么“检查目标不存在，然后 os.rename”仍会覆盖
+
+普通 `os.rename` 在 POSIX 上可以替换已存在目标。即使前一行刚检查过 absent，
+另一进程也可能在两行之间创建目标。M6.3 使用：
+
+```text
+renameat2(..., RENAME_NOREPLACE)
+```
+
+不存在安全原语时不会降级成普通 rename，也不会使用 copy + unlink。目标在
+最后时刻出现会得到 collision，外部目标保持原样。每次 forward/rollback rename
+后都会 fsync 两端目录，并核对移动后仍是预期 inode；source 在移动前继续使用
+完整 device/inode/size/mtime/ctime identity。
+
+rename 本身可能合法改变 ctime，因此移动后的核对使用稳定的
+device/inode/size/mtime；这不同于放松执行前校验。执行前仍要求完整 ctime，
+rollback intent 也必须先持久化，才允许恢复逻辑把 ctime 改变解释为已完成的
+反向 rename。
+
+### 崩溃恢复为什么观察文件系统，而不只相信最后一条 event
+
+进程可能在 rename 已成功、但 move event 尚未持久化时退出。恢复只依赖 event
+会漏掉这个 move。`recover(plan_hash, approval_id)` 会重新验证 claimed approval
+和 exact rollback manifest，然后对每个 move 判定：
+
+```text
+source expected + destination absent → 尚未移动或已安全回滚
+source absent + destination expected → 已移动，需要反向 rename
+其他任何组合                     → recovery_required
+```
+
+rollback 前先 append `rollback_started`，所以即使反向 rename 后、rollback
+event 前再次崩溃，下一次恢复也能安全识别。若 source 被外部重新创建，恢复绝不
+覆盖它；source 与 destination 同时存在时保留两者并要求人工处理。
+
+### 暂停/恢复为什么仍然不属于 Agent
+
+Plan Compiler 在发布 `ApprovalRequested` 前先保存 canonical plan。独立的
+`ApprovalResumeService` 接收结构化 `ApprovalRecord`，而不是用户自然语言，并
+驱动 `PlanApproved → ApplyStarted → MoveApplied/ApplyFailed →
+RunCompleted/RollbackCompleted`。它调用不含模型的 Executor；Agent 的工具集合
+仍然没有 `apply`、`move_file` 或任何路径参数。
+
+完整验收见 [M6 Definition of Done](m6-review.md)。下一步 M7 将处理真实模型
+配置、持久 checkpoint、脱敏 trace 与离线 eval；这些能力不会改变 Executor
+已经建立的确定性权限边界。

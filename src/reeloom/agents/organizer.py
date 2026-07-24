@@ -37,7 +37,7 @@ from reeloom.kernel.inventory import ExistingInventory
 from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.kernel.tmdb import TmdbLanguage, TmdbWorkType
 from reeloom.ports.subtitles import SubtitleSampleProvider
-from reeloom.ports.plans import PlanCompiler
+from reeloom.ports.plans import PlanCompiler, PlanStore
 from reeloom.ports.tmdb import TmdbProvider
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.errors import (
@@ -109,6 +109,7 @@ class OrganizerContext:
     inventory: ExistingInventory | None = None
     subtitle_provider: SubtitleSampleProvider | None = None
     plan_compiler: PlanCompiler | None = None
+    plan_store: PlanStore | None = None
     clock: Callable[[], datetime] = _utc_now
 
 
@@ -638,6 +639,7 @@ def create_organizer_context(
     inventory: ExistingInventory | None = None,
     subtitle_provider: SubtitleSampleProvider | None = None,
     plan_compiler: PlanCompiler | None = None,
+    plan_store: PlanStore | None = None,
     clock: Callable[[], datetime] | None = None,
     budget: RunBudget | None = None,
 ) -> OrganizerContext:
@@ -646,6 +648,10 @@ def create_organizer_context(
         or plan_compiler.candidate_count
         != candidate_source.candidate_count
     ):
+        raise RuntimeDomainError(
+            RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
+        )
+    if plan_compiler is not None and plan_store is None:
         raise RuntimeDomainError(
             RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
         )
@@ -689,6 +695,7 @@ def create_organizer_context(
         inventory=inventory,
         subtitle_provider=subtitle_provider,
         plan_compiler=plan_compiler,
+        plan_store=plan_store,
         clock=clock or _utc_now,
     )
 
@@ -763,6 +770,11 @@ async def _build_plan_for_approval(
 ) -> None:
     try:
         plan = await _compile_plan_async(context)
+        if context.plan_store is None:
+            raise RuntimeDomainError(
+                RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
+            )
+        context.plan_store.save(plan)
     except Exception as error:
         if context.runtime.state.status is RunStatus.RUNNING:
             context.runtime.store.append(

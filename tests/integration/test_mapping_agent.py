@@ -11,6 +11,7 @@ from reeloom.adapters.filesystem import (
     FilesystemPlanCompiler,
     FilesystemScanner,
 )
+from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.agents.organizer import (
     create_organizer_context,
     run_episode_organizer,
@@ -148,8 +149,10 @@ def _context(
 ):
     source_root = tmp_path / "incoming"
     output_root = tmp_path / "anime"
+    plan_store_root = tmp_path / "plans"
     source_root.mkdir()
     output_root.mkdir()
+    plan_store_root.mkdir()
     (source_root / "untrusted episode name.mkv").write_bytes(
         b"video"
     )
@@ -173,6 +176,9 @@ def _context(
         plan_compiler=FilesystemPlanCompiler(
             scan=scan,
             output_root=AuthorizedRoot.create(output_root),
+        ),
+        plan_store=FilesystemPlanStore(
+            AuthorizedRoot.create(plan_store_root)
         ),
         clock=lambda: datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
         budget=budget,
@@ -303,6 +309,11 @@ def test_agent_corrects_mapping_from_structured_validation_feedback(
     assert result.state.rename_plan is not None
     assert result.state.rename_plan.verify_hash()
     assert result.state.plan_hash == result.state.rename_plan.plan_hash
+    assert context.plan_store is not None
+    assert (
+        context.plan_store.load(result.state.plan_hash)
+        == result.state.rename_plan.canonical_bytes()
+    )
     assert result.state.mapping_draft is not None
     assert result.state.mapping_draft.videos[0].span.episode_start == 2
     assert result.state.failures == 1

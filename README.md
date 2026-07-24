@@ -9,10 +9,10 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M5 / 确定性 Plan Compiler（已完成）**
+**M6 / 审批、Executor 与 Rollback（已完成）**
 
-M0-M4 的领域契约、真实 SDK tool loop、安全扫描、受控 TMDB 识别和 strict
-mapping 之上，已经能把 Agent 的语义结果编译为可精确审批的事务输入：
+M0-M5 已能把 Agent 的语义结果编译为可精确审批的事务输入；M6 建立了独立于
+Agent/LLM 的审批消费、最终检查、执行与恢复边界：
 
 - Plan Compiler 不是 Agent 工具；mapping 成功后由确定性代码根据 snapshot
   relative path 和扩展名生成 destination，模型没有路径输入通道；
@@ -24,12 +24,40 @@ mapping 之上，已经能把 Agent 的语义结果编译为可精确审批的�
 - 文件系统 adapter 只读检查目标不存在、父目录不是 symlink，并拒绝已有目标；
   M6 执行前仍会进行最终 preflight；
 - `PlanBuilt` 和精确 hash 的 `ApprovalRequested` 事件将 run 停在
-  `AWAITING_APPROVAL`；普通模型文本不能建立或批准计划；
+  `AWAITING_APPROVAL`；plan 在请求批准前已经持久化，普通模型文本不能建立或
+  批准计划；
 - preview 只展示确定性 source/destination 和未映射文件，整个 dry-run 不创建
   目录、不移动、不覆盖文件。
+- `ApprovalRecord` canonical 绑定 `run_id + plan_hash + scope + expiry +
+  nonce`，严格拒绝多余字段、非规范编码和记录篡改；
+- filesystem approval store 只在独立授权根中 no-follow、有界读取记录，并用
+  `O_CREAT | O_EXCL` 在任何未来移动前原子创建持久 claim；
+- wrong binding 和 expiry 不消费批准；并发 claim 只有一个成功，重启后的重放
+  仍被拒绝。
+- content-addressed plan store 只按 `plan_hash` 保存和 no-follow 读取 canonical
+  bytes，Executor API 只接受持久化 hash 与 approval ID，不接受路径或 move；
+- apply 先持久化幂等 transaction/rollback header，再原子 claim approval，随后
+  重新打开并核对 source/output root、全部 mapped/unmapped source identity 与
+  字幕 sample digest，拒绝 symlink、目标出现和目录竞态；
+- 每个 move 的 source 与目标现存父目录必须处于同一文件系统；MVP 不提供
+  copy/unlink 跨文件系统降级。
+- apply 在任何目录创建和 rename 前持久化显式 rollback manifest；journal
+  event 使用独立 `O_EXCL` 文件 append-only 记录，不原地覆盖状态；
+- media rename 使用 Linux `renameat2(RENAME_NOREPLACE)`，目标在最终检查后
+  临时出现也不会被覆盖；系统不支持安全原语时直接 fail closed；
+- partial failure 自动逆序 rollback；崩溃恢复依据 exact plan、claimed
+  approval、immutable journal 和源/目标 identity 唯一判定状态，歧义时返回
+  `recovery_required`；
+- 同一 transaction 的 apply/recover 共享进程级 lease；当前 move 或 terminal
+  durability 不确定时不写伪终态，冲突终态直接 fail closed；
+- unmapped 文件永不移动，rollback 不覆盖重建的 source，也不删除媒体文件；
+  已创建的空归档目录可以保留。
 
 adapter 只接受调用方显式注入的凭据，不加载配置文件。自动化测试不访问真实
-网络，也没有任何移动、重命名或删除能力。
+网络。真实媒体副作用只存在于不属于 Agent tool 的 `FilesystemExecutor.apply`
+中，并且只能由持久化 plan hash 与一次性 approval ID 启动。确定性的
+`ApprovalResumeService` 将停止的 run 转换为 `PlanApproved → ApplyStarted →
+RunCompleted/RollbackCompleted`，不会把 apply 暴露为 Agent tool。
 
 M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允许
 `anime/tv_series`。电影选择、单文件 mapping 和电影命名必须先建立独立领域
@@ -41,7 +69,8 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M2 Definition of Done](docs/m2-review.md)，M3 验收结论见
 [M3 Definition of Done](docs/m3-review.md)，M4 验收结论见
 [M4 Definition of Done](docs/m4-review.md)，M5 验收结论见
-[M5 Definition of Done](docs/m5-review.md)。
+[M5 Definition of Done](docs/m5-review.md)，M6 验收结论见
+[M6 Definition of Done](docs/m6-review.md)。
 
 ## 本地验证
 

@@ -93,6 +93,24 @@ def test_plan_compiler_must_match_the_run_candidate_snapshot() -> None:
     assert raised.value.code is RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
 
 
+def test_plan_compiler_requires_plan_persistence() -> None:
+    source = _source()
+
+    class MatchingCompiler:
+        snapshot_id = source.snapshot_id
+        candidate_count = source.candidate_count
+
+    with pytest.raises(RuntimeDomainError) as raised:
+        create_organizer_context(
+            run_id="run-1",
+            candidate_source=source,
+            work_type=TmdbWorkType.ANIME,
+            plan_compiler=MatchingCompiler(),  # type: ignore[arg-type]
+        )
+
+    assert raised.value.code is RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE
+
+
 def test_sdk_runner_completes_a_multi_turn_tool_loop() -> None:
     model = ScriptedModel(
         (

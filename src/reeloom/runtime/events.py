@@ -86,6 +86,40 @@ class ApprovalRequested:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanApproved:
+    plan_hash: str
+    approval_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyStarted:
+    plan_hash: str
+    approval_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class MoveApplied:
+    source_id: CandidateId
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyFailed:
+    code: str
+
+
+@dataclass(frozen=True, slots=True)
+class RollbackCompleted:
+    transaction_id: str
+    rolled_back_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RunCompleted:
+    transaction_id: str
+    applied_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class ModelUsageRecorded:
     input_tokens: int
     output_tokens: int
@@ -134,6 +168,12 @@ RuntimeEvent: TypeAlias = (
     | MappingSubmitted
     | PlanBuilt
     | ApprovalRequested
+    | PlanApproved
+    | ApplyStarted
+    | MoveApplied
+    | ApplyFailed
+    | RollbackCompleted
+    | RunCompleted
     | ModelUsageRecorded
     | ToolRequested
     | ToolSucceeded

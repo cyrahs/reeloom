@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from reeloom.kernel.approval import ApprovalRecord
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.inventory import MAX_INVENTORY_EPISODES
@@ -12,13 +13,19 @@ from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
+    ApplyFailed,
+    ApplyStarted,
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
     MappingRejected,
     MappingSubmitted,
     ModelUsageRecorded,
+    MoveApplied,
+    PlanApproved,
     PlanBuilt,
+    RollbackCompleted,
+    RunCompleted,
     RunFailed,
     RunStarted,
     RunStopped,
@@ -38,6 +45,16 @@ from reeloom.runtime.state import (
     RunStatus,
     StopReason,
 )
+
+
+def _is_transaction_id(value: object) -> bool:
+    prefix = "txn-v1-"
+    return (
+        isinstance(value, str)
+        and value.startswith(prefix)
+        and len(value) == len(prefix) + 64
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
 
 
 def _require_running(state: RunState) -> None:
@@ -104,6 +121,27 @@ def reduce_event(
 
     if state is None:
         raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+
+    if isinstance(event, PlanApproved):
+        if (
+            state.status is not RunStatus.STOPPED
+            or state.phase is not Phase.AWAITING_APPROVAL
+            or state.stop_reason is not StopReason.AWAITING_APPROVAL
+            or state.plan_hash is None
+            or event.plan_hash != state.plan_hash
+            or state.approval_id is not None
+            or not ApprovalRecord.is_valid_id(event.approval_id)
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            status=RunStatus.RUNNING,
+            event_count=state.event_count + 1,
+            stop_reason=None,
+            approval_id=event.approval_id,
+        )
 
     _require_running(state)
     event_count = state.event_count + 1
@@ -451,6 +489,115 @@ def reduce_event(
             state,
             phase=Phase.AWAITING_APPROVAL,
             event_count=event_count,
+        )
+
+    if isinstance(event, ApplyStarted):
+        if (
+            state.phase is not Phase.AWAITING_APPROVAL
+            or state.plan_hash is None
+            or event.plan_hash != state.plan_hash
+            or state.approval_id is None
+            or event.approval_id != state.approval_id
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            phase=Phase.APPLYING,
+            event_count=event_count,
+        )
+
+    if isinstance(event, MoveApplied):
+        expected = (
+            {
+                move.source_id
+                for move in state.rename_plan.draft.moves
+            }
+            if state.rename_plan is not None
+            else set()
+        )
+        if (
+            state.phase is not Phase.APPLYING
+            or event.source_id not in expected
+            or event.source_id in state.applied_source_ids
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            applied_source_ids=(
+                *state.applied_source_ids,
+                event.source_id,
+            ),
+        )
+
+    if isinstance(event, ApplyFailed):
+        if (
+            state.phase is not Phase.APPLYING
+            or state.failure_code is not None
+            or not event.code
+            or len(event.code.encode("utf-8")) > 80
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            failures=state.failures + 1,
+            failure_code=event.code,
+        )
+
+    if isinstance(event, RollbackCompleted):
+        if (
+            state.phase is not Phase.APPLYING
+            or state.failure_code is None
+            or not _is_transaction_id(event.transaction_id)
+            or type(event.rolled_back_count) is not int
+            or event.rolled_back_count < 0
+            or state.rename_plan is None
+            or event.rolled_back_count > len(
+                state.rename_plan.draft.moves
+            )
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            phase=Phase.ROLLED_BACK,
+            status=RunStatus.STOPPED,
+            event_count=event_count,
+            transaction_id=event.transaction_id,
+            rolled_back_count=event.rolled_back_count,
+        )
+
+    if isinstance(event, RunCompleted):
+        expected_sources = (
+            tuple(
+                move.source_id
+                for move in state.rename_plan.draft.moves
+            )
+            if state.rename_plan is not None
+            else ()
+        )
+        if (
+            state.phase is not Phase.APPLYING
+            or not _is_transaction_id(event.transaction_id)
+            or type(event.applied_count) is not int
+            or event.applied_count != len(expected_sources)
+            or state.applied_source_ids != expected_sources
+        ):
+            raise RuntimeDomainError(
+                RuntimeErrorCode.INVALID_TRANSITION
+            )
+        return replace(
+            state,
+            phase=Phase.COMPLETED,
+            status=RunStatus.STOPPED,
+            event_count=event_count,
+            transaction_id=event.transaction_id,
+            applied_count=event.applied_count,
+            failure_code=None,
         )
 
     if isinstance(event, ModelUsageRecorded):

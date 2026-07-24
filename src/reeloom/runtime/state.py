@@ -113,6 +113,11 @@ class RunState:
     mapping_draft: MappingDraft | None = None
     rename_plan: RenamePlan | None = None
     plan_hash: str | None = None
+    approval_id: str | None = None
+    transaction_id: str | None = None
+    applied_source_ids: tuple[CandidateId, ...] = ()
+    applied_count: int = 0
+    rolled_back_count: int = 0
     validation_issues: tuple[MappingValidationIssue, ...] = ()
     model_turns: int = 0
     model_tokens: int = 0
