@@ -1,11 +1,11 @@
 # Reeloom 初步实施计划
 
-状态：Draft v0.1
+状态：Draft v0.4
 
-日期：2026-07-23
+日期：2026-07-24
 
-当前进度：M0、M1、M2、M3、M4、M5、M6、M7 已完成。M0 建立纯领域
-契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
+当前进度：M0-M7 已完成；M8 已重新规划，尚未开始实现。
+M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
 port、固定目的地 HTTP adapter、候选 ID capability、受 phase 限制的识别工具，
@@ -21,7 +21,10 @@ result、transaction lease、typed approval resume 和幂等崩溃恢复。M7 �
 严格版本化的 runtime event codec、no-follow append-only checkpoint 与 SDK
 session、进程重启 replay、scripted transcript、固定 eval dataset、脱敏 trace、
 任务指标、显式 OpenAI Responses provider 配置和 opt-in live eval 均已建立。
-movie 的选择、mapping 和命名需要独立领域契约，不能复用 episode mapping。
+M8 将从这条 M7 基线重新实现服务器控制面：PostgreSQL 从第一步起就是唯一
+control-plane metadata owner，文件系统只保留 Secret、Plan、Journal 和媒体。
+详细分步见 [M8 计划](m8-plan.md)。movie 的选择、mapping 和命名仍需要独立领域
+契约，不能复用 episode mapping。
 
 ## 1. 项目目标
 
@@ -58,7 +61,8 @@ Agent 可以自主决定查询顺序和需要补充的证据，但不能改变�
 
 ```mermaid
 flowchart TD
-    U["User / CLI / API"] --> R["Agent Runner"]
+    U["User / Web UI / API"] --> S["Application Service"]
+    S --> R["Agent Runner"]
     R --> A["Episode Organizer Agent"]
     A --> T["Typed, capability-scoped tools"]
     T --> K["Deterministic Safety Kernel"]
@@ -472,6 +476,53 @@ tests/
 
 完成条件：核心 test suite 不依赖网络；真实模型行为可由固定 eval 重放比较。
 
+### M8：服务器控制面、配置 API 与交互式修订
+
+学习目标：理解长生命周期 Agent 服务、配置能力、后台调度、human-in-the-loop
+修订、PostgreSQL 事务边界和 HTTP 信任边界。
+
+当前状态：计划已重写，尚未开始实现。M8 不继承实验性的 filesystem
+control-plane，从 PostgreSQL 17 foundation 开始逐阶段构建。
+
+交付：
+
+- PostgreSQL 唯一控制面和 transport-neutral application services；
+- watch root、archive route、轮询、provider profile、secret 和 apply policy
+  的版本化配置 API；
+- 受部署级 origin policy 限制的 OpenAI-compatible provider；
+- watcher/discovery、bounded current observations、幂等 run/job 创建；
+- run/plan/approval/apply HTTP API 与脱敏 SSE；
+- 在原 run/Agent session 上只读 question，并以 immutable plan revision
+  接受人工纠正或额外要求；
+- `plan_only/manual/automatic` orchestration，全部继续使用 exact
+  `ApprovalRecord`；
+- operator crash recovery 与自然语言 revision 的明确隔离；
+- completed plan 的 reapply 继续原 logical Agent/session 接收人工纠正或附加
+  要求，以 fresh 完整 mapping 编译独立 immutable amendment plan 和新事务；
+  原 completed 记录不变，也不复用 crash recovery。
+
+安全边界：
+
+- 配置只属于 authenticated admin，Agent 和普通 run API 不接受路径、URL 或
+  secret；
+- `work_type = null` 必须先建立 trusted type；尚未实现的 movie pipeline
+  返回 `unsupported_work_type`；
+- API key write-only，永不进入 config response、event、session、trace 或日志；
+- question 不改变领域状态；revision 继续原 Agent session、生成新 plan hash，
+  不修改旧 plan/approval；
+- completed reapply 同样继续原 Agent session，但只通过确定性 compiler 把 fresh
+  mapping 与当前 completed layout 的差异变成 amendment；无差异不创建空事务；
+- automatic apply 由确定性 policy 签发一次性系统 approval，不允许 Agent
+  自批；
+- PostgreSQL 事务不跨 Agent、TMDB、扫描、plan/secret 文件写入或 rename；
+- 第一版固定单实例、单进程、单 worker，不用 TTL lease 假装多进程 fencing。
+
+完成条件：交互式前端只凭稳定 API 即可管理配置、查看 run、在原 Agent 上提问和
+迭代 plan revision、审查或自动批准计划并观察执行；completed plan 的 reapply
+使用独立安全事务；全部核心测试离线，后台并发与重启 fail closed。
+
+详细架构、分步、测试和 API 边界见 [M8 计划](m8-plan.md)。
+
 ## 9. 第一条端到端验收测试
 
 ```text
@@ -504,9 +555,9 @@ approve exact run_id + plan_hash
 - 向量数据库或跨 run 长期记忆。
 - shell、代码执行、任意网页搜索或任意 MCP 工具。
 - Agent 自己改变 prompt、policy、tool schema 或授权根目录。
-- 后台无人值守执行。
+- 未经管理员显式 `automatic` policy 的后台无人值守执行。
 - 跨文件系统 copy + delete。
-- 批量多剧集处理。
+- 单个 run 内混合多个作品。
 - 用 prompt 代替 schema、权限、路径校验或审批。
 
 ## 11. 每个里程碑的 Definition of Done
@@ -522,11 +573,10 @@ approve exact run_id + plan_hash
 
 ## 12. 开放问题
 
-这些问题不阻塞 M0/M1，在对应里程碑前通过 ADR 决定：
+尚未解决的问题在对应里程碑前通过 ADR 决定：
 
-1. 第一版用户界面使用 CLI、FastAPI，还是先只提供 library runner。
-2. event store 第一版使用 JSONL、SQLite 还是内存实现。
-3. source identity 是否在高风险场景增加内容 hash。
-4. Executor 是否采用单独进程、单独系统用户或容器隔离。
-5. TMDB cache 的位置、TTL 和离线导入格式。
-6. trace 的保留周期和用户可见脱敏视图。
+1. source identity 是否在高风险场景增加内容 hash。
+2. Executor 是否采用单独进程、单独系统用户或容器隔离。
+3. TMDB cache 的位置、TTL 和离线导入格式。
+4. trace 的保留周期和用户可见脱敏视图。
+5. movie domain contract 纳入 M8 后半段还是独立 M9。

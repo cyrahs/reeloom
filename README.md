@@ -11,6 +11,11 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 **M7 / 持久状态、Trace 与 Eval（已完成）**
 
+下一阶段 M8 将从 M7 基线重新实现服务器控制面，不继承此前实验性的 filesystem
+control-plane。新方案从第一步就以 PostgreSQL 17 作为唯一元数据 owner，面向
+后续交互式 Web 前端，并按小里程碑实现配置、调度、Agent 交互、审批执行和安全
+reapply。详细见 [M8 计划](docs/m8-plan.md)。
+
 M0-M5 已能把 Agent 的语义结果编译为可精确审批的事务输入；M6 建立了独立于
 Agent/LLM 的审批消费、最终检查、执行与恢复边界：
 
