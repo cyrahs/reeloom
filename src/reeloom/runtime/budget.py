@@ -9,7 +9,7 @@ from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 class RunBudget:
     """Immutable limits shared by the SDK runner and Reeloom tools."""
 
-    max_model_turns: int = 32
+    max_model_turns: int = 64
     max_tool_calls: int = 64
     max_failures: int = 3
     max_total_tokens: int = 100_000

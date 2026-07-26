@@ -21,6 +21,11 @@ from reeloom.kernel.rename_plan import (
     RootBinding,
     verify_plan_bytes,
 )
+from reeloom.kernel.amendment import (
+    CURRENT_AMENDMENT_POLICY_VERSION,
+    CURRENT_AMENDMENT_SCHEMA_VERSION,
+    verify_amendment_bytes,
+)
 from reeloom.kernel.schema import check_fields
 from reeloom.kernel.tmdb import TmdbWorkType
 
@@ -46,6 +51,20 @@ _TOP_FIELDS = frozenset(
         "subtitle_variants",
         "unmapped_candidate_ids",
         "work_type",
+    }
+)
+_AMENDMENT_FIELDS = frozenset(
+    {
+        "completed_transaction_id",
+        "created_at",
+        "moves",
+        "parent_plan_hash",
+        "policy_version",
+        "roots",
+        "run_id",
+        "schema_version",
+        "sources",
+        "unmapped_candidate_ids",
     }
 )
 _ROOT_FIELDS = frozenset({"device", "inode", "path"})
@@ -268,7 +287,11 @@ class ExecutionManifest:
         if (
             not isinstance(canonical_bytes, bytes)
             or not 0 < len(canonical_bytes) <= _MAX_PLAN_BYTES
-            or not verify_plan_bytes(canonical_bytes, plan_hash)
+        ):
+            raise _invalid_plan()
+        amendment = verify_amendment_bytes(canonical_bytes, plan_hash)
+        if not amendment and not verify_plan_bytes(
+            canonical_bytes, plan_hash
         ):
             raise _invalid_plan()
         try:
@@ -277,9 +300,15 @@ class ExecutionManifest:
                     canonical_bytes.decode("utf-8"),
                     parse_constant=_reject_json_constant,
                 ),
-                _TOP_FIELDS,
+                _AMENDMENT_FIELDS if amendment else _TOP_FIELDS,
                 field="plan",
             )
+            if amendment:
+                return cls._from_amendment_payload(
+                    payload,
+                    canonical_bytes=canonical_bytes,
+                    plan_hash=plan_hash,
+                )
             if (
                 json.dumps(
                     payload,
@@ -358,9 +387,69 @@ class ExecutionManifest:
         ):
             raise _invalid_plan() from None
 
+    @classmethod
+    def _from_amendment_payload(
+        cls,
+        payload: dict[str, object],
+        *,
+        canonical_bytes: bytes,
+        plan_hash: str,
+    ) -> ExecutionManifest:
+        if (
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("ascii")
+            != canonical_bytes
+            or payload["schema_version"]
+            != CURRENT_AMENDMENT_SCHEMA_VERSION
+            or payload["policy_version"]
+            != CURRENT_AMENDMENT_POLICY_VERSION
+            or not isinstance(payload["created_at"], str)
+            or not isinstance(payload["parent_plan_hash"], str)
+            or not isinstance(payload["completed_transaction_id"], str)
+        ):
+            raise _invalid_plan()
+        roots = check_fields(
+            payload["roots"],
+            _ROOTS_FIELDS,
+            field="roots",
+        )
+        source_root = _root(roots["source"])
+        output_root = _root(roots["output"])
+        if source_root != output_root:
+            raise _invalid_plan()
+        manifest = cls(
+            plan_hash=plan_hash,
+            run_id=_require_str(payload["run_id"]),
+            source_root=source_root,
+            output_root=output_root,
+            sources=tuple(
+                ExecutionSource.parse(item)
+                for item in _require_list(payload["sources"])
+            ),
+            moves=tuple(
+                ExecutionMove.parse(item)
+                for item in _require_list(payload["moves"])
+            ),
+        )
+        unmapped = tuple(
+            CandidateId.parse(item)
+            for item in _require_list(payload["unmapped_candidate_ids"])
+        )
+        manifest._validate_partition(
+            unmapped,
+            allow_unmoved_video_reference=True,
+        )
+        return manifest
+
     def _validate_partition(
         self,
         unmapped: tuple[CandidateId, ...],
+        *,
+        allow_unmoved_video_reference: bool = False,
     ) -> None:
         source_by_id = {
             source.candidate_id: source for source in self.sources
@@ -406,7 +495,11 @@ class ExecutionManifest:
                 )
                 or (
                     source.kind is CandidateKind.SUBTITLE
-                    and move.video_id not in moved_videos
+                    and move.video_id not in (
+                        set(source_by_id)
+                        if allow_unmoved_video_reference
+                        else moved_videos
+                    )
                 )
             ):
                 raise _invalid_plan()

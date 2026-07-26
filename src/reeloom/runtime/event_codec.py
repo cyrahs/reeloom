@@ -28,6 +28,8 @@ from reeloom.runtime.events import (
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
+    ExecutionSettled,
+    InteractionCompleted,
     MappingRejected,
     MappingSubmitted,
     ModelUsageRecorded,
@@ -432,6 +434,28 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "output_tokens": event.output_tokens,
             "total_tokens": event.total_tokens,
         }
+    if isinstance(event, InteractionCompleted):
+        return "interaction_completed", {
+            "final_plan_hash": event.final_plan_hash,
+            "fresh_mapping_submitted": event.fresh_mapping_submitted,
+            "interaction_id": event.interaction_id,
+            "kind": event.kind,
+            "model_tokens": event.model_tokens,
+            "model_turns": event.model_turns,
+            "tool_calls": event.tool_calls,
+            "failures": event.failures,
+            "plan_hash": event.plan_hash,
+        }
+    if isinstance(event, ExecutionSettled):
+        return "execution_settled", {
+            "applied_count": event.applied_count,
+            "approval_id": event.approval_id,
+            "failure_code": event.failure_code,
+            "plan_hash": event.plan_hash,
+            "rolled_back_count": event.rolled_back_count,
+            "status": event.status,
+            "transaction_id": event.transaction_id,
+        }
     if isinstance(event, ToolRequested):
         return "tool_requested", {
             "call_id": event.call_id,
@@ -655,6 +679,66 @@ def _event_from_payload(
             _int(p["input_tokens"]),
             _int(p["output_tokens"]),
             _int(p["total_tokens"]),
+        )
+    if event_type == "interaction_completed":
+        p = _fields(
+            value,
+            {
+                "final_plan_hash",
+                "fresh_mapping_submitted",
+                "interaction_id",
+                "kind",
+                "model_tokens",
+                "model_turns",
+                "tool_calls",
+                "failures",
+                "plan_hash",
+            },
+            field=event_type,
+        )
+        return InteractionCompleted(
+            interaction_id=_str(p["interaction_id"]),
+            kind=_str(p["kind"]),
+            model_turns=_int(p["model_turns"]),
+            model_tokens=_int(p["model_tokens"]),
+            tool_calls=_int(p["tool_calls"]),
+            failures=_int(p["failures"]),
+            fresh_mapping_submitted=_bool(
+                p["fresh_mapping_submitted"]
+            ),
+            final_plan_hash=_str(p["final_plan_hash"]),
+            plan_hash=(
+                None
+                if p["plan_hash"] is None
+                else _str(p["plan_hash"])
+            ),
+        )
+    if event_type == "execution_settled":
+        p = _fields(
+            value,
+            {
+                "applied_count",
+                "approval_id",
+                "failure_code",
+                "plan_hash",
+                "rolled_back_count",
+                "status",
+                "transaction_id",
+            },
+            field=event_type,
+        )
+        return ExecutionSettled(
+            plan_hash=_str(p["plan_hash"]),
+            approval_id=_str(p["approval_id"]),
+            transaction_id=_str(p["transaction_id"]),
+            status=_str(p["status"]),
+            applied_count=_int(p["applied_count"]),
+            rolled_back_count=_int(p["rolled_back_count"]),
+            failure_code=(
+                None
+                if p["failure_code"] is None
+                else _str(p["failure_code"])
+            ),
         )
     if event_type in {"tool_requested", "tool_succeeded"}:
         p = _fields(value, {"call_id", "tool_name"}, field=event_type)

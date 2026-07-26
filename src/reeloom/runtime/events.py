@@ -133,6 +133,30 @@ class ModelUsageRecorded:
 
 
 @dataclass(frozen=True, slots=True)
+class InteractionCompleted:
+    interaction_id: str
+    kind: str
+    model_turns: int
+    model_tokens: int
+    fresh_mapping_submitted: bool
+    final_plan_hash: str
+    plan_hash: str | None = None
+    tool_calls: int = 0
+    failures: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionSettled:
+    plan_hash: str
+    approval_id: str
+    transaction_id: str
+    status: str
+    applied_count: int
+    rolled_back_count: int
+    failure_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolRequested:
     call_id: str
     tool_name: str
@@ -181,6 +205,8 @@ RuntimeEvent: TypeAlias = (
     | RollbackCompleted
     | RunCompleted
     | ModelUsageRecorded
+    | InteractionCompleted
+    | ExecutionSettled
     | ToolRequested
     | ToolSucceeded
     | ToolRejected

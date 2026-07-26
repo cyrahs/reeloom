@@ -9,11 +9,24 @@ description = "Agent-native animation episode organizer"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
     "openai-agents>=0.18.3,<0.19",
+    "psycopg[binary]>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
+    "uvicorn>=0.30,<1",
 ]
+
+[project.scripts]
+reeloom-server = "reeloom.server.main:serve"
+
+[tool.setuptools.package-data]
+"reeloom.server" = ["sql/*.sql"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "postgres: requires an explicit REELOOM_TEST_POSTGRES_DSN",
+]

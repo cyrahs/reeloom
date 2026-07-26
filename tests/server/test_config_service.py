@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from reeloom.server.config import (
+    ApplyPolicy,
+    ArchiveRoute,
+    ConfigDraftInput,
+    ProviderConfigInput,
+    ServerWorkType,
+    WatchConfig,
+)
+from reeloom.server.config_service import ConfigService
+from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.provider import ProviderOriginPolicy
+
+
+@dataclass
+class _Secrets:
+    values: list[bytes] = field(default_factory=list)
+
+    def put(self, value: bytes) -> str:
+        self.values.append(value)
+        return f"secret-{len(self.values)}"
+
+
+@dataclass
+class _Configs:
+    head: object | None = None
+
+    def compare_and_append(self, *, expected_revision: int, revision: object) -> object:
+        current = 0 if self.head is None else self.head.revision
+        if current != expected_revision:
+            raise ServerError(ServerErrorCode.CONFIG_CONFLICT)
+        self.head = revision
+        return revision
+
+
+def test_config_service_persists_secret_before_config(
+    tmp_path: Path,
+) -> None:
+    watch = tmp_path / "watch"
+    archive = tmp_path / "archive"
+    watch.mkdir()
+    archive.mkdir()
+    secrets = _Secrets()
+    configs = _Configs()
+    service = ConfigService(
+        configs=configs,
+        secrets=secrets,
+        origins=ProviderOriginPolicy.create(
+            ("https://models.example.test",)
+        ),
+        clock=lambda: datetime(2026, 7, 25, tzinfo=UTC),
+        id_factory=lambda: "cfg-1",
+    )
+
+    result = service.compare_and_append(
+        expected_revision=0,
+        value=ConfigDraftInput(
+            watches=(
+                WatchConfig(
+                    watch_id="watch-1",
+                    root=watch,
+                    work_type=ServerWorkType.ANIME,
+                    poll_interval_seconds=10,
+                    settle_interval_seconds=60,
+                ),
+            ),
+            archive_routes=(
+                ArchiveRoute(
+                    work_type=ServerWorkType.ANIME,
+                    root=archive,
+                ),
+            ),
+            provider=ProviderConfigInput(
+                base_url="https://models.example.test/v1",
+                model="gpt-5",
+                api_key=b"key-value",
+            ),
+            apply_policy=ApplyPolicy.PLAN_ONLY,
+        ),
+    )
+
+    assert secrets.values == [b"key-value"]
+    assert result.provider.secret_ref == "secret-1"
+    assert result.revision == 1
+
+
+def test_config_cas_failure_leaves_only_unreferenced_secret(
+    tmp_path: Path,
+) -> None:
+    secrets = _Secrets()
+    configs = _Configs()
+    service = ConfigService(
+        configs=configs,
+        secrets=secrets,
+        origins=ProviderOriginPolicy.create(
+            ("https://models.example.test",)
+        ),
+    )
+    value = ConfigDraftInput(
+        watches=(),
+        archive_routes=(),
+        provider=ProviderConfigInput(
+            base_url="https://models.example.test/v1",
+            model="gpt-5",
+            api_key=b"orphan",
+        ),
+        apply_policy=ApplyPolicy.MANUAL,
+    )
+
+    with pytest.raises(ServerError) as raised:
+        service.compare_and_append(expected_revision=9, value=value)
+
+    assert raised.value.code is ServerErrorCode.CONFIG_CONFLICT
+    assert secrets.values == [b"orphan"]
+    assert configs.head is None

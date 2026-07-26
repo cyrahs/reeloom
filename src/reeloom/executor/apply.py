@@ -17,7 +17,10 @@ from reeloom.executor.preflight import FilesystemPreflightExecutor
 from reeloom.executor.transaction import TransactionRecord
 from reeloom.kernel.approval import ApprovalScope
 from reeloom.ports.approvals import ApprovalStore
-from reeloom.ports.journals import JournalStore
+from reeloom.ports.journals import (
+    JournalStore,
+    JournalTerminalSummary,
+)
 from reeloom.ports.plans import PlanStore
 
 _RENAME_NOREPLACE = 1
@@ -139,14 +142,10 @@ class FilesystemExecutor:
                 ExecutorErrorCode.RECOVERY_REQUIRED
             ) from None
 
-        return ApplyResult(
-            transaction_id=transaction.transaction_id,
-            plan_hash=manifest.plan_hash,
+        return self._terminal_result(
+            manifest,
+            transaction,
             approval_id=approval_id,
-            status=ApplyStatus.COMPLETED,
-            applied_count=len(applied),
-            rolled_back_count=0,
-            failure_code=None,
         )
 
     def recover(
@@ -182,36 +181,23 @@ class FilesystemExecutor:
         approval_id: str,
     ) -> ApplyResult:
         self.journals.require(transaction)
-        completed = self.journals.is_completed(transaction)
-        rolled_back_terminal = self.journals.is_rolled_back(
-            transaction
+        if (
+            self.journals.is_completed(transaction)
+            and self.journals.is_rolled_back(transaction)
+        ):
+            raise ExecutorError(ExecutorErrorCode.RECOVERY_REQUIRED)
+        summary = self.journals.terminal_summary(
+            transaction,
+            tuple(move.source_id for move in manifest.moves),
         )
-        if completed and rolled_back_terminal:
-            raise ExecutorError(
-                ExecutorErrorCode.RECOVERY_REQUIRED
-            )
-        if completed:
-            return ApplyResult(
-                transaction_id=transaction.transaction_id,
-                plan_hash=manifest.plan_hash,
+        if summary.completed or summary.rolled_back:
+            return self._result_from_summary(
+                manifest,
+                transaction,
                 approval_id=approval_id,
-                status=ApplyStatus.COMPLETED,
-                applied_count=len(manifest.moves),
-                rolled_back_count=0,
-                failure_code=None,
-            )
-        if rolled_back_terminal:
-            return ApplyResult(
-                transaction_id=transaction.transaction_id,
-                plan_hash=manifest.plan_hash,
-                approval_id=approval_id,
-                status=ApplyStatus.ROLLED_BACK,
-                applied_count=0,
-                rolled_back_count=0,
-                failure_code=None,
+                summary=summary,
             )
 
-        rolled_back = 0
         try:
             for move in reversed(manifest.moves):
                 allow_restored = (
@@ -229,7 +215,6 @@ class FilesystemExecutor:
                     move,
                     allow_restored=allow_restored,
                 ):
-                    rolled_back += 1
                     self.journals.record_rollback(
                         transaction,
                         move.source_id,
@@ -239,14 +224,10 @@ class FilesystemExecutor:
             raise ExecutorError(
                 ExecutorErrorCode.RECOVERY_REQUIRED
             ) from None
-        return ApplyResult(
-            transaction_id=transaction.transaction_id,
-            plan_hash=manifest.plan_hash,
+        return self._terminal_result(
+            manifest,
+            transaction,
             approval_id=approval_id,
-            status=ApplyStatus.ROLLED_BACK,
-            applied_count=0,
-            rolled_back_count=rolled_back,
-            failure_code=None,
         )
 
     def _rollback_after_failure(
@@ -271,7 +252,7 @@ class FilesystemExecutor:
                 ExecutorErrorCode.RECOVERY_REQUIRED
             ) from None
 
-        rolled_back = self._best_effort_rollback(
+        self._best_effort_rollback(
             manifest,
             transaction,
             applied,
@@ -282,14 +263,52 @@ class FilesystemExecutor:
             raise ExecutorError(
                 ExecutorErrorCode.RECOVERY_REQUIRED
             ) from None
+        return self._terminal_result(
+            manifest,
+            transaction,
+            approval_id=transaction.approval_id,
+        )
+
+    def _terminal_result(
+        self,
+        manifest: ExecutionManifest,
+        transaction: TransactionRecord,
+        *,
+        approval_id: str,
+    ) -> ApplyResult:
+        summary = self.journals.terminal_summary(
+            transaction,
+            tuple(move.source_id for move in manifest.moves),
+        )
+        if not (summary.completed or summary.rolled_back):
+            raise ExecutorError(ExecutorErrorCode.RECOVERY_REQUIRED)
+        return self._result_from_summary(
+            manifest,
+            transaction,
+            approval_id=approval_id,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _result_from_summary(
+        manifest: ExecutionManifest,
+        transaction: TransactionRecord,
+        *,
+        approval_id: str,
+        summary: JournalTerminalSummary,
+    ) -> ApplyResult:
         return ApplyResult(
             transaction_id=transaction.transaction_id,
             plan_hash=manifest.plan_hash,
-            approval_id=transaction.approval_id,
-            status=ApplyStatus.ROLLED_BACK,
-            applied_count=len(applied),
-            rolled_back_count=rolled_back,
-            failure_code=failure.code,
+            approval_id=approval_id,
+            status=(
+                ApplyStatus.COMPLETED
+                if summary.completed
+                else ApplyStatus.ROLLED_BACK
+            ),
+            applied_count=summary.applied_count,
+            rolled_back_count=summary.rolled_back_count,
+            failure_code=summary.failure_code,
         )
 
     def _best_effort_rollback(

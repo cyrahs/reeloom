@@ -26,6 +26,7 @@ from reeloom.runtime.events import (
 )
 from reeloom.runtime.state import MappingValidationIssue, Phase
 from reeloom.runtime.tool_runtime import ToolRuntime
+from reeloom.ports.inventory import ExistingInventoryProvider
 from reeloom.tools.candidates import SnapshotCandidateSource
 
 _MAX_OBSERVATION_BYTES = 64 * 1024
@@ -125,7 +126,7 @@ def _selected_matches(runtime: ToolRuntime, tmdb_id: int) -> bool:
 
 async def get_existing_inventory(
     runtime: ToolRuntime,
-    inventory: ExistingInventory | None,
+    inventory: ExistingInventory | ExistingInventoryProvider | None,
     *,
     call_id: str,
     tmdb_id: int,
@@ -162,7 +163,14 @@ async def get_existing_inventory(
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
             retryable=False,
         )
-    effective = inventory
+    effective = (
+        await inventory.get_inventory(
+            work_type=state.work_type,
+            tmdb_id=tmdb_id,
+        )
+        if not isinstance(inventory, ExistingInventory)
+        else inventory
+    )
     if (
         effective.tmdb_id != tmdb_id
         or effective.work_type is not state.work_type
@@ -369,7 +377,7 @@ def _mapping_rejection(
 async def submit_mapping(
     runtime: ToolRuntime,
     candidates: SnapshotCandidateSource | None,
-    inventory: ExistingInventory | None,
+    inventory: ExistingInventory | ExistingInventoryProvider | None,
     *,
     call_id: str,
     payload: object,
@@ -424,7 +432,14 @@ async def submit_mapping(
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
             retryable=False,
         )
-    effective_inventory = inventory
+    effective_inventory = (
+        await inventory.get_inventory(
+            work_type=state.work_type,
+            tmdb_id=state.selected_series.tmdb_id,
+        )
+        if not isinstance(inventory, ExistingInventory)
+        else inventory
+    )
     observed_inventory = tuple(
         (location.season, location.episode)
         for location in effective_inventory.occupied

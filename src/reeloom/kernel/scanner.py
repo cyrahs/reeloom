@@ -245,3 +245,34 @@ def build_candidate_snapshot(
         ),
         records=frozen_records,
     )
+
+
+def rebuild_candidate_snapshot(
+    records: Iterable[CandidateRecord],
+) -> ScannedCandidateSnapshot:
+    """Rebind trusted candidate IDs to a newly verified file snapshot."""
+
+    ordered = tuple(
+        sorted(
+            tuple(records),
+            key=lambda item: (
+                0
+                if item.candidate.kind is CandidateKind.VIDEO
+                else 1,
+                item.candidate.id.ordinal,
+            ),
+        )
+    )
+    if (
+        not ordered
+        or len({item.candidate.id for item in ordered}) != len(ordered)
+        or len({item.relative_path for item in ordered}) != len(ordered)
+    ):
+        raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+    return ScannedCandidateSnapshot(
+        snapshot_id=_snapshot_id(ordered),
+        candidates=CandidateSnapshot.create(
+            item.candidate for item in ordered
+        ),
+        records=ordered,
+    )

@@ -1,0 +1,416 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from agents import (
+    Agent,
+    ModelSettings,
+    RunConfig,
+    Runner,
+    ToolExecutionConfig,
+)
+from reeloom.adapters.filesystem import (
+    FilesystemPlanCompiler,
+    FilesystemScanResult,
+    FilesystemSubtitleSampleProvider,
+)
+from reeloom.adapters.plan_store import FilesystemPlanStore
+from reeloom.agents.organizer import (
+    EPISODE_ORGANIZER_TOOL_NAMES,
+    create_organizer_context,
+    run_episode_organizer,
+)
+from reeloom.kernel.amendment import (
+    DesiredLayoutMove,
+    compile_amendment,
+)
+from reeloom.kernel.rename_plan import compile_plan_draft
+from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.runtime.events import MappingSubmitted
+from reeloom.runtime.state import Phase
+from reeloom.runtime.store import InMemoryEventStore
+from reeloom.server.agent_worker import (
+    ModelLeaseFactory,
+    TmdbLease,
+    TmdbLeaseFactory,
+)
+from reeloom.server.agent_repository import (
+    PostgresAgentDefinitionRepository,
+)
+from reeloom.server.completed_layout import (
+    PostgresCompletedLayoutRepository,
+    revalidate_completed_layout,
+)
+from reeloom.server.config import ConfigRevision, ServerWorkType
+from reeloom.server.config_repository import PostgresConfigRepository
+from reeloom.server.interactions import (
+    InteractionExecution,
+    InteractionKind,
+    InteractionRequest,
+)
+from reeloom.server.inventory import ArchiveInventoryProvider
+from reeloom.server.organizer_definition import (
+    ORGANIZER_NAME,
+    ORGANIZER_SCHEMA_VERSION,
+)
+from reeloom.server.provider import ModelLease
+from reeloom.server.scheduler import AgentJobContext
+from reeloom.server.scheduler_repository import (
+    PostgresSchedulerRepository,
+)
+from reeloom.server.secrets import FilesystemSecretStore
+from reeloom.server.session import (
+    BufferedAgentSession,
+    PostgresSessionRepository,
+)
+from reeloom.tools.candidates import SnapshotCandidateSource
+
+_MAPPING_PROMPT = (
+    "Re-evaluate the complete authorized candidate set using the user's "
+    "untrusted feedback below. Freshly call submit_mapping with the entire "
+    "mapping; do not patch or reuse a prior mapping.\n\n"
+)
+_QUESTION_TIMEOUT_SECONDS = 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class AgentInteractionExecutor:
+    scheduler: PostgresSchedulerRepository
+    definitions: PostgresAgentDefinitionRepository
+    configs: PostgresConfigRepository
+    sessions: PostgresSessionRepository
+    layouts: PostgresCompletedLayoutRepository
+    secrets: FilesystemSecretStore
+    plans: FilesystemPlanStore
+    model_factory: ModelLeaseFactory
+    tmdb_factory: TmdbLeaseFactory
+
+    def __call__(self, request: InteractionRequest) -> InteractionExecution:
+        return asyncio.run(self._execute(request))
+
+    async def _execute(
+        self,
+        request: InteractionRequest,
+    ) -> InteractionExecution:
+        job = self.scheduler.get_job_context(
+            run_id=request.reservation.run_id
+        )
+        config = self.configs.get(job.registration.config_revision)
+        work_type = self._work_type(job.registration.work_type)
+        definition, session_id = self.definitions.load_bound(
+            run_id=job.registration.run_id,
+        )
+        if (
+            definition.name != ORGANIZER_NAME
+            or definition.schema_version != ORGANIZER_SCHEMA_VERSION
+            or definition.tools != EPISODE_ORGANIZER_TOOL_NAMES
+        ):
+            raise ValueError("bound agent definition is unsupported")
+        session = BufferedAgentSession(
+            repository=self.sessions,
+            run_id=job.registration.run_id,
+            session_id=session_id,
+            expected_revision=request.reservation.session_revision,
+        )
+        secret = self.secrets.load(config.provider.secret_ref)
+        model = self.model_factory(config, secret)
+        try:
+            if request.reservation.kind is InteractionKind.QUESTION:
+                return await self._question(
+                    request=request,
+                    session=session,
+                    model=model,
+                    definition_name=definition.name,
+                    instructions=definition.instructions,
+                )
+            tmdb = self.tmdb_factory()
+            try:
+                return await self._mapping(
+                    request=request,
+                    job=job,
+                    config=config,
+                    session=session,
+                    model=model,
+                    tmdb=tmdb,
+                    instructions=definition.instructions,
+                )
+            finally:
+                await tmdb.close()
+        finally:
+            await model.close()
+
+    async def _question(
+        self,
+        *,
+        request: InteractionRequest,
+        session: BufferedAgentSession,
+        model: ModelLease,
+        definition_name: str,
+        instructions: str,
+    ) -> InteractionExecution:
+        async with asyncio.timeout(_QUESTION_TIMEOUT_SECONDS):
+            result = await Runner.run(
+                Agent(
+                    name=definition_name,
+                    instructions=instructions,
+                    model=model.model,
+                    model_settings=self._settings(model.model_settings),
+                    tools=[],
+                ),
+                request.message,
+                max_turns=1,
+                session=session,
+                run_config=self._run_config(),
+            )
+        if not isinstance(result.final_output, str):
+            raise TypeError("question reply must be text")
+        tokens = sum(
+            response.usage.total_tokens
+            for response in result.raw_responses
+        )
+        return self._execution(
+            reply=result.final_output,
+            session=session,
+            model_tokens=tokens,
+        )
+
+    async def _mapping(
+        self,
+        *,
+        request: InteractionRequest,
+        job: AgentJobContext,
+        config: ConfigRevision,
+        session: BufferedAgentSession,
+        model: ModelLease,
+        tmdb: TmdbLease,
+        instructions: str,
+    ) -> InteractionExecution:
+        work_type = self._work_type(job.registration.work_type)
+        if request.reservation.kind is InteractionKind.REVISION:
+            scan, output_root = self._initial_scan(job, config)
+            excluded = frozenset()
+            layout = None
+        else:
+            layout = self.layouts.head(job.registration.run_id)
+            if layout is None:
+                raise ValueError("completed layout is unavailable")
+            snapshot = revalidate_completed_layout(layout)
+            output_root = AuthorizedRoot.create(
+                Path(layout.root.path.as_posix())
+            )
+            scan = FilesystemScanResult(output_root, snapshot)
+            excluded = frozenset(
+                item.relative_path for item in layout.files
+            )
+        source = SnapshotCandidateSource.from_scanned(scan.snapshot)
+        transient = InMemoryEventStore()
+        context = create_organizer_context(
+            run_id=job.registration.run_id,
+            candidate_source=source,
+            work_type=work_type,
+            tmdb_provider=tmdb.provider,
+            inventory=ArchiveInventoryProvider(
+                output_root,
+                exclude_paths=excluded,
+            ),
+            subtitle_provider=FilesystemSubtitleSampleProvider(scan),
+            budget=request.reservation.budget,
+            event_store=transient,
+            agent_session=session,
+        )
+        result = await run_episode_organizer(
+            context=context,
+            model=model.model,
+            model_settings=model.model_settings,
+            prompt=_MAPPING_PROMPT + request.message,
+            finalize_plan=False,
+            instructions=instructions,
+        )
+        state = result.state
+        if (
+            state.phase is not Phase.BUILD_PLAN
+            or state.mapping_draft is None
+            or state.selected_series is None
+            or not any(
+                isinstance(stored.event, MappingSubmitted)
+                for stored in transient.events
+            )
+        ):
+            raise ValueError("fresh complete mapping was not submitted")
+        mapped_subtitles = {
+            item.subtitle_id for item in state.mapping_draft.subtitles
+        }
+        variants = tuple(
+            (candidate_id, variant)
+            for candidate_id, variant in state.subtitle_variants
+            if candidate_id in mapped_subtitles
+        )
+        plan_hash: str | None
+        domain_events = ["mapping_submitted"]
+        if request.reservation.kind is InteractionKind.REVISION:
+            plan = FilesystemPlanCompiler(scan, output_root).compile(
+                run_id=job.registration.run_id,
+                work_type=work_type,
+                series=state.selected_series,
+                mapping=state.mapping_draft,
+                subtitle_variants=variants,
+                created_at=datetime.now(UTC),
+            )
+            self.plans.save(plan)
+            plan_hash = plan.plan_hash
+            domain_events.append("plan_built")
+            lineage_parent_hash = request.reservation.plan_hash
+        else:
+            if layout is None:
+                raise AssertionError
+            draft = compile_plan_draft(
+                series=state.selected_series,
+                mapping=state.mapping_draft,
+                candidates=scan.snapshot,
+                subtitle_variants=variants,
+            )
+            desired = tuple(
+                DesiredLayoutMove(
+                    source_id=move.source_id,
+                    video_id=move.video_id,
+                    destination=move.destination,
+                    season=move.span.season,
+                    episode_start=move.span.episode_start,
+                    episode_end=move.span.episode_end,
+                )
+                for move in draft.moves
+            )
+            amendment = compile_amendment(
+                layout=layout,
+                desired=desired,
+                created_at=datetime.now(UTC),
+            )
+            if amendment is None:
+                plan_hash = None
+                lineage_parent_hash = None
+            else:
+                self.plans.save_amendment(amendment)
+                plan_hash = amendment.plan_hash
+                lineage_parent_hash = amendment.parent_plan_hash
+                domain_events.append("plan_built")
+        return self._execution(
+            reply=result.final_output,
+            session=session,
+            model_tokens=result.model_tokens,
+            model_turns=result.model_turns,
+            tool_calls=state.tool_calls,
+            failures=state.failures,
+            domain_events=tuple(domain_events),
+            plan_hash=plan_hash,
+            fresh_mapping=True,
+            lineage_parent_hash=lineage_parent_hash,
+        )
+
+    @staticmethod
+    def _execution(
+        *,
+        reply: str,
+        session: BufferedAgentSession,
+        model_tokens: int,
+        model_turns: int = 1,
+        tool_calls: int = 0,
+        failures: int = 0,
+        domain_events: tuple[str, ...] = (),
+        plan_hash: str | None = None,
+        fresh_mapping: bool = False,
+        lineage_parent_hash: str | None = None,
+    ) -> InteractionExecution:
+        return InteractionExecution(
+            assistant_reply=reply,
+            session_revision=session.revision + 1,
+            model_tokens=model_tokens,
+            model_turns=model_turns,
+            tool_calls=tool_calls,
+            failures=failures,
+            domain_events=domain_events,
+            plan_hash=plan_hash,
+            fresh_mapping_submitted=fresh_mapping,
+            session_batch=tuple(session.batch_items),
+            session_items=tuple(session.projected_items),
+            lineage_parent_hash=lineage_parent_hash,
+        )
+
+    @staticmethod
+    def _initial_scan(
+        job: AgentJobContext,
+        config: ConfigRevision,
+    ) -> tuple[FilesystemScanResult, AuthorizedRoot]:
+        persisted = job.discovery.snapshot
+        watch = next(
+            (
+                item
+                for item in config.watches
+                if item.watch_id == job.discovery.watch_id
+            ),
+            None,
+        )
+        route = next(
+            (
+                item
+                for item in config.archive_routes
+                if item.work_type is job.registration.work_type
+            ),
+            None,
+        )
+        if persisted is None or watch is None or route is None:
+            raise ValueError("exact run scope is unavailable")
+        snapshot = build_candidate_snapshot(
+            ScannedFile(
+                relative_path=item.relative_path,
+                kind=item.kind,
+                size_bytes=item.size_bytes,
+                device=item.device,
+                inode=item.inode,
+                mtime_ns=item.mtime_ns,
+                ctime_ns=item.ctime_ns,
+                sample_digest=item.sample_digest,
+            )
+            for item in persisted.files
+        )
+        if snapshot.snapshot_id != persisted.snapshot_id:
+            raise ValueError("discovery snapshot identity mismatch")
+        return (
+            FilesystemScanResult(
+                AuthorizedRoot.create(watch.root),
+                snapshot,
+            ),
+            AuthorizedRoot.create(route.root),
+        )
+
+    @staticmethod
+    def _work_type(value: ServerWorkType) -> TmdbWorkType:
+        if value is ServerWorkType.ANIME:
+            return TmdbWorkType.ANIME
+        if value is ServerWorkType.TV:
+            return TmdbWorkType.TV_SERIES
+        raise ValueError("movie episode mapping is not supported")
+
+    @staticmethod
+    def _settings(settings: ModelSettings) -> ModelSettings:
+        return ModelSettings(
+            reasoning=settings.reasoning,
+            verbosity=settings.verbosity,
+            max_tokens=8_192,
+            parallel_tool_calls=False,
+            store=False,
+        )
+
+    @staticmethod
+    def _run_config() -> RunConfig:
+        return RunConfig(
+            tracing_disabled=True,
+            trace_include_sensitive_data=False,
+            tool_execution=ToolExecutionConfig(
+                max_function_tool_concurrency=1,
+            ),
+        )

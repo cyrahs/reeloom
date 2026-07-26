@@ -20,6 +20,8 @@ from reeloom.runtime.events import (
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
+    ExecutionSettled,
+    InteractionCompleted,
     MappingRejected,
     MappingSubmitted,
     ModelUsageRecorded,
@@ -57,6 +59,69 @@ def _is_transaction_id(value: object) -> bool:
         and len(value) == len(prefix) + 64
         and all(character in "0123456789abcdef" for character in value[7:])
     )
+
+
+def _is_plan_hash(value: object) -> bool:
+    prefix = "sha256:"
+    return (
+        isinstance(value, str)
+        and value.startswith(prefix)
+        and len(value) == len(prefix) + 64
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def reduce_interaction_head(
+    *,
+    phase: Phase,
+    plan_hash: str | None,
+    event: InteractionCompleted,
+) -> tuple[Phase, str]:
+    if not _is_plan_hash(plan_hash) or not _is_plan_hash(
+        event.final_plan_hash
+    ):
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+    if event.kind == "question":
+        if (
+            event.fresh_mapping_submitted
+            or event.plan_hash is not None
+            or event.final_plan_hash != plan_hash
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return phase, plan_hash
+    if not event.fresh_mapping_submitted:
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+    if event.kind == "revision":
+        if (
+            phase is not Phase.AWAITING_APPROVAL
+            or not _is_plan_hash(event.plan_hash)
+            or event.plan_hash == plan_hash
+            or event.final_plan_hash != event.plan_hash
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return Phase.AWAITING_APPROVAL, event.final_plan_hash
+    if event.kind != "reapply" or phase not in {
+        Phase.COMPLETED,
+        Phase.AWAITING_APPROVAL,
+    }:
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+    if event.plan_hash is not None:
+        if (
+            not _is_plan_hash(event.plan_hash)
+            or event.plan_hash == plan_hash
+            or event.final_plan_hash != event.plan_hash
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return Phase.AWAITING_APPROVAL, event.final_plan_hash
+    if (
+        phase is Phase.COMPLETED
+        and event.final_plan_hash != plan_hash
+    ) or (
+        phase is Phase.AWAITING_APPROVAL
+        and event.final_plan_hash == plan_hash
+    ):
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+    return Phase.COMPLETED, event.final_plan_hash
 
 
 def _require_running(state: RunState) -> None:
@@ -149,6 +214,101 @@ def reduce_event(
             event_count=state.event_count + 1,
             stop_reason=None,
             approval_id=event.approval_id,
+        )
+
+    if isinstance(event, InteractionCompleted):
+        valid_common = (
+            state.status is RunStatus.STOPPED
+            and isinstance(event.interaction_id, str)
+            and bool(event.interaction_id)
+            and len(event.interaction_id.encode("utf-8")) <= 128
+            and event.kind in {"question", "revision", "reapply"}
+            and type(event.model_turns) is int
+            and event.model_turns >= 1
+            and type(event.model_tokens) is int
+            and event.model_tokens >= 0
+            and type(event.tool_calls) is int
+            and event.tool_calls >= 0
+            and type(event.failures) is int
+            and event.failures >= 0
+            and state.model_turns + event.model_turns
+            <= state.budget.max_model_turns
+            and state.model_tokens + event.model_tokens
+            <= state.budget.max_total_tokens
+            and state.tool_calls + event.tool_calls
+            <= state.budget.max_tool_calls
+            and state.failures + event.failures
+            <= state.budget.max_failures
+        )
+        if not valid_common:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        next_phase, final_plan_hash = reduce_interaction_head(
+            phase=state.phase,
+            plan_hash=state.plan_hash,
+            event=event,
+        )
+        return replace(
+            state,
+            phase=next_phase,
+            status=RunStatus.STOPPED,
+            event_count=state.event_count + 1,
+            model_turns=state.model_turns + event.model_turns,
+            model_tokens=state.model_tokens + event.model_tokens,
+            tool_calls=state.tool_calls + event.tool_calls,
+            failures=state.failures + event.failures,
+            plan_hash=final_plan_hash,
+            stop_reason=(
+                state.stop_reason
+                if event.kind == "question"
+                else (
+                    StopReason.AWAITING_APPROVAL
+                    if next_phase is Phase.AWAITING_APPROVAL
+                    else None
+                )
+            ),
+        )
+
+    if isinstance(event, ExecutionSettled):
+        if (
+            state.status is not RunStatus.STOPPED
+            or state.phase is not Phase.AWAITING_APPROVAL
+            or event.plan_hash != state.plan_hash
+            or not ApprovalRecord.is_valid_id(event.approval_id)
+            or not _is_transaction_id(event.transaction_id)
+            or event.status not in {"completed", "rolled_back"}
+            or type(event.applied_count) is not int
+            or event.applied_count < 0
+            or type(event.rolled_back_count) is not int
+            or event.rolled_back_count < 0
+            or (
+                event.status == "completed"
+                and (
+                    event.rolled_back_count != 0
+                    or event.failure_code is not None
+                )
+            )
+            or (
+                event.status == "rolled_back"
+                and event.rolled_back_count > event.applied_count
+                and event.applied_count != 0
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return replace(
+            state,
+            phase=(
+                Phase.COMPLETED
+                if event.status == "completed"
+                else Phase.ROLLED_BACK
+            ),
+            status=RunStatus.STOPPED,
+            event_count=state.event_count + 1,
+            approval_id=event.approval_id,
+            transaction_id=event.transaction_id,
+            applied_count=event.applied_count,
+            rolled_back_count=event.rolled_back_count,
+            failure_code=event.failure_code,
+            stop_reason=None,
         )
 
     _require_running(state)

@@ -1,5 +1,12 @@
 # Reeloom
 
+M8 提供 PostgreSQL 17-first 的单实例 server control plane，以及供后续 Web UI 使用
+的 versioned API 与 SSE。默认操作仍只生成 immutable plan；只有 exact
+`ApprovalRecord` 被一次性 claim 后，隔离 Executor 才能移动文件。
+
+部署与接口见 [deployment](docs/deployment.md) 和 [HTTP API](docs/api.md)；M8 的
+设计边界与分阶段完成条件见 [M8 plan](docs/m8-plan.md)。
+
 Reeloom 是一个从零设计的 **agent-native 动画剧集整理器**。它与
 `aninamer` 追求相同的用户结果：识别动画剧集和外置中文字幕，结合
 TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
@@ -9,12 +16,13 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M7 / 持久状态、Trace 与 Eval（已完成）**
+**M8 / PostgreSQL-first 服务器控制面（已完成并通过验收）**
 
-下一阶段 M8 将从 M7 基线重新实现服务器控制面，不继承此前实验性的 filesystem
-control-plane。新方案从第一步就以 PostgreSQL 17 作为唯一元数据 owner，面向
-后续交互式 Web 前端，并按小里程碑实现配置、调度、Agent 交互、审批执行和安全
-reapply。详细见 [M8 计划](docs/m8-plan.md)。
+M8 从 M7 基线建立 PostgreSQL 17 单一 metadata owner 的服务器控制面，提供配置、
+调度、原 logical Agent/session 交互、exact approval、apply/recovery、安全 reapply
+以及供后续 Web UI 使用的稳定 API/SSE。完整离线与 PostgreSQL 17 验收已通过，
+详细见
+[M8 验收结论](docs/m8-review.md)。
 
 M0-M5 已能把 Agent 的语义结果编译为可精确审批的事务输入；M6 建立了独立于
 Agent/LLM 的审批消费、最终检查、执行与恢复边界：
@@ -97,12 +105,14 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M4 Definition of Done](docs/m4-review.md)，M5 验收结论见
 [M5 Definition of Done](docs/m5-review.md)，M6 验收结论见
 [M6 Definition of Done](docs/m6-review.md)，M7 验收结论见
-[M7 Definition of Done](docs/m7-review.md)。
+[M7 Definition of Done](docs/m7-review.md)，M8 验收结论见
+[M8 implementation review](docs/m8-review.md)。
 
 ## 本地验证
 
 ```bash
-.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -m "not postgres"
+REELOOM_TEST_POSTGRES_DSN=... .venv/bin/python scripts/run_postgres_tests.py
 ```
 
 固定离线 Agent eval：

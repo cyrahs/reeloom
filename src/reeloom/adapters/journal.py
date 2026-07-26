@@ -23,6 +23,7 @@ from reeloom.executor.transaction import (
 )
 from reeloom.kernel.candidates import CandidateId
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.ports.journals import JournalTerminalSummary
 
 _MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 
@@ -187,6 +188,72 @@ class FilesystemJournalStore:
             candidate_id=str(candidate_id),
         )
 
+    def terminal_summary(
+        self,
+        transaction: TransactionRecord,
+        candidate_ids: tuple[CandidateId, ...],
+    ) -> JournalTerminalSummary:
+        if (
+            not isinstance(candidate_ids, tuple)
+            or len(candidate_ids) > 10_000
+            or len(set(candidate_ids)) != len(candidate_ids)
+            or not all(
+                isinstance(item, CandidateId)
+                for item in candidate_ids
+            )
+        ):
+            raise ExecutorError(ExecutorErrorCode.INVALID_JOURNAL)
+        completed = self.is_completed(transaction)
+        rolled_back = self.is_rolled_back(transaction)
+        if completed and rolled_back:
+            raise ExecutorError(ExecutorErrorCode.INVALID_JOURNAL)
+        moved: set[CandidateId] = set()
+        restored: set[CandidateId] = set()
+        for candidate_id in candidate_ids:
+            label = str(candidate_id).replace(":", "-")
+            if self._has_event(
+                transaction,
+                label=f"move-{label}",
+                event_type="move_applied",
+                candidate_id=str(candidate_id),
+            ):
+                moved.add(candidate_id)
+            if self._has_event(
+                transaction,
+                label=f"rollback-{label}",
+                event_type="move_rolled_back",
+                candidate_id=str(candidate_id),
+            ):
+                restored.add(candidate_id)
+        failures = tuple(
+            code
+            for code in ExecutorErrorCode
+            if self._has_event(
+                transaction,
+                label=f"failed-{code.value.replace('_', '-')}",
+                event_type="apply_failed",
+                failure_code=code.value,
+            )
+        )
+        if len(failures) > 1:
+            raise ExecutorError(ExecutorErrorCode.INVALID_JOURNAL)
+        applied = moved | restored
+        if completed and (
+            applied != set(candidate_ids)
+            or restored
+            or failures
+        ):
+            raise ExecutorError(ExecutorErrorCode.INVALID_JOURNAL)
+        return JournalTerminalSummary(
+            completed=completed,
+            rolled_back=rolled_back,
+            applied_count=len(applied),
+            rolled_back_count=(
+                len(applied) if rolled_back else 0
+            ),
+            failure_code=failures[0] if failures else None,
+        )
+
     def _has_event(
         self,
         transaction: TransactionRecord,
@@ -194,12 +261,14 @@ class FilesystemJournalStore:
         label: str,
         event_type: str,
         candidate_id: str | None = None,
+        failure_code: str | None = None,
     ) -> bool:
         name = self._event_name(transaction, label)
         expected = journal_event_bytes(
             transaction,
             event_type=event_type,
             candidate_id=candidate_id,
+            failure_code=failure_code,
         )
         try:
             actual = self._read(name)

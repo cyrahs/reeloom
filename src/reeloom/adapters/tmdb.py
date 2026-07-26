@@ -90,6 +90,7 @@ class TmdbHttpAdapter:
                 "User-Agent": "reeloom/0.1",
             },
             follow_redirects=False,
+            trust_env=False,
             transport=transport,
         )
 

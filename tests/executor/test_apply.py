@@ -358,7 +358,8 @@ def test_recovery_rolls_back_crash_after_rename_before_event(
     assert recovered.status is ApplyStatus.ROLLED_BACK
     assert recovered.rolled_back_count == 1
     assert recovered_again.status is ApplyStatus.ROLLED_BACK
-    assert recovered_again.rolled_back_count == 0
+    assert recovered_again.applied_count == 1
+    assert recovered_again.rolled_back_count == 1
     assert (
         environment.source / "episode-1.mkv"
     ).read_bytes() == b"video-1"
@@ -449,7 +450,9 @@ def test_recovery_is_idempotent_after_crash_during_rollback(
     )
 
     assert recovered.status is ApplyStatus.ROLLED_BACK
-    assert recovered.rolled_back_count == 0
+    assert recovered.applied_count == 1
+    assert recovered.rolled_back_count == 1
+    assert recovered.failure_code is ExecutorErrorCode.MOVE_FAILED
     assert (
         environment.source / "episode-1.mkv"
     ).read_bytes() == b"video-1"

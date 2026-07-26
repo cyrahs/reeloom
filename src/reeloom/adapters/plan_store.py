@@ -16,6 +16,7 @@ from reeloom.kernel.rename_plan import (
     is_valid_plan_hash,
     verify_plan_bytes,
 )
+from reeloom.kernel.amendment import AmendmentPlan, verify_amendment_bytes
 from reeloom.policy.path_policy import AuthorizedRoot
 
 _MAX_PLAN_BYTES = 4 * 1024 * 1024
@@ -52,16 +53,52 @@ class FilesystemPlanStore:
         finally:
             os.close(root_fd)
 
-    def load(self, plan_hash: str) -> bytes:
-        name = self._name(plan_hash)
+    def save_amendment(self, plan: AmendmentPlan) -> None:
+        if not isinstance(plan, AmendmentPlan) or not plan.verify_hash():
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        content = plan.canonical_bytes()
+        if not 0 < len(content) <= _MAX_PLAN_BYTES:
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         root_fd = self._open_root()
         try:
-            content = read_at(
+            write_once_at(
                 root_fd,
-                name,
+                self._amendment_name(plan.plan_hash),
+                content,
                 limit=_MAX_PLAN_BYTES,
             )
-            if not verify_plan_bytes(content, plan_hash):
+        except ImmutableFileError as error:
+            if error.code is ImmutableFileErrorCode.EXISTS:
+                raise ExecutorError(
+                    ExecutorErrorCode.PLAN_ALREADY_EXISTS
+                ) from None
+            raise ExecutorError(
+                ExecutorErrorCode.PLAN_STORE_FAILURE
+            ) from None
+        finally:
+            os.close(root_fd)
+
+    def load(self, plan_hash: str) -> bytes:
+        root_fd = self._open_root()
+        try:
+            try:
+                content = read_at(
+                    root_fd,
+                    self._name(plan_hash),
+                    limit=_MAX_PLAN_BYTES,
+                )
+            except ImmutableFileError as error:
+                if error.code is not ImmutableFileErrorCode.NOT_FOUND:
+                    raise
+                content = read_at(
+                    root_fd,
+                    self._amendment_name(plan_hash),
+                    limit=_MAX_PLAN_BYTES,
+                )
+            if not (
+                verify_plan_bytes(content, plan_hash)
+                or verify_amendment_bytes(content, plan_hash)
+            ):
                 raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
             return content
         except ImmutableFileError as error:
@@ -94,3 +131,12 @@ class FilesystemPlanStore:
         if not is_valid_plan_hash(plan_hash):
             raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         return f"plan-v1-{plan_hash.removeprefix('sha256:')}.json"
+
+    @staticmethod
+    def _amendment_name(plan_hash: object) -> str:
+        if not is_valid_plan_hash(plan_hash):
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        return (
+            "amendment-v1-"
+            f"{plan_hash.removeprefix('sha256:')}.json"
+        )

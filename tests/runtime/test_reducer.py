@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from reeloom.kernel.naming import SeriesIdentity
@@ -7,6 +9,7 @@ from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
+    InteractionCompleted,
     RunFailed,
     RunStarted,
     RunStopped,
@@ -67,6 +70,129 @@ def test_assistant_final_does_not_imply_domain_completion() -> None:
 
     assert state.phase is Phase.IDENTIFY_SERIES
     assert state.phase is not Phase.COMPLETED
+
+
+def test_interactions_explicitly_reduce_the_final_plan_head() -> None:
+    initial_hash = "sha256:" + "a" * 64
+    revised_hash = "sha256:" + "b" * 64
+    amendment_hash = "sha256:" + "c" * 64
+    replacement_hash = "sha256:" + "d" * 64
+    started = reduce_event(
+        None,
+        RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME),
+    )
+    awaiting = replace(
+        started,
+        phase=Phase.AWAITING_APPROVAL,
+        status=RunStatus.STOPPED,
+        plan_hash=initial_hash,
+        stop_reason=StopReason.AWAITING_APPROVAL,
+    )
+
+    question = reduce_event(
+        awaiting,
+        InteractionCompleted(
+            interaction_id="interaction-question",
+            kind="question",
+            model_turns=1,
+            model_tokens=1,
+            fresh_mapping_submitted=False,
+            final_plan_hash=initial_hash,
+        ),
+    )
+    assert (question.phase, question.plan_hash) == (
+        Phase.AWAITING_APPROVAL,
+        initial_hash,
+    )
+
+    revision = reduce_event(
+        awaiting,
+        InteractionCompleted(
+            interaction_id="interaction-revision",
+            kind="revision",
+            model_turns=1,
+            model_tokens=1,
+            fresh_mapping_submitted=True,
+            final_plan_hash=revised_hash,
+            plan_hash=revised_hash,
+        ),
+    )
+    assert (revision.phase, revision.plan_hash) == (
+        Phase.AWAITING_APPROVAL,
+        revised_hash,
+    )
+
+    completed = replace(
+        revision,
+        phase=Phase.COMPLETED,
+        plan_hash=revised_hash,
+        stop_reason=None,
+    )
+    amendment = reduce_event(
+        completed,
+        InteractionCompleted(
+            interaction_id="interaction-amendment",
+            kind="reapply",
+            model_turns=1,
+            model_tokens=1,
+            fresh_mapping_submitted=True,
+            final_plan_hash=amendment_hash,
+            plan_hash=amendment_hash,
+        ),
+    )
+    assert (amendment.phase, amendment.plan_hash) == (
+        Phase.AWAITING_APPROVAL,
+        amendment_hash,
+    )
+
+    replacement = reduce_event(
+        amendment,
+        InteractionCompleted(
+            interaction_id="interaction-replacement",
+            kind="reapply",
+            model_turns=1,
+            model_tokens=1,
+            fresh_mapping_submitted=True,
+            final_plan_hash=replacement_hash,
+            plan_hash=replacement_hash,
+        ),
+    )
+    assert (replacement.phase, replacement.plan_hash) == (
+        Phase.AWAITING_APPROVAL,
+        replacement_hash,
+    )
+
+    superseded = reduce_event(
+        replacement,
+        InteractionCompleted(
+            interaction_id="interaction-supersede",
+            kind="reapply",
+            model_turns=1,
+            model_tokens=1,
+            fresh_mapping_submitted=True,
+            final_plan_hash=revised_hash,
+        ),
+    )
+    assert (superseded.phase, superseded.plan_hash) == (
+        Phase.COMPLETED,
+        revised_hash,
+    )
+
+    no_op = reduce_event(
+        superseded,
+        InteractionCompleted(
+            interaction_id="interaction-noop",
+            kind="reapply",
+            model_turns=1,
+            model_tokens=1,
+            fresh_mapping_submitted=True,
+            final_plan_hash=revised_hash,
+        ),
+    )
+    assert (no_op.phase, no_op.plan_hash) == (
+        Phase.COMPLETED,
+        revised_hash,
+    )
 
 
 def test_stop_reason_cannot_claim_domain_completion() -> None:

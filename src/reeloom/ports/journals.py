@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from typing import Protocol
 
 from reeloom.executor.errors import ExecutorErrorCode
 from reeloom.executor.transaction import TransactionRecord
 from reeloom.kernel.candidates import CandidateId
+
+
+@dataclass(frozen=True, slots=True)
+class JournalTerminalSummary:
+    completed: bool
+    rolled_back: bool
+    applied_count: int
+    rolled_back_count: int
+    failure_code: ExecutorErrorCode | None
 
 
 class JournalStore(Protocol):
@@ -58,3 +68,9 @@ class JournalStore(Protocol):
         transaction: TransactionRecord,
         candidate_id: CandidateId,
     ) -> bool: ...
+
+    def terminal_summary(
+        self,
+        transaction: TransactionRecord,
+        candidate_ids: tuple[CandidateId, ...],
+    ) -> JournalTerminalSummary: ...

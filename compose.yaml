@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: reeloom
+      POSTGRES_USER: reeloom_migrator
+      POSTGRES_PASSWORD: ${REELOOM_MIGRATION_POSTGRES_PASSWORD:?required}
+      REELOOM_APP_PASSWORD: ${REELOOM_APP_POSTGRES_PASSWORD:?required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-reeloom.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reeloom_migrator -d reeloom"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  server:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      REELOOM_POSTGRES_DSN: postgresql://reeloom_app:${REELOOM_APP_POSTGRES_PASSWORD}@postgres:5432/reeloom
+      REELOOM_MIGRATION_POSTGRES_DSN: postgresql://reeloom_migrator:${REELOOM_MIGRATION_POSTGRES_PASSWORD}@postgres:5432/reeloom
+      REELOOM_TMDB_API_KEY: ${REELOOM_TMDB_API_KEY:?required}
+      REELOOM_STATE_ROOT: /var/lib/reeloom
+      REELOOM_WORKERS: "1"
+      REELOOM_PROVIDER_ORIGINS: ${REELOOM_PROVIDER_ORIGINS:-https://api.openai.com}
+      REELOOM_ALLOWED_HOSTS: ${REELOOM_ALLOWED_HOSTS:?required}
+      REELOOM_ALLOWED_UI_ORIGINS: ${REELOOM_ALLOWED_UI_ORIGINS:?required}
+      REELOOM_ADMIN_TOKEN: ${REELOOM_ADMIN_TOKEN:?required}
+      REELOOM_OPERATOR_TOKEN: ${REELOOM_OPERATOR_TOKEN:?required}
+      REELOOM_VIEWER_TOKEN: ${REELOOM_VIEWER_TOKEN:?required}
+    volumes:
+      - reeloom-state:/var/lib/reeloom
+      - ${REELOOM_MEDIA_ROOT:?required}:${REELOOM_MEDIA_ROOT:?required}
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:
+  reeloom-state:
