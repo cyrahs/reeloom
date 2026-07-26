@@ -7,11 +7,22 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from pathlib import Path
+from typing import Annotated, Protocol
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    Security,
+)
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -23,7 +34,32 @@ from reeloom.server.interactions import (
     InteractionService,
 )
 from reeloom.server.apply_service import ApplyCoordinator
+from reeloom.server.api_models import (
+    ApplyResponse,
+    ApproveApplyRequest,
+    ConfigResponse,
+    ConfigUpdateRequest,
+    DiscoveriesResponse,
+    EventsResponse,
+    HealthResponse,
+    InteractionHistoryResponse,
+    InteractionRequest,
+    InteractionResponse,
+    PlanLineageResponse,
+    PlanLineageItem,
+    PlanPreviewResponse,
+    ProviderProbeRequest,
+    ProviderProbeResponse,
+    ReapplyRequest,
+    ReapplyResponse,
+    RecoveryRequest,
+    RecoveryResponse,
+    RunResponse,
+    RunsResponse,
+    SessionResponse,
+)
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.web_static import StaticAsset, StaticWebBundle
 from reeloom.executor.errors import (
     ApprovalError,
     ExecutorError,
@@ -34,6 +70,12 @@ _MAX_PAGE_SIZE = 100
 _BODY_TIMEOUT_SECONDS = 5.0
 _EMPTY_SSE_POLLS = 2
 _SSE_POLL_SECONDS = 0.25
+_SSE_CONNECTION_LIMIT = 16
+_BEARER = HTTPBearer(
+    auto_error=False,
+    bearerFormat="opaque",
+    scheme_name="BearerAuth",
+)
 _SINGLETON_HEADERS = frozenset(
     {
         "authorization",
@@ -84,6 +126,31 @@ class ApiQueries(Protocol):
         limit: int,
     ) -> tuple[dict[str, object], ...]: ...
 
+    def list_plans(
+        self,
+        *,
+        run_id: str,
+        before_version: int | None,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]: ...
+
+    def get_plan_preview(
+        self,
+        *,
+        run_id: str,
+        version: int,
+        after: int,
+        limit: int,
+    ) -> dict[str, object] | None: ...
+
+    def list_interactions(
+        self,
+        *,
+        run_id: str,
+        before: str | None,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ApiDependencies:
@@ -100,6 +167,9 @@ class ApiDependencies:
     ) = None
     provider_probe: Callable[[], Awaitable[object]] | None = None
     idempotency: object | None = None
+    sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
+    sse_poll_seconds: float = _SSE_POLL_SECONDS
+    sse_heartbeat_seconds: float = 15.0
 
 
 def _duplicate_rejecting_object(
@@ -134,10 +204,20 @@ def _host_name(value: str) -> str | None:
 
 
 class _SecurityBoundary:
-    def __init__(self, app: ASGIApp, *, auth: AuthSettings) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        auth: AuthSettings,
+        public_paths: frozenset[str] = frozenset(),
+    ) -> None:
         self.app = app
         self._auth = auth
+        self._public_paths = public_paths
         self._concurrency = threading.BoundedSemaphore(64)
+        self._sse_concurrency = threading.BoundedSemaphore(
+            _SSE_CONNECTION_LIMIT
+        )
         self._rate_lock = threading.Lock()
         self._arrivals: deque[float] = deque()
 
@@ -150,7 +230,8 @@ class _SecurityBoundary:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if not self._concurrency.acquire(blocking=False):
+        concurrency = self._concurrency_gate(scope["path"])
+        if not concurrency.acquire(blocking=False):
             await JSONResponse(
                 {"error": {"code": "server_busy"}},
                 status_code=503,
@@ -203,15 +284,18 @@ class _SecurityBoundary:
                     origin,
                 )
                 return
-            if scope["path"] == "/health":
-                async def health_send(message: Message) -> None:
+            if (
+                scope["method"] in {"GET", "HEAD"}
+                and scope["path"] in self._public_paths
+            ):
+                async def public_send(message: Message) -> None:
                     if message["type"] == "http.response.start":
                         message["headers"] = list(
                             message.get("headers", [])
                         ) + self._headers(origin)
                     await send(message)
 
-                await self.app(scope, receive, health_send)
+                await self.app(scope, receive, public_send)
                 return
             authorization = headers.get("authorization", "")
             prefix = "Bearer "
@@ -257,7 +341,17 @@ class _SecurityBoundary:
 
             await self.app(scope, receive, send_with_headers)
         finally:
-            self._concurrency.release()
+            concurrency.release()
+
+    def _concurrency_gate(
+        self,
+        path: str,
+    ) -> threading.BoundedSemaphore:
+        if path.startswith("/api/v1/runs/") and path.endswith(
+            "/events/stream"
+        ):
+            return self._sse_concurrency
+        return self._concurrency
 
     def _allow_arrival(self) -> bool:
         now = time.monotonic()
@@ -354,6 +448,25 @@ class _SecurityBoundary:
         result = [
             (b"x-content-type-options", b"nosniff"),
             (b"cache-control", b"no-store"),
+            (b"referrer-policy", b"no-referrer"),
+            (b"x-frame-options", b"DENY"),
+            (
+                b"content-security-policy",
+                (
+                    b"default-src 'none'; base-uri 'none'; "
+                    b"connect-src 'self'; font-src 'self'; "
+                    b"form-action 'self'; frame-ancestors 'none'; "
+                    b"img-src 'self' data:; object-src 'none'; "
+                    b"script-src 'self'; style-src 'self'"
+                ),
+            ),
+            (
+                b"permissions-policy",
+                (
+                    b"camera=(), geolocation=(), microphone=(), "
+                    b"payment=(), usb=()"
+                ),
+            ),
         ]
         if origin is not None:
             result.extend(
@@ -390,8 +503,15 @@ class _SecurityBoundary:
         await response(scope, receive, wrapped)
 
 
-def _require(minimum: Role) -> Callable[[Request], object]:
-    async def dependency(request: Request) -> Role:
+def _require(minimum: Role) -> Callable[..., object]:
+    async def dependency(
+        request: Request,
+        credentials: Annotated[
+            HTTPAuthorizationCredentials | None,
+            Security(_BEARER),
+        ],
+    ) -> Role:
+        del credentials
         role = request.state.role
         if role < minimum:
             raise HTTPException(
@@ -403,8 +523,16 @@ def _require(minimum: Role) -> Callable[[Request], object]:
     return dependency
 
 
-def _cursor(request: Request) -> int:
-    raw = request.headers.get("last-event-id", "0")
+def _cursor(
+    raw: Annotated[
+        str | None,
+        Header(
+            alias="Last-Event-ID",
+            description="Durable event cursor",
+        ),
+    ] = None,
+) -> int:
+    raw = "0" if raw is None else raw
     try:
         value = int(raw)
     except ValueError:
@@ -420,8 +548,16 @@ def _cursor(request: Request) -> int:
     return value
 
 
-def _idempotency_key(request: Request) -> str:
-    value = request.headers.get("idempotency-key", "")
+def _idempotency_key(
+    value: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            description="Stable key for one logical mutation",
+        ),
+    ] = None,
+) -> str:
+    value = "" if value is None else value
     if not value or len(value.encode("utf-8")) > 256:
         raise HTTPException(
             status_code=400,
@@ -430,8 +566,16 @@ def _idempotency_key(request: Request) -> str:
     return value
 
 
-def _plan_hash(request: Request) -> str:
-    value = request.headers.get("if-match", "")
+def _plan_hash(
+    value: Annotated[
+        str | None,
+        Header(
+            alias="If-Match",
+            description="Exact immutable plan hash",
+        ),
+    ] = None,
+) -> str:
+    value = "" if value is None else value
     digest = value.removeprefix("sha256:")
     if (
         len(value) != 71
@@ -445,22 +589,25 @@ def _plan_hash(request: Request) -> str:
     return value
 
 
+def _config_revision(
+    value: Annotated[
+        str | None,
+        Header(
+            alias="If-Match",
+            description="Exact config revision",
+        ),
+    ] = None,
+) -> int:
+    try:
+        return int("" if value is None else value)
+    except ValueError:
+        raise HTTPException(
+            400, detail={"code": "invalid_revision"}
+        ) from None
+
+
 def _text(value: object) -> str:
     if not isinstance(value, str) or not value:
-        raise HTTPException(400, detail={"code": "invalid_body"})
-    return value
-
-
-async def _json_object(
-    request: Request,
-    *,
-    fields: frozenset[str],
-) -> dict[str, object]:
-    try:
-        value = await request.json()
-    except Exception:
-        raise HTTPException(400, detail={"code": "invalid_json"}) from None
-    if not isinstance(value, dict) or frozenset(value) != fields:
         raise HTTPException(400, detail={"code": "invalid_body"})
     return value
 
@@ -474,7 +621,11 @@ def create_api(
     dependencies: ApiDependencies,
     *,
     auth: AuthSettings,
+    static_root: Path | None = None,
 ) -> FastAPI:
+    static_bundle = (
+        None if static_root is None else StaticWebBundle.load(static_root)
+    )
     app = FastAPI(
         title="Reeloom API",
         version="1.0.0",
@@ -482,7 +633,126 @@ def create_api(
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",
     )
-    app.add_middleware(_SecurityBoundary, auth=auth)
+    app.add_middleware(
+        _SecurityBoundary,
+        auth=auth,
+        public_paths=(
+            frozenset()
+            if static_bundle is None
+            else static_bundle.public_paths
+        ),
+    )
+
+    def custom_openapi() -> dict[str, object]:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            routes=app.routes,
+        )
+        components = schema.setdefault("components", {})
+        schemas = components.setdefault("schemas", {})
+        schemas["ErrorBody"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["code"],
+            "properties": {"code": {"type": "string"}},
+        }
+        schemas["ErrorResponse"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["error"],
+            "properties": {
+                "error": {"$ref": "#/components/schemas/ErrorBody"}
+            },
+        }
+        schemas.pop("HTTPValidationError", None)
+        schemas.pop("ValidationError", None)
+        for path, path_item in schema.get("paths", {}).items():
+            if (
+                not isinstance(path, str)
+                or not (
+                    path.startswith("/api/")
+                    or path == "/health"
+                )
+            ):
+                continue
+            if not isinstance(path_item, dict):
+                continue
+            for method, operation in path_item.items():
+                if method not in {
+                    "get",
+                    "post",
+                    "put",
+                    "patch",
+                    "delete",
+                } or not isinstance(operation, dict):
+                    continue
+                responses = operation.setdefault("responses", {})
+                for status in (
+                    "400",
+                    "401",
+                    "403",
+                    "409",
+                    "422",
+                    "503",
+                ):
+                    responses[status] = {
+                        "description": "Safe error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": (
+                                        "#/components/schemas/"
+                                        "ErrorResponse"
+                                    )
+                                }
+                            }
+                        },
+                    }
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
+
+    def static_response(
+        request: Request,
+        asset: StaticAsset,
+    ) -> Response:
+        return Response(
+            content=(
+                b"" if request.method == "HEAD" else asset.content
+            ),
+            media_type=asset.media_type,
+        )
+
+    if static_bundle is not None:
+        index_asset = static_bundle.index
+
+        @app.api_route(
+            "/",
+            methods=["GET", "HEAD"],
+            include_in_schema=False,
+        )
+        async def web_index(request: Request) -> Response:
+            return static_response(request, index_asset)
+
+        def asset_endpoint(
+            asset: StaticAsset,
+        ) -> Callable[[Request], Awaitable[Response]]:
+            async def endpoint(request: Request) -> Response:
+                return static_response(request, asset)
+
+            return endpoint
+
+        for public_path, asset in static_bundle.assets.items():
+            app.add_api_route(
+                public_path,
+                asset_endpoint(asset),
+                methods=["GET", "HEAD"],
+                include_in_schema=False,
+            )
 
     @app.exception_handler(StarletteHTTPException)
     async def safe_http_error(
@@ -549,8 +819,11 @@ def create_api(
             status_code=500,
         )
 
-    @app.get("/health")
-    async def health() -> dict[str, object]:
+    @app.get("/health", response_model=HealthResponse)
+    async def health(
+        role: Role = Depends(_require(Role.VIEWER)),
+    ) -> dict[str, object]:
+        del role
         if dependencies.health is None:
             raise HTTPException(
                 503, detail={"code": "database_unavailable"}
@@ -567,7 +840,19 @@ def create_api(
                 503, detail={"code": "database_unavailable"}
             ) from None
 
-    @app.get("/api/v1/runs/{run_id}")
+    @app.get(
+        "/api/v1/session",
+        response_model=SessionResponse,
+    )
+    async def session(
+        role: Role = Depends(_require(Role.VIEWER)),
+    ) -> dict[str, object]:
+        return {
+            "api_version": "1.0.0",
+            "role": role.name.lower(),
+        }
+
+    @app.get("/api/v1/runs/{run_id}", response_model=RunResponse)
     async def get_run(
         run_id: str,
         role: Role = Depends(_require(Role.VIEWER)),
@@ -580,7 +865,7 @@ def create_api(
             raise HTTPException(404, detail={"code": "run_not_found"})
         return value
 
-    @app.get("/api/v1/runs")
+    @app.get("/api/v1/runs", response_model=RunsResponse)
     async def list_runs(
         before: str | None = None,
         limit: int = 50,
@@ -590,14 +875,16 @@ def create_api(
         if not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
-            "items": await asyncio.to_thread(
-                dependencies.queries.list_runs,
-                before=before,
-                limit=limit,
+            "items": list(
+                await asyncio.to_thread(
+                    dependencies.queries.list_runs,
+                    before=before,
+                    limit=limit,
+                )
             )
         }
 
-    @app.get("/api/v1/discoveries")
+    @app.get("/api/v1/discoveries", response_model=DiscoveriesResponse)
     async def list_discoveries(
         before: str | None = None,
         limit: int = 50,
@@ -607,14 +894,16 @@ def create_api(
         if not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
-            "items": await asyncio.to_thread(
-                dependencies.queries.list_discoveries,
-                before=before,
-                limit=limit,
+            "items": list(
+                await asyncio.to_thread(
+                    dependencies.queries.list_discoveries,
+                    before=before,
+                    limit=limit,
+                )
             )
         }
 
-    @app.get("/api/v1/admin/config")
+    @app.get("/api/v1/admin/config", response_model=ConfigResponse)
     async def get_config(
         role: Role = Depends(_require(Role.ADMIN)),
     ) -> dict[str, object]:
@@ -626,33 +915,20 @@ def create_api(
             raise HTTPException(404, detail={"code": "config_not_found"})
         return value
 
-    @app.put("/api/v1/admin/config")
+    @app.put(
+        "/api/v1/admin/config",
+        response_model=ConfigResponse,
+    )
     async def update_config(
-        request: Request,
+        body: ConfigUpdateRequest,
+        expected_revision: int = Depends(_config_revision),
+        key: str = Depends(_idempotency_key),
         role: Role = Depends(_require(Role.ADMIN)),
     ) -> dict[str, object]:
         del role
         if dependencies.config_update is None:
             raise HTTPException(503, detail={"code": "unavailable"})
-        raw_revision = request.headers.get("if-match", "")
-        try:
-            expected_revision = int(raw_revision)
-        except ValueError:
-            raise HTTPException(
-                400, detail={"code": "invalid_revision"}
-            ) from None
-        value = await _json_object(
-            request,
-            fields=frozenset(
-                {
-                    "apply_policy",
-                    "archive_routes",
-                    "provider",
-                    "watches",
-                }
-            ),
-        )
-        key = _idempotency_key(request)
+        value = body.model_dump()
 
         def execute() -> dict[str, object]:
             return dependencies.config_update(expected_revision, value)
@@ -679,13 +955,15 @@ def create_api(
             )
         )
 
-    @app.post("/api/v1/admin/config/provider-probe")
+    @app.post(
+        "/api/v1/admin/config/provider-probe",
+        response_model=ProviderProbeResponse,
+    )
     async def provider_probe(
-        request: Request,
+        body: ProviderProbeRequest,
         role: Role = Depends(_require(Role.ADMIN)),
     ) -> dict[str, object]:
-        del role
-        await _json_object(request, fields=frozenset())
+        del body, role
         if dependencies.provider_probe is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         result = await dependencies.provider_probe()
@@ -694,7 +972,10 @@ def create_api(
             "status_code": result.status_code,
         }
 
-    @app.get("/api/v1/runs/{run_id}/plan")
+    @app.get(
+        "/api/v1/runs/{run_id}/plan",
+        response_model=PlanLineageItem,
+    )
     async def get_plan(
         run_id: str,
         version: int | None = None,
@@ -712,7 +993,90 @@ def create_api(
             raise HTTPException(404, detail={"code": "plan_not_found"})
         return value
 
-    @app.get("/api/v1/runs/{run_id}/events")
+    @app.get(
+        "/api/v1/runs/{run_id}/plans",
+        response_model=PlanLineageResponse,
+    )
+    async def list_plans(
+        run_id: str,
+        before_version: int | None = None,
+        limit: int = 50,
+        role: Role = Depends(_require(Role.VIEWER)),
+    ) -> dict[str, object]:
+        del role
+        if (
+            before_version is not None
+            and before_version < 1
+        ) or not 1 <= limit <= _MAX_PAGE_SIZE:
+            raise HTTPException(400, detail={"code": "invalid_page"})
+        return {
+            "items": list(
+                await asyncio.to_thread(
+                    dependencies.queries.list_plans,
+                    run_id=run_id,
+                    before_version=before_version,
+                    limit=limit,
+                )
+            )
+        }
+
+    @app.get(
+        "/api/v1/runs/{run_id}/plans/{version}/preview",
+        response_model=PlanPreviewResponse,
+    )
+    async def plan_preview(
+        run_id: str,
+        version: int,
+        after: int = 0,
+        limit: int = 50,
+        role: Role = Depends(_require(Role.OPERATOR)),
+    ) -> dict[str, object]:
+        del role
+        if (
+            version < 1
+            or after < 0
+            or not 1 <= limit <= _MAX_PAGE_SIZE
+        ):
+            raise HTTPException(400, detail={"code": "invalid_page"})
+        value = await asyncio.to_thread(
+            dependencies.queries.get_plan_preview,
+            run_id=run_id,
+            version=version,
+            after=after,
+            limit=limit,
+        )
+        if value is None:
+            raise HTTPException(404, detail={"code": "plan_not_found"})
+        return value
+
+    @app.get(
+        "/api/v1/runs/{run_id}/interactions",
+        response_model=InteractionHistoryResponse,
+    )
+    async def interaction_history(
+        run_id: str,
+        before: str | None = None,
+        limit: int = 50,
+        role: Role = Depends(_require(Role.ADMIN)),
+    ) -> dict[str, object]:
+        del role
+        if not 1 <= limit <= _MAX_PAGE_SIZE:
+            raise HTTPException(400, detail={"code": "invalid_page"})
+        return {
+            "items": list(
+                await asyncio.to_thread(
+                    dependencies.queries.list_interactions,
+                    run_id=run_id,
+                    before=before,
+                    limit=limit,
+                )
+            )
+        }
+
+    @app.get(
+        "/api/v1/runs/{run_id}/events",
+        response_model=EventsResponse,
+    )
     async def events(
         run_id: str,
         after: int = 0,
@@ -723,11 +1087,13 @@ def create_api(
         if after < 0 or not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
-            "items": await asyncio.to_thread(
-                dependencies.queries.list_events,
-                run_id=run_id,
-                after_event_id=after,
-                limit=limit,
+            "items": list(
+                await asyncio.to_thread(
+                    dependencies.queries.list_events,
+                    run_id=run_id,
+                    after_event_id=after,
+                    limit=limit,
+                )
             )
         }
 
@@ -735,10 +1101,10 @@ def create_api(
     async def event_stream(
         request: Request,
         run_id: str,
+        cursor: int = Depends(_cursor),
         role: Role = Depends(_require(Role.VIEWER)),
     ) -> StreamingResponse:
         del role
-        cursor = _cursor(request)
         latest = await asyncio.to_thread(
             dependencies.queries.latest_event_id, run_id
         )
@@ -748,7 +1114,13 @@ def create_api(
         async def stream() -> AsyncIterator[str]:
             current = cursor
             empty_polls = 0
-            while empty_polls < _EMPTY_SSE_POLLS:
+            last_emit = time.monotonic()
+            while (
+                dependencies.sse_max_empty_polls is None
+                or empty_polls < dependencies.sse_max_empty_polls
+            ):
+                if await request.is_disconnected():
+                    return
                 rows = await asyncio.to_thread(
                     dependencies.queries.list_events,
                     run_id=run_id,
@@ -757,7 +1129,13 @@ def create_api(
                 )
                 if not rows:
                     empty_polls += 1
-                    await asyncio.sleep(_SSE_POLL_SECONDS)
+                    if (
+                        time.monotonic() - last_emit
+                        >= dependencies.sse_heartbeat_seconds
+                    ):
+                        yield ": keepalive\n\n"
+                        last_emit = time.monotonic()
+                    await asyncio.sleep(dependencies.sse_poll_seconds)
                     continue
                 empty_polls = 0
                 for item in rows:
@@ -777,6 +1155,7 @@ def create_api(
                         f"data: {data}\n\n"
                     )
                     current = event_id
+                    last_emit = time.monotonic()
             yield ": keepalive\n\n"
 
         return StreamingResponse(
@@ -785,30 +1164,22 @@ def create_api(
             headers={"x-accel-buffering": "no"},
         )
 
-    @app.post("/api/v1/runs/{run_id}/interactions")
+    @app.post(
+        "/api/v1/runs/{run_id}/interactions",
+        response_model=InteractionResponse,
+    )
     async def interact(
-        request: Request,
         run_id: str,
+        body: InteractionRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
         role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
         del role
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
-        value = await _json_object(
-            request,
-            fields=frozenset({"kind", "message"}),
-        )
-        try:
-            kind = InteractionKind(_text(value["kind"]))
-        except ValueError:
-            raise HTTPException(
-                400, detail={"code": "invalid_interaction_kind"}
-            ) from None
-        if kind is InteractionKind.REAPPLY:
-            raise HTTPException(400, detail={"code": "use_reapply_route"})
-        key = _idempotency_key(request)
-        plan_hash = _plan_hash(request)
-        message = _text(value["message"])
+        kind = InteractionKind(body.kind)
+        message = _text(body.message)
         result = await _shield_thread(
             lambda: dependencies.interactions.run(
                 run_id=run_id,
@@ -826,22 +1197,21 @@ def create_api(
             "model_tokens": result.model_tokens,
         }
 
-    @app.post("/api/v1/runs/{run_id}/reapply")
+    @app.post(
+        "/api/v1/runs/{run_id}/reapply",
+        response_model=ReapplyResponse,
+    )
     async def reapply(
-        request: Request,
         run_id: str,
+        body: ReapplyRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
         role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
         del role
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
-        value = await _json_object(
-            request,
-            fields=frozenset({"message"}),
-        )
-        key = _idempotency_key(request)
-        plan_hash = _plan_hash(request)
-        message = _text(value["message"])
+        message = _text(body.message)
         result = await _shield_thread(
             lambda: dependencies.interactions.run(
                 run_id=run_id,
@@ -858,23 +1228,20 @@ def create_api(
             "no_op": result.plan_hash is None,
         }
 
-    @app.post("/api/v1/runs/{run_id}/approve-and-apply")
+    @app.post(
+        "/api/v1/runs/{run_id}/approve-and-apply",
+        response_model=ApplyResponse,
+    )
     async def approve_and_apply(
-        request: Request,
         run_id: str,
+        body: ApproveApplyRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
         role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
         del role
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
-        value = await _json_object(
-            request,
-            fields=frozenset({"automatic"}),
-        )
-        if type(value["automatic"]) is not bool:
-            raise HTTPException(400, detail={"code": "invalid_body"})
-        key = _idempotency_key(request)
-        plan_hash = _plan_hash(request)
 
         def payload(result: ApplyResult) -> dict[str, object]:
             return {
@@ -891,7 +1258,7 @@ def create_api(
                 dependencies.apply.approve_and_apply(
                     run_id=run_id,
                     plan_hash=plan_hash,
-                    automatic=value["automatic"],
+                    automatic=body.automatic,
                 )
             )
 
@@ -910,7 +1277,7 @@ def create_api(
                 subject_id=run_id,
                 idempotency_key=key,
                 request={
-                    "automatic": value["automatic"],
+                    "automatic": body.automatic,
                     "plan_hash": plan_hash,
                 },
                 execute=execute,
@@ -918,22 +1285,21 @@ def create_api(
             )
         )
 
-    @app.post("/api/v1/operations/runs/{run_id}/recover")
+    @app.post(
+        "/api/v1/operations/runs/{run_id}/recover",
+        response_model=RecoveryResponse,
+    )
     async def recover(
-        request: Request,
         run_id: str,
+        body: RecoveryRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
         role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
         del role
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
-        value = await _json_object(
-            request,
-            fields=frozenset({"approval_id"}),
-        )
-        key = _idempotency_key(request)
-        plan_hash = _plan_hash(request)
-        approval_id = _text(value["approval_id"])
+        approval_id = _text(body.approval_id)
 
         def payload(result: ApplyResult) -> dict[str, object]:
             return {

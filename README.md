@@ -1,11 +1,11 @@
 # Reeloom
 
-M8 提供 PostgreSQL 17-first 的单实例 server control plane，以及供后续 Web UI 使用
-的 versioned API 与 SSE。默认操作仍只生成 immutable plan；只有 exact
+M9 在 PostgreSQL 17-first 单实例 control plane 上提供同源 React Web UI、
+versioned API 与 durable SSE。默认操作仍只生成 immutable plan；只有 exact
 `ApprovalRecord` 被一次性 claim 后，隔离 Executor 才能移动文件。
 
-部署与接口见 [deployment](docs/deployment.md) 和 [HTTP API](docs/api.md)；M8 的
-设计边界与分阶段完成条件见 [M8 plan](docs/m8-plan.md)。
+部署与接口见 [deployment](docs/deployment.md) 和 [HTTP API](docs/api.md)；M9 的
+设计边界与分阶段完成条件见 [M9 plan](docs/m9-plan.md)。
 
 Reeloom 是一个从零设计的 **agent-native 动画剧集整理器**。它与
 `aninamer` 追求相同的用户结果：识别动画剧集和外置中文字幕，结合
@@ -16,13 +16,12 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M8 / PostgreSQL-first 服务器控制面（已完成并通过验收）**
+**M9 / 交互式 Web UI（已完成并通过验收）**
 
-M8 从 M7 基线建立 PostgreSQL 17 单一 metadata owner 的服务器控制面，提供配置、
-调度、原 logical Agent/session 交互、exact approval、apply/recovery、安全 reapply
-以及供后续 Web UI 使用的稳定 API/SSE。完整离线与 PostgreSQL 17 验收已通过，
-详细见
-[M8 验收结论](docs/m8-review.md)。
+M9 在 M8 稳定 API/SSE 上建立只接受 Admin Bearer 的浏览器闭环：配置、观察、
+计划 lineage/preview、Agent question/revision/reapply、exact approval、
+apply settlement 与 typed recovery 均可从同源 UI 完成。详细见
+[M9 验收结论](docs/m9-review.md)。
 
 M0-M5 已能把 Agent 的语义结果编译为可精确审批的事务输入；M6 建立了独立于
 Agent/LLM 的审批消费、最终检查、执行与恢复边界：
@@ -56,8 +55,9 @@ Agent/LLM 的审批消费、最终检查、执行与恢复边界：
   copy/unlink 跨文件系统降级。
 - apply 在任何目录创建和 rename 前持久化显式 rollback manifest；journal
   event 使用原子发布的独立 immutable 文件 append-only 记录，不原地覆盖状态；
-- media rename 使用 Linux `renameat2(RENAME_NOREPLACE)`，目标在最终检查后
-  临时出现也不会被覆盖；系统不支持安全原语时直接 fail closed；
+- media rename 使用 Linux `renameat2(RENAME_NOREPLACE)` 或 Darwin
+  `renameatx_np(RENAME_EXCL)`，目标在最终检查后临时出现也不会被覆盖；
+  系统不支持安全原语时直接 fail closed；
 - partial failure 自动逆序 rollback；崩溃恢复依据 exact plan、claimed
   approval、immutable journal 和源/目标 identity 唯一判定状态，歧义时返回
   `recovery_required`；
@@ -106,13 +106,21 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M5 Definition of Done](docs/m5-review.md)，M6 验收结论见
 [M6 Definition of Done](docs/m6-review.md)，M7 验收结论见
 [M7 Definition of Done](docs/m7-review.md)，M8 验收结论见
-[M8 implementation review](docs/m8-review.md)。
+[M8 implementation review](docs/m8-review.md)，M9 验收结论见
+[M9 implementation review](docs/m9-review.md)。
 
 ## 本地验证
 
 ```bash
 .venv/bin/python -m pytest -q -m "not postgres"
 REELOOM_TEST_POSTGRES_DSN=... .venv/bin/python scripts/run_postgres_tests.py
+cd web
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+REELOOM_TEST_POSTGRES_DSN=... npm run e2e
 ```
 
 固定离线 Agent eval：

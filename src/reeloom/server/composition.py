@@ -48,13 +48,9 @@ from reeloom.server.scheduler_repository import (
 )
 from reeloom.server.secrets import FilesystemSecretStore
 from reeloom.server.config import (
-    ApplyPolicy,
-    ArchiveRoute,
-    ConfigDraftInput,
-    ProviderConfigInput,
-    ServerWorkType,
-    WatchConfig,
+    ConfigRevision,
 )
+from reeloom.server.config_edit import ConfigEdit, parse_config_edit
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.config_service import ConfigService
 from reeloom.server.provider import (
@@ -199,86 +195,23 @@ def build_application(
         )
 
         def parse_config(
+            expected_revision: int,
             value: dict[str, object],
-        ) -> ConfigDraftInput:
-            try:
-                raw_watches = value["watches"]
-                raw_routes = value["archive_routes"]
-                raw_provider = value["provider"]
-                if (
-                    not isinstance(raw_watches, list)
-                    or not isinstance(raw_routes, list)
-                    or not isinstance(raw_provider, dict)
-                    or set(raw_provider)
-                    != {
-                        "api_key",
-                        "base_url",
-                        "model",
-                        "reasoning_effort",
-                        "verbosity",
-                    }
-                ):
-                    raise ValueError
-                watches = tuple(
-                    WatchConfig(
-                        watch_id=item["watch_id"],
-                        root=Path(item["root"]),
-                        work_type=ServerWorkType(item["work_type"]),
-                        poll_interval_seconds=item[
-                            "poll_interval_seconds"
-                        ],
-                        settle_interval_seconds=item[
-                            "settle_interval_seconds"
-                        ],
-                    )
-                    for item in raw_watches
-                    if isinstance(item, dict)
-                    and set(item)
-                    == {
-                        "poll_interval_seconds",
-                        "root",
-                        "settle_interval_seconds",
-                        "watch_id",
-                        "work_type",
-                    }
-                )
-                routes = tuple(
-                    ArchiveRoute(
-                        work_type=ServerWorkType(item["work_type"]),
-                        root=Path(item["root"]),
-                    )
-                    for item in raw_routes
-                    if isinstance(item, dict)
-                    and set(item) == {"root", "work_type"}
-                )
-                if len(watches) != len(raw_watches) or len(routes) != len(
-                    raw_routes
-                ):
-                    raise ValueError
-                return ConfigDraftInput(
-                    watches=watches,
-                    archive_routes=routes,
-                    provider=ProviderConfigInput(
-                        base_url=raw_provider["base_url"],
-                        model=raw_provider["model"],
-                        api_key=raw_provider["api_key"].encode("utf-8"),
-                        reasoning_effort=raw_provider[
-                            "reasoning_effort"
-                        ],
-                        verbosity=raw_provider["verbosity"],
-                    ),
-                    apply_policy=ApplyPolicy(value["apply_policy"]),
-                )
-            except (KeyError, TypeError, ValueError, AttributeError):
-                raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
+        ) -> ConfigEdit:
+            current: ConfigRevision | None = None
+            if expected_revision > 0:
+                current = config_repository.get(expected_revision)
+            return parse_config_edit(value, current=current)
 
         def update_config(
             expected_revision: int,
             value: dict[str, object],
         ) -> dict[str, object]:
-            revision = config_service.compare_and_append(
+            edit = parse_config(expected_revision, value)
+            revision = config_service.compare_and_append_draft(
                 expected_revision=expected_revision,
-                value=parse_config(value),
+                draft=edit.draft,
+                replacement_api_key=edit.replacement_api_key,
             )
             return revision.public_payload()
 
@@ -286,7 +219,7 @@ def build_application(
             expected_revision: int,
             value: dict[str, object],
         ) -> dict[str, object] | None:
-            expected = parse_config(value)
+            expected = parse_config(expected_revision, value)
             try:
                 revision = config_repository.get(
                     expected_revision + 1
@@ -297,17 +230,27 @@ def build_application(
                 raise
             provider = revision.provider
             if (
-                revision.watches != expected.watches
-                or revision.archive_routes != expected.archive_routes
-                or revision.apply_policy is not expected.apply_policy
-                or provider.base_url != expected.provider.base_url
-                or provider.model != expected.provider.model
+                revision.watches != expected.draft.watches
+                or revision.archive_routes != expected.draft.archive_routes
+                or revision.apply_policy is not expected.draft.apply_policy
+                or provider.base_url
+                != expected.draft.provider.base_url
+                or provider.model != expected.draft.provider.model
                 or provider.reasoning_effort
-                != expected.provider.reasoning_effort
-                or provider.verbosity != expected.provider.verbosity
-                or not hmac.compare_digest(
-                    secrets.load(provider.secret_ref),
-                    expected.provider.api_key,
+                != expected.draft.provider.reasoning_effort
+                or provider.verbosity
+                != expected.draft.provider.verbosity
+                or (
+                    expected.replacement_api_key is None
+                    and provider.secret_ref
+                    != expected.draft.provider.secret_ref
+                )
+                or (
+                    expected.replacement_api_key is not None
+                    and not hmac.compare_digest(
+                        secrets.load(provider.secret_ref),
+                        expected.replacement_api_key,
+                    )
                 )
             ):
                 return None
@@ -388,7 +331,7 @@ def build_application(
 
         api = create_api(
             ApiDependencies(
-                queries=PostgresQueries(database.pool),
+                queries=PostgresQueries(database.pool, plans=plans),
                 interactions=interactions,
                 apply=apply,
                 health=health,
@@ -396,8 +339,12 @@ def build_application(
                 config_resolve=resolve_config,
                 provider_probe=probe_provider,
                 idempotency=idempotency,
+                sse_max_empty_polls=None,
+                sse_poll_seconds=0.5,
+                sse_heartbeat_seconds=15.0,
             ),
             auth=auth,
+            static_root=Path(__file__).with_name("static"),
         )
         application = ServerApplication(
             settings=settings,

@@ -273,6 +273,50 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                     },
                 )
                 assert response.status_code == 200, response.text
+                public_config = response.json()
+                assert public_config["watches"][0]["root_configured"] is True
+                assert (
+                    public_config["provider"]["api_key_configured"] is True
+                )
+                assert str(incoming) not in response.text
+                assert "offline-provider-key" not in response.text
+                retained = await client.put(
+                    "/api/v1/admin/config",
+                    headers={
+                        "authorization": "Bearer admin-token-strong",
+                        "idempotency-key": f"retain-{journey_id}",
+                        "if-match": str(public_config["revision"]),
+                    },
+                    json={
+                        "watches": [
+                            {
+                                "watch_id": watch_id,
+                                "root": {"mode": "retain"},
+                                "work_type": "anime",
+                                "poll_interval_seconds": 1,
+                                "settle_interval_seconds": 1,
+                            }
+                        ],
+                        "archive_routes": [
+                            {
+                                "work_type": "anime",
+                                "root": {"mode": "retain"},
+                            }
+                        ],
+                        "provider": {
+                            "base_url": "https://api.openai.com/v1",
+                            "model": "gpt-offline",
+                            "credential": {"mode": "retain"},
+                            "reasoning_effort": None,
+                            "verbosity": None,
+                        },
+                        "apply_policy": "manual",
+                    },
+                )
+                assert retained.status_code == 200, retained.text
+                assert retained.json()["revision"] == (
+                    public_config["revision"] + 1
+                )
 
                 deadline = time.monotonic() + 8
                 run_id = None
@@ -318,6 +362,59 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 assert revision.status_code == 200, revision.text
                 revised_hash = revision.json()["plan_hash"]
                 assert revised_hash != initial_hash
+                session = await client.get(
+                    "/api/v1/session",
+                    headers={
+                        "authorization": "Bearer admin-token-strong"
+                    },
+                )
+                assert session.json() == {
+                    "api_version": "1.0.0",
+                    "role": "admin",
+                }
+                lineage = await client.get(
+                    f"/api/v1/runs/{run_id}/plans?limit=100",
+                    headers=operator,
+                )
+                assert lineage.status_code == 200, lineage.text
+                assert [
+                    item["plan_hash"]
+                    for item in lineage.json()["items"]
+                ] == [revised_hash, initial_hash]
+                initial_preview = await client.get(
+                    f"/api/v1/runs/{run_id}/plans/1/preview?limit=100",
+                    headers=operator,
+                )
+                revised_preview = await client.get(
+                    f"/api/v1/runs/{run_id}/plans/2/preview?limit=100",
+                    headers=operator,
+                )
+                assert initial_preview.status_code == 200
+                assert revised_preview.status_code == 200
+                assert initial_preview.json()["plan_hash"] == initial_hash
+                assert revised_preview.json()["plan_hash"] == revised_hash
+                assert initial_preview.json()["items"][0]["source"] == (
+                    "untrusted.mkv"
+                )
+                assert str(incoming) not in initial_preview.text
+                history = await client.get(
+                    f"/api/v1/runs/{run_id}/interactions?limit=100",
+                    headers={
+                        "authorization": "Bearer admin-token-strong"
+                    },
+                )
+                assert history.status_code == 200, history.text
+                assert history.json()["items"][0]["request_message"] == (
+                    "Map the complete set to episode 2."
+                )
+                assert history.json()["items"][0][
+                    "content_available"
+                ] is True
+                forbidden_history = await client.get(
+                    f"/api/v1/runs/{run_id}/interactions",
+                    headers=operator,
+                )
+                assert forbidden_history.status_code == 403
 
                 applied = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
@@ -406,6 +503,16 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 amendment_hash = reapplied.json()["plan_hash"]
                 assert amendment_hash is not None
 
+                pending_amendment = await client.get(
+                    f"/api/v1/runs/{run_id}",
+                    headers={
+                        "authorization": "Bearer viewer-token-strong"
+                    },
+                )
+                assert pending_amendment.status_code == 200
+                assert pending_amendment.json()["plan_hash"] == amendment_hash
+                assert pending_amendment.json()["settlement"] is None
+
                 amendment = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
                     headers={
@@ -479,6 +586,10 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 assert final.json()["status"] == "completed"
                 assert final.json()["phase"] == "completed"
                 assert final.json()["plan_hash"] == amendment_hash
+                assert final.json()["settlement"]["transaction_id"] == (
+                    amendment.json()["transaction_id"]
+                )
+                assert final.json()["settlement"]["status"] == "completed"
                 assert not models
 
         asyncio.run(journey())

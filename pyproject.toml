@@ -21,7 +21,13 @@ dependencies = [
 reeloom-server = "reeloom.server.main:serve"
 
 [tool.setuptools.package-data]
-"reeloom.server" = ["sql/*.sql"]
+"reeloom.server" = [
+    "sql/*.sql",
+    "static/*.html",
+    "static/*.json",
+    "static/assets/*.css",
+    "static/assets/*.js",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

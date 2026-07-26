@@ -1,10 +1,10 @@
 # Reeloom 初步实施计划
 
-状态：Draft v0.4
+状态：Draft v0.5
 
-日期：2026-07-24
+日期：2026-07-26
 
-当前进度：M0-M7 已完成；M8 已重新规划，尚未开始实现。
+当前进度：M0-M9 已完成；M9 同源交互式 Web UI 已通过验收。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -23,8 +23,10 @@ session、进程重启 replay、scripted transcript、固定 eval dataset、脱�
 任务指标、显式 OpenAI Responses provider 配置和 opt-in live eval 均已建立。
 M8 将从这条 M7 基线重新实现服务器控制面：PostgreSQL 从第一步起就是唯一
 control-plane metadata owner，文件系统只保留 Secret、Plan、Journal 和媒体。
-详细分步见 [M8 计划](m8-plan.md)。movie 的选择、mapping 和命名仍需要独立领域
-契约，不能复用 episode mapping。
+M8.0-M8.8 的详细分步见 [M8 计划](m8-plan.md)，完成证明见
+[M8 Requirement Matrix](m8-requirements.md) 和
+[M8 实现评审](m8-review.md)。下一步是基于稳定 API/SSE 建立交互式 Web UI；
+movie 的选择、mapping 和命名仍需要独立领域契约，不能复用 episode mapping。
 
 ## 1. 项目目标
 
@@ -481,8 +483,10 @@ tests/
 学习目标：理解长生命周期 Agent 服务、配置能力、后台调度、human-in-the-loop
 修订、PostgreSQL 事务边界和 HTTP 信任边界。
 
-当前状态：计划已重写，尚未开始实现。M8 不继承实验性的 filesystem
-control-plane，从 PostgreSQL 17 foundation 开始逐阶段构建。
+当前状态：M8.0-M8.8 已全部完成并通过验收。实现没有继承实验性的 filesystem
+control-plane，而是从 PostgreSQL 17 foundation 开始逐阶段构建；验收证据见
+[M8 Requirement Matrix](m8-requirements.md) 和
+[M8 实现评审](m8-review.md)。
 
 交付：
 
@@ -522,6 +526,29 @@ control-plane，从 PostgreSQL 17 foundation 开始逐阶段构建。
 使用独立安全事务；全部核心测试离线，后台并发与重启 fail closed。
 
 详细架构、分步、测试和 API 边界见 [M8 计划](m8-plan.md)。
+
+### M9：交互式 Web UI
+
+学习目标：理解浏览器认证、同源静态边界、runtime response validation、durable
+SSE、CAS 配置编辑和网络不确定性下的 effect-safe UX。
+
+当前状态：M9.0-M9.8 已完成。React UI 只消费稳定 API；Admin 可完成配置、观察、
+exact plan 审查、Agent question/revision/reapply、人工审批、执行结算和 recovery。
+UI 不编译 plan、不生成路径、不签发审批，也不推断 filesystem 结果。
+
+安全边界：
+
+- 只有 `/` 和 manifest 中的 hash assets 可匿名 GET/HEAD；
+- Admin token 经 session 验证后才保存在固定 localStorage key；
+- config retain 绑定 exact revision，GET 不返回 path/secret；
+- preview 绑定 exact lineage/hash 并只投影相对路径；
+- interaction history 只包含显式用户消息和 final reply；
+- authenticated fetch SSE 使用 durable cursor，cursor ahead 完整 resync；
+- UI approval 始终 `automatic: false`，recovery 只使用服务端 exact approval ID。
+
+完成证明见 [M9 计划](m9-plan.md)、[M9 Requirement Matrix](m9-requirements.md)
+和 [M9 实现评审](m9-review.md)。Movie 选择、mapping 与命名的独立领域契约进入
+M10。
 
 ## 9. 第一条端到端验收测试
 
@@ -579,4 +606,4 @@ approve exact run_id + plan_hash
 2. Executor 是否采用单独进程、单独系统用户或容器隔离。
 3. TMDB cache 的位置、TTL 和离线导入格式。
 4. trace 的保留周期和用户可见脱敏视图。
-5. movie domain contract 纳入 M8 后半段还是独立 M9。
+5. 独立 M10 中 movie domain contract 的范围和交付顺序。

@@ -248,8 +248,8 @@ class PostgresInteractionRepository:
                         INSERT INTO interactions
                             (interaction_id, run_id, kind, idempotency_key,
                              request_hash, expected_plan_hash,
-                             session_revision, status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'active')
+                             session_revision, status, request_message)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s)
                         """,
                         (
                             interaction_id,
@@ -259,6 +259,7 @@ class PostgresInteractionRepository:
                             digest,
                             expected_plan_hash,
                             int(session[0]),
+                            message,
                         ),
                     )
                     return InteractionReservation(

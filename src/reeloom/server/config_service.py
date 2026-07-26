@@ -71,6 +71,48 @@ class ConfigService:
             ),
             apply_policy=value.apply_policy,
         )
+        return self.compare_and_append_draft(
+            expected_revision=expected_revision,
+            draft=draft,
+        )
+
+    def compare_and_append_draft(
+        self,
+        *,
+        expected_revision: int,
+        draft: ConfigDraft,
+        replacement_api_key: bytes | None = None,
+    ) -> ConfigRevision:
+        if (
+            type(expected_revision) is not int
+            or expected_revision < 0
+            or not isinstance(draft, ConfigDraft)
+            or (
+                replacement_api_key is not None
+                and (
+                    not isinstance(replacement_api_key, bytes)
+                    or not 0 < len(replacement_api_key) <= 4_096
+                )
+            )
+        ):
+            from reeloom.server.errors import ServerError, ServerErrorCode
+
+            raise ServerError(ServerErrorCode.INVALID_CONFIG)
+        self._origins.validate_base_url(draft.provider.base_url)
+        if replacement_api_key is not None:
+            secret_ref = self._secrets.put(replacement_api_key)
+            draft = ConfigDraft(
+                watches=draft.watches,
+                archive_routes=draft.archive_routes,
+                provider=ProviderConfig(
+                    base_url=draft.provider.base_url,
+                    model=draft.provider.model,
+                    reasoning_effort=draft.provider.reasoning_effort,
+                    verbosity=draft.provider.verbosity,
+                    secret_ref=secret_ref,
+                ),
+                apply_policy=draft.apply_policy,
+            )
         revision = ConfigRevision.create(
             revision_id=self._id_factory(),
             revision=expected_revision + 1,

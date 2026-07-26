@@ -259,11 +259,15 @@ class ConfigRevision:
                     "work_type": item.work_type.value,
                     "poll_interval_seconds": item.poll_interval_seconds,
                     "settle_interval_seconds": item.settle_interval_seconds,
+                    "root_configured": True,
                 }
                 for item in self.watches
             ],
             "archive_routes": [
-                {"work_type": item.work_type.value}
+                {
+                    "work_type": item.work_type.value,
+                    "root_configured": True,
+                }
                 for item in self.archive_routes
             ],
             "provider": {
@@ -271,6 +275,7 @@ class ConfigRevision:
                 "model": self.provider.model,
                 "reasoning_effort": self.provider.reasoning_effort,
                 "verbosity": self.provider.verbosity,
+                "api_key_configured": True,
             },
             "apply_policy": self.apply_policy.value,
         }

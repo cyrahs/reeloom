@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 import pytest
 
-from reeloom.server.api import ApiDependencies, create_api
+from reeloom.server.api import (
+    ApiDependencies,
+    _SecurityBoundary,
+    create_api,
+)
 from reeloom.server.auth import AuthSettings, Role
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.queries import _safe_event
@@ -39,8 +44,23 @@ class _Queries:
         return {
             "run_id": "run-1",
             "status": "awaiting_approval",
+            "work_type": "anime",
             "phase": "awaiting_approval",
+            "runtime_status": "paused",
+            "event_sequence": 2,
+            "model_turns": 1,
+            "model_tokens": 20,
+            "tool_calls": 1,
+            "failures": 0,
             "plan_hash": "sha256:" + "a" * 64,
+            "recovery_approval_id": None,
+            "apply_policy": "manual",
+            "available_actions": [
+                "question",
+                "revision",
+                "approve_apply",
+            ],
+            "settlement": None,
         }
 
     def list_events(
@@ -67,8 +87,27 @@ class _Queries:
     def get_config(self) -> dict[str, object] | None:
         return {
             "revision": 1,
-            "watches": [{"watch_id": "w", "work_type": "anime"}],
-            "provider": {"model": "gpt-5"},
+            "revision_id": "revision-1",
+            "watches": [
+                {
+                    "watch_id": "w",
+                    "work_type": "anime",
+                    "poll_interval_seconds": 30,
+                    "settle_interval_seconds": 120,
+                    "root_configured": True,
+                }
+            ],
+            "archive_routes": [
+                {"work_type": "anime", "root_configured": True}
+            ],
+            "provider": {
+                "base_url": "https://provider.invalid/v1",
+                "model": "gpt-5",
+                "reasoning_effort": "medium",
+                "verbosity": "medium",
+                "api_key_configured": True,
+            },
+            "apply_policy": "manual",
         }
 
     def get_plan(
@@ -79,13 +118,95 @@ class _Queries:
     ) -> dict[str, object] | None:
         del version
         return (
-            {"run_id": run_id, "plan_hash": "sha256:" + "a" * 64}
+            {
+                "run_id": run_id,
+                "version": 1,
+                "plan_hash": "sha256:" + "a" * 64,
+                "parent_plan_hash": None,
+                "plan_kind": "initial",
+                "created_at": "2026-07-26T00:00:00+00:00",
+            }
             if run_id == "run-1"
             else None
         )
 
+    def list_plans(
+        self,
+        *,
+        run_id: str,
+        before_version: int | None,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]:
+        del before_version, limit
+        if run_id != "run-1":
+            return ()
+        return (
+            {
+                "run_id": run_id,
+                "version": 1,
+                "plan_hash": "sha256:" + "a" * 64,
+                "parent_plan_hash": None,
+                "plan_kind": "initial",
+                "created_at": "2026-07-26T00:00:00+00:00",
+            },
+        )
 
-def _app() -> object:
+    def get_plan_preview(
+        self,
+        *,
+        run_id: str,
+        version: int,
+        after: int,
+        limit: int,
+    ) -> dict[str, object] | None:
+        del after, limit
+        if run_id != "run-1" or version != 1:
+            return None
+        return {
+            "run_id": run_id,
+            "version": 1,
+            "plan_hash": "sha256:" + "a" * 64,
+            "plan_kind": "initial",
+            "counts": {"move": 1, "unmapped": 0, "unchanged": 0},
+            "items": [
+                {
+                    "index": 0,
+                    "disposition": "move",
+                    "candidate_id": "video:1",
+                    "kind": "video",
+                    "source": "<script>alert(1)</script>.mkv",
+                    "destination": "Series (2026)/Season 01/Series - S01E01.mkv",
+                }
+            ],
+            "next_after": None,
+        }
+
+    def list_interactions(
+        self,
+        *,
+        run_id: str,
+        before: str | None,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]:
+        del before, limit
+        if run_id != "run-1":
+            return ()
+        return (
+            {
+                "interaction_id": "interaction-1",
+                "kind": "question",
+                "status": "completed",
+                "request_message": "<img src=x onerror=alert(1)>",
+                "assistant_reply": "Plain reply",
+                "content_available": True,
+                "plan_hash": None,
+                "created_at": "2026-07-26T00:00:00+00:00",
+                "finished_at": "2026-07-26T00:00:01+00:00",
+            },
+        )
+
+
+def _app(*, static_root: Path | None = None) -> object:
     app = create_api(
         ApiDependencies(queries=_Queries()),
         auth=AuthSettings.create(
@@ -97,8 +218,200 @@ def _app() -> object:
             allowed_hosts=("reeloom.test",),
             allowed_origins=("https://ui.example.test",),
         ),
+        static_root=static_root,
     )
     return app
+
+
+def test_sse_connections_do_not_consume_regular_request_slots() -> None:
+    async def downstream(
+        scope: object,
+        receive: object,
+        send: object,
+    ) -> None:
+        del scope, receive, send
+
+    boundary = _SecurityBoundary(
+        downstream,
+        auth=AuthSettings.create(
+            credentials={
+                Role.ADMIN: "admin-token-strong",
+                Role.OPERATOR: "operator-token-strong",
+                Role.VIEWER: "viewer-token-strong",
+            },
+            allowed_hosts=("reeloom.test",),
+            allowed_origins=("https://ui.example.test",),
+        ),
+    )
+
+    assert boundary._concurrency_gate(
+        "/api/v1/runs/run-1/events/stream"
+    ) is not boundary._concurrency_gate("/api/v1/runs/run-1")
+
+
+def test_static_ui_is_public_only_for_manifest_paths(
+    tmp_path: Path,
+) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (tmp_path / "index.html").write_text(
+        '<script src="/assets/app-deadbeef.js"></script>',
+        encoding="utf-8",
+    )
+    (assets / "app-deadbeef.js").write_text(
+        "document.body.dataset.ready = 'yes';",
+        encoding="utf-8",
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "index.html": {
+                    "file": "assets/app-deadbeef.js",
+                    "isEntry": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def scenario() -> tuple[httpx.Response, ...]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(static_root=tmp_path)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            return (
+                await client.get("/"),
+                await client.head("/"),
+                await client.get("/assets/app-deadbeef.js"),
+                await client.get("/assets/not-in-manifest.js"),
+                await client.get("/.env"),
+                await client.get("/nested/route"),
+            )
+
+    index, head, asset, unknown, dotfile, fallback = asyncio.run(
+        scenario()
+    )
+    assert index.status_code == 200
+    assert head.status_code == 200
+    assert head.content == b""
+    assert asset.status_code == 200
+    assert unknown.status_code == 401
+    assert dotfile.status_code == 401
+    assert fallback.status_code == 401
+    for response in (index, head, asset):
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "no-referrer"
+        assert "frame-ancestors 'none'" in response.headers[
+            "content-security-policy"
+        ]
+        assert response.headers["permissions-policy"].startswith("camera=()")
+
+
+def test_openapi_declares_bearer_security_and_safe_errors() -> None:
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app()),
+            base_url="http://reeloom.test",
+        ) as client:
+            return await client.get(
+                "/api/v1/openapi.json",
+                headers={
+                    "authorization": "Bearer viewer-token-strong"
+                },
+            )
+
+    response = asyncio.run(scenario())
+    schema = response.json()
+    assert response.status_code == 200
+    assert schema["components"]["securitySchemes"]["BearerAuth"] == {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque",
+    }
+    operation = schema["paths"]["/api/v1/session"]["get"]
+    assert operation["security"] == [{"BearerAuth": []}]
+    assert operation["responses"]["401"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/ErrorResponse"}
+
+
+def test_openapi_uses_named_strict_ui_contracts() -> None:
+    schema = _app().openapi()
+    paths = schema["paths"]
+    for path, path_item in paths.items():
+        for method, operation in path_item.items():
+            if method not in {"get", "post", "put"}:
+                continue
+            if path.endswith("/events/stream"):
+                continue
+            response_schema = operation["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]
+            assert "$ref" in response_schema, (method, path)
+            if method in {"post", "put"}:
+                request_schema = operation["requestBody"]["content"][
+                    "application/json"
+                ]["schema"]
+                assert "$ref" in request_schema, (method, path)
+
+    for name, component in schema["components"]["schemas"].items():
+        if name in {"HTTPValidationError", "ValidationError"}:
+            continue
+        if component.get("type") == "object":
+            assert component.get("additionalProperties") is False, name
+
+
+def test_list_read_models_serialize_query_tuples() -> None:
+    queries = _Queries()
+    queries.list_runs = lambda **_: (  # type: ignore[method-assign]
+        {
+            "run_id": "run-1",
+            "status": "registered",
+            "work_type": "anime",
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "phase": None,
+            "plan_hash": None,
+        },
+    )
+    queries.list_discoveries = lambda **_: (  # type: ignore[method-assign]
+        {
+            "discovery_id": "discovery-1",
+            "watch_id": "watch-1",
+            "work_type": "anime",
+            "discovered_at": "2026-07-26T00:00:00+00:00",
+            "run_id": "run-1",
+            "run_status": "registered",
+        },
+    )
+    app = create_api(
+        ApiDependencies(queries=queries),
+        auth=AuthSettings.create(
+            credentials={
+                Role.ADMIN: "admin-token-strong",
+                Role.OPERATOR: "operator-token-strong",
+                Role.VIEWER: "viewer-token-strong",
+            },
+            allowed_hosts=("reeloom.test",),
+            allowed_origins=("https://ui.example.test",),
+        ),
+    )
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://reeloom.test",
+            headers={"authorization": "Bearer viewer-token-strong"},
+        ) as client:
+            return (
+                await client.get("/api/v1/runs"),
+                await client.get("/api/v1/discoveries"),
+            )
+
+    runs, discoveries = asyncio.run(scenario())
+    assert runs.status_code == 200
+    assert discoveries.status_code == 200
 
 
 def test_auth_role_host_and_origin_matrix() -> None:
@@ -145,18 +458,91 @@ def test_auth_role_host_and_origin_matrix() -> None:
     asyncio.run(scenario())
 
 
-def test_health_fails_closed_without_production_dependency() -> None:
-    async def scenario() -> httpx.Response:
+def test_session_bootstrap_reports_role_without_exposing_token() -> None:
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=_app()),
             base_url="http://reeloom.test",
         ) as client:
-            return await client.get("/health")
+            admin = await client.get(
+                "/api/v1/session",
+                headers={"authorization": "Bearer admin-token-strong"},
+            )
+            viewer = await client.get(
+                "/api/v1/session",
+                headers={"authorization": "Bearer viewer-token-strong"},
+            )
+            return admin, viewer
 
-    response = asyncio.run(scenario())
+    admin, viewer = asyncio.run(scenario())
 
-    assert response.status_code == 503
-    assert response.json() == {
+    assert admin.status_code == 200
+    assert admin.json() == {"api_version": "1.0.0", "role": "admin"}
+    assert viewer.json() == {"api_version": "1.0.0", "role": "viewer"}
+    assert "admin-token-strong" not in admin.text
+
+
+def test_plan_lineage_preview_and_admin_interaction_history() -> None:
+    async def scenario() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app()),
+            base_url="http://reeloom.test",
+        ) as client:
+            admin = {"authorization": "Bearer admin-token-strong"}
+            viewer = {"authorization": "Bearer viewer-token-strong"}
+            plans = await client.get(
+                "/api/v1/runs/run-1/plans",
+                headers=viewer,
+            )
+            preview = await client.get(
+                "/api/v1/runs/run-1/plans/1/preview",
+                headers={"authorization": "Bearer operator-token-strong"},
+            )
+            forbidden = await client.get(
+                "/api/v1/runs/run-1/interactions",
+                headers=viewer,
+            )
+            history = await client.get(
+                "/api/v1/runs/run-1/interactions",
+                headers=admin,
+            )
+            assert forbidden.status_code == 403
+            return plans, preview, history
+
+    plans, preview, history = asyncio.run(scenario())
+
+    assert plans.status_code == 200
+    assert plans.json()["items"][0]["plan_kind"] == "initial"
+    assert preview.status_code == 200
+    assert preview.json()["items"][0]["source"] == (
+        "<script>alert(1)</script>.mkv"
+    )
+    assert "/absolute/" not in preview.text
+    assert history.status_code == 200
+    assert history.json()["items"][0]["content_available"] is True
+
+
+def test_health_fails_closed_without_production_dependency() -> None:
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app()),
+            base_url="http://reeloom.test",
+        ) as client:
+            return (
+                await client.get("/health"),
+                await client.get(
+                    "/health",
+                    headers={
+                        "authorization": "Bearer viewer-token-strong"
+                    },
+                ),
+            )
+
+    unauthorized, unavailable = asyncio.run(scenario())
+
+    assert unauthorized.status_code == 401
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {
         "error": {"code": "database_unavailable"}
     }
 

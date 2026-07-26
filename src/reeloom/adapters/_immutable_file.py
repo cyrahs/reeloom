@@ -84,12 +84,14 @@ def write_once_at(
     if not 0 < len(content) <= limit:
         raise ImmutableFileError(ImmutableFileErrorCode.INVALID)
     file_fd: int | None = None
+    temporary_name: str | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
-        file_fd = os.open(
-            ".",
-            _temporary_flags(),
-            0o600,
-            dir_fd=root_fd,
+        file_fd, temporary_name = _open_temporary_at(root_fd)
+        metadata = os.fstat(file_fd)
+        temporary_identity = (
+            metadata.st_dev,
+            metadata.st_ino,
         )
         remaining = memoryview(content)
         while remaining:
@@ -102,8 +104,17 @@ def write_once_at(
             file_fd,
             root_fd,
             name,
+            temporary_name=temporary_name,
         )
         os.fsync(root_fd)
+        if temporary_name is not None:
+            _unlink_temporary_at(
+                root_fd,
+                temporary_name,
+                identity=temporary_identity,
+            )
+            temporary_name = None
+            os.fsync(root_fd)
     except FileExistsError:
         raise ImmutableFileError(
             ImmutableFileErrorCode.EXISTS
@@ -115,13 +126,33 @@ def write_once_at(
     finally:
         if file_fd is not None:
             os.close(file_fd)
+        if temporary_name is not None and temporary_identity is not None:
+            try:
+                _unlink_temporary_at(
+                    root_fd,
+                    temporary_name,
+                    identity=temporary_identity,
+                )
+            except OSError:
+                pass
 
 
 def _link_once_at(
     file_fd: int,
     root_fd: int,
     destination: str,
+    *,
+    temporary_name: str | None,
 ) -> None:
+    if temporary_name is not None:
+        os.link(
+            temporary_name,
+            destination,
+            src_dir_fd=root_fd,
+            dst_dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        return
     if _LINKAT is None:
         raise OSError(errno.ENOSYS, "linkat unavailable")
     result = _LINKAT(
@@ -150,15 +181,57 @@ def _read_flags() -> int:
     )
 
 
-def _temporary_flags() -> int:
+def _open_temporary_at(root_fd: int) -> tuple[int, str | None]:
     temporary = getattr(os, "O_TMPFILE", None)
-    if temporary is None:
+    if temporary is not None:
+        return (
+            os.open(
+                ".",
+                os.O_WRONLY
+                | temporary
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=root_fd,
+            ),
+            None,
+        )
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
         raise ImmutableFileError(ImmutableFileErrorCode.IO)
-    return (
-        os.O_WRONLY
-        | temporary
-        | getattr(os, "O_CLOEXEC", 0)
-    )
+    for _ in range(32):
+        name = f".reeloom-write-{os.urandom(16).hex()}"
+        try:
+            return (
+                os.open(
+                    name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | no_follow
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=root_fd,
+                ),
+                name,
+            )
+        except FileExistsError:
+            continue
+    raise ImmutableFileError(ImmutableFileErrorCode.IO)
+
+
+def _unlink_temporary_at(
+    root_fd: int,
+    name: str,
+    *,
+    identity: tuple[int, int],
+) -> None:
+    metadata = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != identity
+    ):
+        raise OSError(errno.EPERM, "temporary identity changed")
+    os.unlink(name, dir_fd=root_fd)
 
 
 def _read_bounded(file_fd: int, limit: int) -> bytes:

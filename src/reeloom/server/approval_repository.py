@@ -200,14 +200,6 @@ class PostgresApprovalStore:
         except ApprovalError:
             raise
         except Exception:
-            resolved = self._resolve_claim(
-                approval_id=approval_id,
-                run_id=run_id,
-                plan_hash=plan_hash,
-                scope=scope,
-            )
-            if resolved is not None:
-                return resolved
             raise ApprovalError(
                 ApprovalErrorCode.STORE_FAILURE
             ) from None

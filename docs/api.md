@@ -1,4 +1,4 @@
-# M8 HTTP API
+# M9 HTTP API 与 Web UI
 
 所有 `/api/v1/*` 请求使用 `Authorization: Bearer ...`，不接受 Cookie 或 query
 token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
@@ -7,12 +7,16 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 
 主要 endpoint：
 
+- `GET /api/v1/session`
 - `GET/PUT /api/v1/admin/config`
 - `POST /api/v1/admin/config/provider-probe`
 - `GET /api/v1/discoveries`
 - `GET /api/v1/runs`
 - `GET /api/v1/runs/{run_id}`
 - `GET /api/v1/runs/{run_id}/plan`
+- `GET /api/v1/runs/{run_id}/plans`
+- `GET /api/v1/runs/{run_id}/plans/{version}/preview`
+- `GET /api/v1/runs/{run_id}/interactions`
 - `GET /api/v1/runs/{run_id}/events`
 - `GET /api/v1/runs/{run_id}/events/stream`
 - `POST /api/v1/runs/{run_id}/interactions`
@@ -28,3 +32,30 @@ absolute path、prompt、Secret、DSN、canonical plan 或 tool observation。
 `recovery_approval_id`；此时普通 apply fail closed，operator 必须调用 exact
 `recover`。所有 mutation 的幂等结果只由对应的 typed resolver 从 durable owner
 重建，不会重新执行 provider、Agent 或 filesystem effect。
+
+## 浏览器边界
+
+同源 UI 只公开 `GET/HEAD /` 与 build manifest 中的哈希资源，不提供任意 URL 的
+SPA fallback。`/api/*`、OpenAPI snapshot 和 manifest 本身都继续要求 Bearer。
+浏览器经 session endpoint 确认 `role=admin` 后才保存 token；viewer/operator
+仍可用于非 UI API client。
+
+Plan preview 分页返回 `move | unmapped | unchanged`、candidate ID、kind 和相对
+source/destination。服务端先固定 PostgreSQL lineage，再在事务外加载并校验
+canonical content-addressed plan。响应不包含 absolute root、source identity、
+digest、canonical bytes、journal 或 rollback。
+
+Config GET 只返回 `root_configured` 与 `api_key_configured`。PUT 兼容 M8 的显式
+string/key 格式，也接受绑定 exact `If-Match` revision 的
+`{mode:"retain"}` 或 `{mode:"replace", ...}`。省略 watch/route 仍表示删除；
+stale revision、缺失 retain target 和格式混用均 fail closed。
+
+Admin interaction history 只返回 M9 起显式保存的 request message 与 final reply；
+旧记录标记 `content_available=false`。prompt、SDK transcript、tool call 和
+observation 永不进入此投影。每页最多 100 条。
+
+Canonical OpenAPI snapshot 位于 [openapi-v1.json](openapi-v1.json)，可运行：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/export_openapi.py --check
+```
