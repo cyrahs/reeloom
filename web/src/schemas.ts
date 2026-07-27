@@ -5,7 +5,7 @@ export const workTypeSchema = z.enum(["anime", "tv", "movie"]);
 export const sessionSchema = z
   .object({
     api_version: z.literal("1.0.0"),
-    role: z.enum(["viewer", "operator", "admin"]),
+    role: z.literal("admin"),
   })
   .strict();
 

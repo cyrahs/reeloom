@@ -284,8 +284,8 @@ settlement，不调用 Agent。
 
 ## 8. HTTP 边界
 
-M8 第一版使用 deployment bearer credential，角色固定为 `admin`、`operator`、
-`viewer`；不使用 Cookie 或 query token。
+M8 使用单一 deployment Admin Bearer credential；不使用角色层级、Cookie 或
+query token。所有受保护 API 具有相同认证边界。
 
 API 只暴露 typed JSON 和 opaque IDs：
 
@@ -442,7 +442,7 @@ requirement / failing contract
 - immutable approval/claim/settlement；
 - manual/automatic 共用 exact approval command；
 - initial Executor composition、global/route effect gates；
-- operator deterministic recovery；
+- deterministic recovery endpoint；
 - graceful shutdown 等待受控 filesystem worker。
 
 完成条件：

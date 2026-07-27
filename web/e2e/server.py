@@ -22,7 +22,7 @@ from reeloom.kernel.tmdb import (
     TmdbSearchCandidate,
     TmdbWorkType,
 )
-from reeloom.server.auth import AuthSettings, Role
+from reeloom.server.auth import AuthSettings
 from reeloom.server.composition import ServerApplication, build_application
 from reeloom.server.settings import DeploymentSettings
 
@@ -248,11 +248,7 @@ def main() -> None:
                 tmdb_api_key="offline",
             ),
             auth=AuthSettings.create(
-                credentials={
-                    Role.ADMIN: _ADMIN_TOKEN,
-                    Role.OPERATOR: "operator-e2e-token-strong",
-                    Role.VIEWER: "viewer-e2e-token-strong",
-                },
+                admin_token=_ADMIN_TOKEN,
                 allowed_hosts=("127.0.0.1",),
                 allowed_origins=("http://127.0.0.1:4173",),
             ),

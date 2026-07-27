@@ -18,17 +18,15 @@ from fastapi import (
     HTTPException,
     Request,
     Response,
-    Security,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reeloom.executor.apply import ApplyResult
-from reeloom.server.auth import AuthSettings, Role
+from reeloom.server.auth import AuthSettings
 from reeloom.server.interactions import (
     InteractionKind,
     InteractionService,
@@ -71,11 +69,6 @@ _BODY_TIMEOUT_SECONDS = 5.0
 _EMPTY_SSE_POLLS = 2
 _SSE_POLL_SECONDS = 0.25
 _SSE_CONNECTION_LIMIT = 16
-_BEARER = HTTPBearer(
-    auto_error=False,
-    bearerFormat="opaque",
-    scheme_name="BearerAuth",
-)
 _SINGLETON_HEADERS = frozenset(
     {
         "authorization",
@@ -299,12 +292,12 @@ class _SecurityBoundary:
                 return
             authorization = headers.get("authorization", "")
             prefix = "Bearer "
-            role = (
+            authenticated = (
                 self._auth.authenticate(authorization[len(prefix) :])
                 if authorization.startswith(prefix)
-                else None
+                else False
             )
-            if role is None:
+            if not authenticated:
                 await self._send_with_headers(
                     JSONResponse(
                         {"error": {"code": "unauthorized"}},
@@ -317,7 +310,6 @@ class _SecurityBoundary:
                     origin,
                 )
                 return
-            scope.setdefault("state", {})["role"] = role
             if scope["method"] in {"POST", "PUT", "PATCH"}:
                 invalid, receive = await self._validate_json(
                     headers,
@@ -503,26 +495,6 @@ class _SecurityBoundary:
         await response(scope, receive, wrapped)
 
 
-def _require(minimum: Role) -> Callable[..., object]:
-    async def dependency(
-        request: Request,
-        credentials: Annotated[
-            HTTPAuthorizationCredentials | None,
-            Security(_BEARER),
-        ],
-    ) -> Role:
-        del credentials
-        role = request.state.role
-        if role < minimum:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "forbidden"},
-            )
-        return role
-
-    return dependency
-
-
 def _cursor(
     raw: Annotated[
         str | None,
@@ -653,6 +625,11 @@ def create_api(
         )
         components = schema.setdefault("components", {})
         schemas = components.setdefault("schemas", {})
+        components.setdefault("securitySchemes", {})["BearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "opaque",
+        }
         schemas["ErrorBody"] = {
             "type": "object",
             "additionalProperties": False,
@@ -689,6 +666,7 @@ def create_api(
                     "delete",
                 } or not isinstance(operation, dict):
                     continue
+                operation["security"] = [{"BearerAuth": []}]
                 responses = operation.setdefault("responses", {})
                 for status in (
                     "400",
@@ -820,10 +798,7 @@ def create_api(
         )
 
     @app.get("/health", response_model=HealthResponse)
-    async def health(
-        role: Role = Depends(_require(Role.VIEWER)),
-    ) -> dict[str, object]:
-        del role
+    async def health() -> dict[str, object]:
         if dependencies.health is None:
             raise HTTPException(
                 503, detail={"code": "database_unavailable"}
@@ -844,20 +819,16 @@ def create_api(
         "/api/v1/session",
         response_model=SessionResponse,
     )
-    async def session(
-        role: Role = Depends(_require(Role.VIEWER)),
-    ) -> dict[str, object]:
+    async def session() -> dict[str, object]:
         return {
             "api_version": "1.0.0",
-            "role": role.name.lower(),
+            "role": "admin",
         }
 
     @app.get("/api/v1/runs/{run_id}", response_model=RunResponse)
     async def get_run(
         run_id: str,
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> dict[str, object]:
-        del role
         value = await asyncio.to_thread(
             dependencies.queries.get_run, run_id
         )
@@ -869,9 +840,7 @@ def create_api(
     async def list_runs(
         before: str | None = None,
         limit: int = 50,
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> dict[str, object]:
-        del role
         if not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
@@ -888,9 +857,7 @@ def create_api(
     async def list_discoveries(
         before: str | None = None,
         limit: int = 50,
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> dict[str, object]:
-        del role
         if not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
@@ -904,10 +871,7 @@ def create_api(
         }
 
     @app.get("/api/v1/admin/config", response_model=ConfigResponse)
-    async def get_config(
-        role: Role = Depends(_require(Role.ADMIN)),
-    ) -> dict[str, object]:
-        del role
+    async def get_config() -> dict[str, object]:
         value = await asyncio.to_thread(
             dependencies.queries.get_config
         )
@@ -923,9 +887,7 @@ def create_api(
         body: ConfigUpdateRequest,
         expected_revision: int = Depends(_config_revision),
         key: str = Depends(_idempotency_key),
-        role: Role = Depends(_require(Role.ADMIN)),
     ) -> dict[str, object]:
-        del role
         if dependencies.config_update is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         value = body.model_dump()
@@ -961,9 +923,8 @@ def create_api(
     )
     async def provider_probe(
         body: ProviderProbeRequest,
-        role: Role = Depends(_require(Role.ADMIN)),
     ) -> dict[str, object]:
-        del body, role
+        del body
         if dependencies.provider_probe is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         result = await dependencies.provider_probe()
@@ -979,9 +940,7 @@ def create_api(
     async def get_plan(
         run_id: str,
         version: int | None = None,
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> dict[str, object]:
-        del role
         if version is not None and version < 1:
             raise HTTPException(400, detail={"code": "invalid_version"})
         value = await asyncio.to_thread(
@@ -1001,9 +960,7 @@ def create_api(
         run_id: str,
         before_version: int | None = None,
         limit: int = 50,
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> dict[str, object]:
-        del role
         if (
             before_version is not None
             and before_version < 1
@@ -1029,9 +986,7 @@ def create_api(
         version: int,
         after: int = 0,
         limit: int = 50,
-        role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
-        del role
         if (
             version < 1
             or after < 0
@@ -1057,9 +1012,7 @@ def create_api(
         run_id: str,
         before: str | None = None,
         limit: int = 50,
-        role: Role = Depends(_require(Role.ADMIN)),
     ) -> dict[str, object]:
-        del role
         if not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
@@ -1081,9 +1034,7 @@ def create_api(
         run_id: str,
         after: int = 0,
         limit: int = 50,
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> dict[str, object]:
-        del role
         if after < 0 or not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
         return {
@@ -1102,9 +1053,7 @@ def create_api(
         request: Request,
         run_id: str,
         cursor: int = Depends(_cursor),
-        role: Role = Depends(_require(Role.VIEWER)),
     ) -> StreamingResponse:
-        del role
         latest = await asyncio.to_thread(
             dependencies.queries.latest_event_id, run_id
         )
@@ -1173,9 +1122,7 @@ def create_api(
         body: InteractionRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
-        role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
-        del role
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         kind = InteractionKind(body.kind)
@@ -1206,9 +1153,7 @@ def create_api(
         body: ReapplyRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
-        role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
-        del role
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         message = _text(body.message)
@@ -1237,9 +1182,7 @@ def create_api(
         body: ApproveApplyRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
-        role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
-        del role
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
 
@@ -1294,9 +1237,7 @@ def create_api(
         body: RecoveryRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
-        role: Role = Depends(_require(Role.OPERATOR)),
     ) -> dict[str, object]:
-        del role
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         approval_id = _text(body.approval_id)

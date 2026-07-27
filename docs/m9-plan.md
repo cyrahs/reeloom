@@ -22,7 +22,7 @@ filesystem，也不根据浏览器本地状态推断 effect 已成功。movie do
 - production build 作为 hash static assets 内置于同一 Reeloom Server。
 - UI 使用 hash router；只有 `/` 和 manifest 中的 asset 可匿名读取。
 - Admin Bearer 经 `/api/v1/session` 验证后保存在
-  `localStorage["reeloom.admin_bearer.v1"]`；viewer/operator token 不进入 UI。
+  `localStorage["reeloom.admin_bearer.v1"]`；服务端不签发其他角色凭据。
 - 显式 question/revision/reapply 消息和最终回复可由 Admin 分页恢复；SDK
   transcript、prompt、tool observation 继续不可读。
 - Cloudflare Access 可以作为外层保护，但不取代 Reeloom Bearer。
@@ -67,7 +67,7 @@ filesystem，也不根据浏览器本地状态推断 effect 已成功。movie do
 ## 4. 非目标
 
 - movie mapping、movie naming 或 movie Agent；
-- viewer/operator UI、Cookie session、OAuth 或 Cloudflare integration；
+- 多角色 UI、Cookie session、OAuth 或 Cloudflare integration；
 - 文件浏览器、shell、任意 URL/path tool、Markdown/HTML renderer；
 - 多进程、多 worker、多主机或新的 filesystem effect；
 - interaction 删除或独立 retention policy。

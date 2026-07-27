@@ -7,7 +7,7 @@
 ## 决策
 
 M9 是 M8 之后的交互式 Web UI，movie domain contract 顺延到 M10。UI 与 API
-同源部署，但 `/api/v1/*` 继续强制 M8 Bearer role。公开 surface 仅包含空壳
+同源部署，但 `/api/v1/*` 继续强制 Admin Bearer。公开 surface 仅包含空壳
 `index.html` 和 build manifest 中的 immutable assets。
 
 浏览器只接受 Admin token。token 经 `GET /api/v1/session` 验证后存入
@@ -25,6 +25,6 @@ canonical bytes、journal 和 rollback 永不进入 browser response。
 ## 后果
 
 - UI 不能成为 authorization 或 filesystem safety boundary。
-- non-Admin token 仍可供现有 API client 使用，但不能登录 UI。
+- UI 与非 UI API client 使用同一个 Admin credential。
 - Cloudflare Access 只是可选的外层 defense，不影响 Reeloom authorization。
 - movie contract 与 UI 可分别验收，不产生 episode/movie hybrid schema。

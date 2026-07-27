@@ -27,6 +27,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
+      - name: Check OpenAPI contract
+        run: |
+          python3 -m pip install .
+          python3 scripts/export_openapi.py --check
+
       - name: Log in to GHCR
         uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4
         with:

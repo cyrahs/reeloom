@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from reeloom.server.auth import AuthSettings, Role
+from reeloom.server.auth import AuthSettings
 from reeloom.server.composition import ServerApplication, build_application
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.settings import DeploymentSettings
@@ -69,11 +69,7 @@ def test_production_builder_enforces_single_instance_and_closes(
         workers=1,
     )
     auth = AuthSettings.create(
-        credentials={
-            Role.ADMIN: "admin-token-for-test",
-            Role.OPERATOR: "operator-token-for-test",
-            Role.VIEWER: "viewer-token-for-test",
-        },
+        admin_token="admin-token-for-test",
         allowed_hosts=("reeloom.test",),
         allowed_origins=("https://ui.example.test",),
     )

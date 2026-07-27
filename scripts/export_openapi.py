@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 from reeloom.server.api import ApiDependencies, ApiQueries, create_api
-from reeloom.server.auth import AuthSettings, Role
+from reeloom.server.auth import AuthSettings
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,11 +15,7 @@ def _canonical_schema() -> str:
     app = create_api(
         ApiDependencies(queries=cast(ApiQueries, object())),
         auth=AuthSettings.create(
-            credentials={
-                Role.ADMIN: "snapshot-admin-token",
-                Role.OPERATOR: "snapshot-operator-token",
-                Role.VIEWER: "snapshot-viewer-token",
-            },
+            admin_token="snapshot-admin-token",
             allowed_hosts=("snapshot.invalid",),
             allowed_origins=("https://snapshot.invalid",),
         ),

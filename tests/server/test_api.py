@@ -13,7 +13,7 @@ from reeloom.server.api import (
     _SecurityBoundary,
     create_api,
 )
-from reeloom.server.auth import AuthSettings, Role
+from reeloom.server.auth import AuthSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.queries import _safe_event
 
@@ -210,11 +210,7 @@ def _app(*, static_root: Path | None = None) -> object:
     app = create_api(
         ApiDependencies(queries=_Queries()),
         auth=AuthSettings.create(
-            credentials={
-                Role.ADMIN: "admin-token-strong",
-                Role.OPERATOR: "operator-token-strong",
-                Role.VIEWER: "viewer-token-strong",
-            },
+            admin_token="admin-token-strong",
             allowed_hosts=("reeloom.test",),
             allowed_origins=("https://ui.example.test",),
         ),
@@ -234,11 +230,7 @@ def test_sse_connections_do_not_consume_regular_request_slots() -> None:
     boundary = _SecurityBoundary(
         downstream,
         auth=AuthSettings.create(
-            credentials={
-                Role.ADMIN: "admin-token-strong",
-                Role.OPERATOR: "operator-token-strong",
-                Role.VIEWER: "viewer-token-strong",
-            },
+            admin_token="admin-token-strong",
             allowed_hosts=("reeloom.test",),
             allowed_origins=("https://ui.example.test",),
         ),
@@ -318,7 +310,7 @@ def test_openapi_declares_bearer_security_and_safe_errors() -> None:
             return await client.get(
                 "/api/v1/openapi.json",
                 headers={
-                    "authorization": "Bearer viewer-token-strong"
+                    "authorization": "Bearer admin-token-strong"
                 },
             )
 
@@ -330,8 +322,13 @@ def test_openapi_declares_bearer_security_and_safe_errors() -> None:
         "scheme": "bearer",
         "bearerFormat": "opaque",
     }
+    for path, path_item in schema["paths"].items():
+        if not (path.startswith("/api/") or path == "/health"):
+            continue
+        for method, operation in path_item.items():
+            if method in {"get", "post", "put", "patch", "delete"}:
+                assert operation["security"] == [{"BearerAuth": []}]
     operation = schema["paths"]["/api/v1/session"]["get"]
-    assert operation["security"] == [{"BearerAuth": []}]
     assert operation["responses"]["401"]["content"][
         "application/json"
     ]["schema"] == {"$ref": "#/components/schemas/ErrorResponse"}
@@ -388,11 +385,7 @@ def test_list_read_models_serialize_query_tuples() -> None:
     app = create_api(
         ApiDependencies(queries=queries),
         auth=AuthSettings.create(
-            credentials={
-                Role.ADMIN: "admin-token-strong",
-                Role.OPERATOR: "operator-token-strong",
-                Role.VIEWER: "viewer-token-strong",
-            },
+            admin_token="admin-token-strong",
             allowed_hosts=("reeloom.test",),
             allowed_origins=("https://ui.example.test",),
         ),
@@ -402,7 +395,7 @@ def test_list_read_models_serialize_query_tuples() -> None:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://reeloom.test",
-            headers={"authorization": "Bearer viewer-token-strong"},
+            headers={"authorization": "Bearer admin-token-strong"},
         ) as client:
             return (
                 await client.get("/api/v1/runs"),
@@ -414,7 +407,7 @@ def test_list_read_models_serialize_query_tuples() -> None:
     assert discoveries.status_code == 200
 
 
-def test_auth_role_host_and_origin_matrix() -> None:
+def test_admin_auth_host_and_origin_matrix() -> None:
     async def scenario() -> None:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=_app()),
@@ -422,38 +415,34 @@ def test_auth_role_host_and_origin_matrix() -> None:
         ) as client:
             assert (await client.get("/api/v1/runs/run-1")).status_code == 401
             assert (await client.get(
-            "/api/v1/runs/run-1",
-            headers={"authorization": "Bearer viewer-token-strong"},
-        )).status_code == 200
+                "/api/v1/runs/run-1",
+                headers={"authorization": "Bearer old-viewer-token"},
+            )).status_code == 401
             assert (await client.get(
-            "/api/v1/admin/config",
-            headers={"authorization": "Bearer operator-token-strong"},
-        )).status_code == 403
-            assert (await client.get(
-            "/api/v1/admin/config",
-            headers={"authorization": "Bearer admin-token-strong"},
-        )).status_code == 200
+                "/api/v1/admin/config",
+                headers={"authorization": "Bearer admin-token-strong"},
+            )).status_code == 200
             assert (await client.get(
                 "/api/v1/runs/run-1",
                 headers={
-                    "authorization": "Bearer viewer-token-strong",
+                    "authorization": "Bearer admin-token-strong",
                     "host": "evil.test",
                 },
             )).status_code == 400
             assert (await client.get(
                 "/api/v1/runs/run-1",
                 headers={
-                    "authorization": "Bearer viewer-token-strong",
+                    "authorization": "Bearer admin-token-strong",
                     "host": "reeloom.test:garbage",
                 },
             )).status_code == 400
             assert (await client.get(
-            "/api/v1/runs/run-1",
-            headers={
-                "authorization": "Bearer viewer-token-strong",
-                "origin": "https://evil.example",
-            },
-        )).status_code == 403
+                "/api/v1/runs/run-1",
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                    "origin": "https://evil.example",
+                },
+            )).status_code == 403
 
     asyncio.run(scenario())
 
@@ -468,17 +457,17 @@ def test_session_bootstrap_reports_role_without_exposing_token() -> None:
                 "/api/v1/session",
                 headers={"authorization": "Bearer admin-token-strong"},
             )
-            viewer = await client.get(
+            rejected = await client.get(
                 "/api/v1/session",
-                headers={"authorization": "Bearer viewer-token-strong"},
+                headers={"authorization": "Bearer old-viewer-token"},
             )
-            return admin, viewer
+            return admin, rejected
 
-    admin, viewer = asyncio.run(scenario())
+    admin, rejected = asyncio.run(scenario())
 
     assert admin.status_code == 200
     assert admin.json() == {"api_version": "1.0.0", "role": "admin"}
-    assert viewer.json() == {"api_version": "1.0.0", "role": "viewer"}
+    assert rejected.status_code == 401
     assert "admin-token-strong" not in admin.text
 
 
@@ -489,24 +478,18 @@ def test_plan_lineage_preview_and_admin_interaction_history() -> None:
             base_url="http://reeloom.test",
         ) as client:
             admin = {"authorization": "Bearer admin-token-strong"}
-            viewer = {"authorization": "Bearer viewer-token-strong"}
             plans = await client.get(
                 "/api/v1/runs/run-1/plans",
-                headers=viewer,
+                headers=admin,
             )
             preview = await client.get(
                 "/api/v1/runs/run-1/plans/1/preview",
-                headers={"authorization": "Bearer operator-token-strong"},
-            )
-            forbidden = await client.get(
-                "/api/v1/runs/run-1/interactions",
-                headers=viewer,
+                headers=admin,
             )
             history = await client.get(
                 "/api/v1/runs/run-1/interactions",
                 headers=admin,
             )
-            assert forbidden.status_code == 403
             return plans, preview, history
 
     plans, preview, history = asyncio.run(scenario())
@@ -533,7 +516,7 @@ def test_health_fails_closed_without_production_dependency() -> None:
                 await client.get(
                     "/health",
                     headers={
-                        "authorization": "Bearer viewer-token-strong"
+                        "authorization": "Bearer admin-token-strong"
                     },
                 ),
             )
@@ -547,19 +530,37 @@ def test_health_fails_closed_without_production_dependency() -> None:
     }
 
 
-def test_auth_rejects_credentials_shared_across_roles() -> None:
+@pytest.mark.parametrize(
+    "token",
+    (
+        "too-short",
+        "admin token with spaces",
+        "admin-token-with-emoji-🔑",
+        "admin-token-with\nnewline",
+    ),
+)
+def test_auth_rejects_non_header_safe_admin_token(token: str) -> None:
     with pytest.raises(ServerError) as raised:
         AuthSettings.create(
-            credentials={
-                Role.ADMIN: "shared-token-strong",
-                Role.OPERATOR: "shared-token-strong",
-                Role.VIEWER: "viewer-token-strong",
-            },
+            admin_token=token,
             allowed_hosts=("reeloom.test",),
             allowed_origins=("https://ui.example.test",),
         )
 
     assert raised.value.code is ServerErrorCode.INVALID_SETTINGS
+
+
+def test_auth_environment_requires_only_admin_token() -> None:
+    auth = AuthSettings.from_environ(
+        {
+            "REELOOM_ADMIN_TOKEN": "admin-token-strong",
+            "REELOOM_ALLOWED_HOSTS": "reeloom.test",
+            "REELOOM_ALLOWED_UI_ORIGINS": "https://ui.example.test",
+        }
+    )
+
+    assert auth.authenticate("admin-token-strong")
+    assert not auth.authenticate("old-viewer-token")
 
 
 def test_http_and_validation_errors_use_safe_envelopes() -> None:
@@ -569,7 +570,7 @@ def test_http_and_validation_errors_use_safe_envelopes() -> None:
             base_url="http://reeloom.test",
         ) as client:
             headers = {
-                "authorization": "Bearer viewer-token-strong",
+                "authorization": "Bearer admin-token-strong",
             }
             missing = await client.get(
                 "/api/v1/runs/missing",
@@ -600,7 +601,7 @@ def test_duplicate_security_header_is_rejected() -> None:
             return await client.get(
                 "/api/v1/runs/run-1",
                 headers=[
-                    ("authorization", "Bearer viewer-token-strong"),
+                    ("authorization", "Bearer admin-token-strong"),
                     ("authorization", "Bearer admin-token-strong"),
                 ],
             )
@@ -650,7 +651,7 @@ def test_sse_is_allowlisted_and_resumes_from_durable_id() -> None:
             return await client.get(
             "/api/v1/runs/run-1/events/stream",
             headers={
-                "authorization": "Bearer viewer-token-strong",
+                "authorization": "Bearer admin-token-strong",
                 "last-event-id": "1",
             },
             )
@@ -673,14 +674,14 @@ def test_invalid_or_ahead_sse_cursor_fails_closed() -> None:
             invalid = await client.get(
             "/api/v1/runs/run-1/events/stream",
             headers={
-                "authorization": "Bearer viewer-token-strong",
+                "authorization": "Bearer admin-token-strong",
                 "last-event-id": "not-an-int",
             },
         )
             ahead = await client.get(
             "/api/v1/runs/run-1/events/stream",
             headers={
-                "authorization": "Bearer viewer-token-strong",
+                "authorization": "Bearer admin-token-strong",
                 "last-event-id": "999",
             },
             )

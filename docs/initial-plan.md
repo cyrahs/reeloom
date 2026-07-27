@@ -501,7 +501,7 @@ control-plane，而是从 PostgreSQL 17 foundation 开始逐阶段构建；验�
   接受人工纠正或额外要求；
 - `plan_only/manual/automatic` orchestration，全部继续使用 exact
   `ApprovalRecord`；
-- operator crash recovery 与自然语言 revision 的明确隔离；
+- deterministic crash recovery 与自然语言 revision 的明确隔离；
 - completed plan 的 reapply 继续原 logical Agent/session 接收人工纠正或附加
   要求，以 fresh 完整 mapping 编译独立 immutable amendment plan 和新事务；
   原 completed 记录不变，也不复用 crash recovery。

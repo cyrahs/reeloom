@@ -19,7 +19,7 @@ class ErrorResponse(_StrictModel):
 
 class SessionResponse(_StrictModel):
     api_version: Literal["1.0.0"]
-    role: Literal["viewer", "operator", "admin"]
+    role: Literal["admin"]
 
 
 class HealthResponse(_StrictModel):

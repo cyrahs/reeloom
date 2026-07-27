@@ -29,7 +29,7 @@ cursor ahead/invalid fail closed。浏览器投影只包含 allowlisted typed fi
 absolute path、prompt、Secret、DSN、canonical plan 或 tool observation。
 
 `GET /api/v1/runs/{run_id}` 在 approval 已 claim、但 settlement 尚未持久化时返回
-`recovery_approval_id`；此时普通 apply fail closed，operator 必须调用 exact
+`recovery_approval_id`；此时普通 apply fail closed，Admin 必须调用 exact
 `recover`。所有 mutation 的幂等结果只由对应的 typed resolver 从 durable owner
 重建，不会重新执行 provider、Agent 或 filesystem effect。
 
@@ -37,8 +37,8 @@ absolute path、prompt、Secret、DSN、canonical plan 或 tool observation。
 
 同源 UI 只公开 `GET/HEAD /` 与 build manifest 中的哈希资源，不提供任意 URL 的
 SPA fallback。`/api/*`、OpenAPI snapshot 和 manifest 本身都继续要求 Bearer。
-浏览器经 session endpoint 确认 `role=admin` 后才保存 token；viewer/operator
-仍可用于非 UI API client。
+浏览器经 session endpoint 确认 `role=admin` 后才保存 token；同一个 Admin
+Bearer 也是非 UI API client 的唯一 credential。
 
 Plan preview 分页返回 `move | unmapped | unchanged`、candidate ID、kind 和相对
 source/destination。服务端先固定 PostgreSQL lineage，再在事务外加载并校验

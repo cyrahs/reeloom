@@ -6,7 +6,7 @@
 | M9.1 safe read models | Complete | session/run/lineage/hash-verified preview/SSE tests |
 | M9.2 config/history | Complete | retain/replace、migration、Admin history PostgreSQL journey |
 | M9.3 frontend foundation | Complete | React 19/Vite 8、Admin auth、Zod、Vitest |
-| M9.4 viewer surfaces | Complete | dashboard/run/SSE/preview/timeline UI |
+| M9.4 read surfaces | Complete | dashboard/run/SSE/preview/timeline UI |
 | M9.5 Admin config | Complete | first-run/edit/probe/CAS/retain UX |
 | M9.6 interactions | Complete | question/revision/reapply forms、16 KiB guard、refetch |
 | M9.7 effects | Complete | exact manual approval、durable settlement、exact recovery UI |

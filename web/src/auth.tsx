@@ -44,12 +44,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       .request("/api/v1/session", sessionSchema, {
         signal: controller.signal,
       })
-      .then((session) => {
-        if (session.role !== "admin") {
-          logout();
-          setError("此控制台只接受 Admin token。");
-          return;
-        }
+      .then(() => {
         window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
         setError("");
         setValidated(true);

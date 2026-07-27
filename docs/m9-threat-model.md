@@ -22,7 +22,7 @@ filename display 和浏览器 mutation intent。
 
 - A successful same-origin script injection can read the Admin token and has the
   same authority as the UI. Deployment must use TLS, CSP and no third-party
-  active content; operators must log out on shared devices.
+  active content; Admins must log out on shared devices.
 - A compromised host, reverse proxy, PostgreSQL or Admin credential remains
   outside the application trust boundary.
 - Explicit interaction text is now an Admin-readable PostgreSQL record and is

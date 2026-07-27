@@ -22,15 +22,16 @@ backup 边界。
 3. 将 state root 与授权 media roots 挂载到固定绝对路径。
 4. 以 `REELOOM_WORKERS=1` 启动 server。启动必须同时取得 state-root process lock
    与 PostgreSQL lifetime advisory lock。
-5. 用 exact Host 和 Viewer-or-higher Bearer 请求 `/health`，再开放反向代理流量。
+5. 用 exact Host 和 Admin Bearer 请求 `/health`，再开放反向代理流量。
 
 `REELOOM_TMDB_API_KEY` 由 deployment secret manager 注入，仅构造唯一允许的业务
 网络 adapter；server 不读取 dotenv。模型 provider key 仍通过 admin config
 write-only 写入 filesystem SecretStore。
 
-Bearer credential 分为 `admin`、`operator`、`viewer`。反向代理必须保留 Host，
-禁止改写 Origin，并关闭响应缓存和代理缓冲 SSE。所有 provider origin 必须显式
-列入 `REELOOM_PROVIDER_ORIGINS`。
+部署只注入 `REELOOM_ADMIN_TOKEN`；该值必须是 16–4096 字符的 base64url
+字符串（`A-Z a-z 0-9 _ -`）。所有受保护 API 统一要求该 Admin Bearer。
+反向代理必须保留 Host，禁止改写 Origin，并关闭响应缓存和代理缓冲 SSE。所有
+provider origin 必须显式列入 `REELOOM_PROVIDER_ORIGINS`。
 
 反向代理必须允许 `/api/v1/runs/*/events/stream` 长连接并传递
 `Authorization`、`Last-Event-ID` 与 disconnect；不得把 Bearer 写入 access log。
@@ -55,5 +56,5 @@ terminal journal 补 settlement；它不会调用 Agent 来猜测 recovery。
 
 schema mismatch、checksum drift、PostgreSQL 版本不是 17、数据库不可达、第二实例、
 第二 worker、state-root symlink 或不安全权限都会 fail closed。数据库故障期间不得
-执行新的 rename。terminal journal 已落盘但 settlement 未提交时，只能走 operator
-`recover`。
+执行新的 rename。terminal journal 已落盘但 settlement 未提交时，只能由 Admin
+调用 exact `recover`。

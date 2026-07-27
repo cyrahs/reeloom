@@ -1514,11 +1514,7 @@
             "type": "string"
           },
           "role": {
-            "enum": [
-              "viewer",
-              "operator",
-              "admin"
-            ],
+            "const": "admin",
             "title": "Role",
             "type": "string"
           }

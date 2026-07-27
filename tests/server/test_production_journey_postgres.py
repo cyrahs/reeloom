@@ -25,7 +25,7 @@ from reeloom.kernel.tmdb import (
 )
 from reeloom.runtime.event_codec import decode_event
 from reeloom.runtime.events import InteractionCompleted
-from reeloom.server.auth import AuthSettings, Role
+from reeloom.server.auth import AuthSettings
 from reeloom.server.composition import build_application
 from reeloom.server.settings import DeploymentSettings
 
@@ -253,11 +253,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
             return _ModelLease(models.popleft())
 
     auth = AuthSettings.create(
-        credentials={
-            Role.ADMIN: "admin-token-strong",
-            Role.OPERATOR: "operator-token-strong",
-            Role.VIEWER: "viewer-token-strong",
-        },
+        admin_token="admin-token-strong",
         allowed_hosts=("reeloom.test",),
         allowed_origins=("https://ui.example.test",),
     )
@@ -397,13 +393,13 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 assert run_id is not None
                 assert initial_hash is not None
 
-                operator = {
-                    "authorization": "Bearer operator-token-strong",
+                admin_auth = {
+                    "authorization": "Bearer admin-token-strong",
                 }
                 revision = await client.post(
                     f"/api/v1/runs/{run_id}/interactions",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"revision-{journey_id}",
                         "if-match": initial_hash,
                     },
@@ -427,7 +423,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 }
                 lineage = await client.get(
                     f"/api/v1/runs/{run_id}/plans?limit=100",
-                    headers=operator,
+                    headers=admin_auth,
                 )
                 assert lineage.status_code == 200, lineage.text
                 assert [
@@ -436,11 +432,11 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 ] == [revised_hash, initial_hash]
                 initial_preview = await client.get(
                     f"/api/v1/runs/{run_id}/plans/1/preview?limit=100",
-                    headers=operator,
+                    headers=admin_auth,
                 )
                 revised_preview = await client.get(
                     f"/api/v1/runs/{run_id}/plans/2/preview?limit=100",
-                    headers=operator,
+                    headers=admin_auth,
                 )
                 assert initial_preview.status_code == 200
                 assert revised_preview.status_code == 200
@@ -463,16 +459,11 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 assert history.json()["items"][0][
                     "content_available"
                 ] is True
-                forbidden_history = await client.get(
-                    f"/api/v1/runs/{run_id}/interactions",
-                    headers=operator,
-                )
-                assert forbidden_history.status_code == 403
 
                 applied = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"apply-revision-{journey_id}",
                         "if-match": revised_hash,
                     },
@@ -485,7 +476,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 reapplied = await client.post(
                     f"/api/v1/runs/{run_id}/reapply",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"reapply-{journey_id}",
                         "if-match": revised_hash,
                     },
@@ -498,7 +489,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 superseded = await client.post(
                     f"/api/v1/runs/{run_id}/reapply",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"supersede-{journey_id}",
                         "if-match": amendment_hash,
                     },
@@ -546,7 +537,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 reapplied = await client.post(
                     f"/api/v1/runs/{run_id}/reapply",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"reapply-final-{journey_id}",
                         "if-match": revised_hash,
                     },
@@ -559,7 +550,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 pending_amendment = await client.get(
                     f"/api/v1/runs/{run_id}",
                     headers={
-                        "authorization": "Bearer viewer-token-strong"
+                        "authorization": "Bearer admin-token-strong"
                     },
                 )
                 assert pending_amendment.status_code == 200
@@ -569,7 +560,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 amendment = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"apply-amend-{journey_id}",
                         "if-match": amendment_hash,
                     },
@@ -581,7 +572,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 recovered = await client.post(
                     f"/api/v1/operations/runs/{run_id}/recover",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"recover-{journey_id}",
                         "if-match": amendment_hash,
                     },
@@ -597,7 +588,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 no_op = await client.post(
                     f"/api/v1/runs/{run_id}/reapply",
                     headers={
-                        **operator,
+                        **admin_auth,
                         "idempotency-key": f"noop-{journey_id}",
                         "if-match": amendment_hash,
                     },
@@ -633,7 +624,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 final = await client.get(
                     f"/api/v1/runs/{run_id}",
                     headers={
-                        "authorization": "Bearer viewer-token-strong"
+                        "authorization": "Bearer admin-token-strong"
                     },
                 )
                 assert final.json()["status"] == "completed"
@@ -681,11 +672,7 @@ def test_production_builder_automatic_policy_uses_exact_approval(
         return _ModelLease(models.popleft())
 
     auth = AuthSettings.create(
-        credentials={
-            Role.ADMIN: "admin-token-strong",
-            Role.OPERATOR: "operator-token-strong",
-            Role.VIEWER: "viewer-token-strong",
-        },
+        admin_token="admin-token-strong",
         allowed_hosts=("reeloom.test",),
         allowed_origins=("https://ui.example.test",),
     )
@@ -800,7 +787,7 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                         f"/api/v1/runs/{row[0]}/reapply",
                         headers={
                             "authorization": (
-                                "Bearer operator-token-strong"
+                                "Bearer admin-token-strong"
                             ),
                             "idempotency-key": (
                                 f"movie-reapply-{journey_id}"

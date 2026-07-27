@@ -32,8 +32,6 @@ services:
       REELOOM_ALLOWED_HOSTS: ${REELOOM_ALLOWED_HOSTS:?required}
       REELOOM_ALLOWED_UI_ORIGINS: ${REELOOM_ALLOWED_UI_ORIGINS:?required}
       REELOOM_ADMIN_TOKEN: ${REELOOM_ADMIN_TOKEN:?required}
-      REELOOM_OPERATOR_TOKEN: ${REELOOM_OPERATOR_TOKEN:?required}
-      REELOOM_VIEWER_TOKEN: ${REELOOM_VIEWER_TOKEN:?required}
     volumes:
       - reeloom-state:/var/lib/reeloom
       - ${REELOOM_MEDIA_ROOT:?required}:${REELOOM_MEDIA_ROOT:?required}
