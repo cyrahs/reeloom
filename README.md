@@ -1,6 +1,6 @@
 # Reeloom
 
-M10 在 PostgreSQL 17-first 单实例 control plane 和同源 React Web UI 上增加
+M10 在 PostgreSQL 16–18 单实例 control plane 和同源 React Web UI 上增加
 独立 Movie 领域支持。默认操作仍只生成 immutable plan；只有 exact
 `ApprovalRecord` 被一次性 claim 后，隔离 Executor 才能移动文件。
 

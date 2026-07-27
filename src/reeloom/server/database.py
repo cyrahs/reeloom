@@ -16,6 +16,14 @@ from reeloom.server.migrations import (
 
 _MIGRATION_LOCK_ID = 7_303_418_801
 _INSTANCE_LOCK_ID = 7_303_418_802
+_SUPPORTED_POSTGRES_MAJORS = frozenset({16, 17, 18})
+
+
+def _validated_postgres_major(version_number: int) -> int:
+    major = version_number // 10_000
+    if major not in _SUPPORTED_POSTGRES_MAJORS:
+        raise ServerError(ServerErrorCode.DATABASE_VERSION_MISMATCH)
+    return major
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,11 +151,7 @@ class PostgresControlPlane:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
-        postgres_major = version_number // 10_000
-        if postgres_major != 17:
-            raise ServerError(
-                ServerErrorCode.DATABASE_VERSION_MISMATCH
-            )
+        postgres_major = _validated_postgres_major(version_number)
         schema_version = int(row[0])
         if schema_version != EXPECTED_SCHEMA_VERSION:
             raise ServerError(ServerErrorCode.SCHEMA_MISMATCH)

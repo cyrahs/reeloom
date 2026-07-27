@@ -6,7 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from reeloom.server.database import PostgresControlPlane
+from reeloom.server.database import (
+    PostgresControlPlane,
+    _validated_postgres_major,
+)
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.migrations import EXPECTED_SCHEMA_VERSION
 
@@ -43,6 +46,19 @@ def test_database_close_releases_pool_when_unlock_fails() -> None:
     assert calls == ["unlock", "lock", "pool"]
     assert control._lock_connection is None
     assert control._pool is None
+
+
+@pytest.mark.parametrize("major", (16, 17, 18))
+def test_health_accepts_supported_postgres_major(major: int) -> None:
+    assert _validated_postgres_major(major * 10_000) == major
+
+
+@pytest.mark.parametrize("major", (15, 19))
+def test_health_rejects_unsupported_postgres_major(major: int) -> None:
+    with pytest.raises(ServerError) as raised:
+        _validated_postgres_major(major * 10_000)
+
+    assert raised.value.code is ServerErrorCode.DATABASE_VERSION_MISMATCH
 
 
 @pytest.mark.postgres

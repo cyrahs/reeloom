@@ -1,6 +1,6 @@
 # M10 deployment
 
-Reeloom M8 固定为一个 server process、一个 worker 和一个 PostgreSQL 17
+Reeloom M8 固定为一个 server process、一个 worker 和一个 PostgreSQL 16–18
 control plane。`compose.yaml` 是最小 production composition；部署必须通过 secret
 manager 注入所有 `${...:?required}` 值，不能把 credential 写进仓库或 `.env*`。
 Reeloom server 本身不会加载 dotenv。
@@ -18,7 +18,7 @@ backup 边界。
    `REELOOM_POSTGRES_DSN` 指向独立的 `reeloom_app` role。两套 credential
    必须不同，密码若进入 DSN 必须 URL encode。启动会以 migration role 串行应用并
    核对 version/checksum，业务 pool 只使用 application role。
-2. 启动 PostgreSQL 17，确认备份与恢复演练已完成。
+2. 启动受支持的 PostgreSQL 16、17 或 18，确认备份与恢复演练已完成。
 3. 将 state root 与授权 media roots 挂载到固定绝对路径。
 4. 以 `REELOOM_WORKERS=1` 启动 server。启动必须同时取得 state-root process lock
    与 PostgreSQL lifetime advisory lock。
@@ -54,7 +54,7 @@ terminal journal 补 settlement；它不会调用 Agent 来猜测 recovery。
 
 ## Failure behavior
 
-schema mismatch、checksum drift、PostgreSQL 版本不是 17、数据库不可达、第二实例、
+schema mismatch、checksum drift、PostgreSQL 版本不在 16–18、数据库不可达、第二实例、
 第二 worker、state-root symlink 或不安全权限都会 fail closed。数据库故障期间不得
 执行新的 rename。terminal journal 已落盘但 settlement 未提交时，只能由 Admin
 调用 exact `recover`。

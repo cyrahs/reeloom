@@ -15,7 +15,7 @@ M8 为后续可交互 Web 前端建立可部署的服务器后端。用户可以
 M8 不再沿用“先实现 filesystem 控制面，再迁移 PostgreSQL”的路线。从第一个
 增量开始：
 
-- PostgreSQL 17 是控制面元数据的唯一事实来源；
+- PostgreSQL 16–18 是控制面元数据的唯一事实来源；
 - 文件系统只拥有媒体、write-only Secret、content-addressed Plan 和 Executor
   Journal；
 - 每类状态只有一个 owner，不建立 backend toggle、fallback 或 dual-write；
@@ -269,7 +269,7 @@ settlement，不调用 Agent。
 
 ## 7. 部署与数据库边界
 
-- 固定 PostgreSQL 17 和 psycopg 3 connection pool。
+- 固定 PostgreSQL 16–18 allowlist 和 psycopg 3 connection pool。
 - CI 提供固定 PG 17 service；测试不在运行时下载 image。
 - 真实数据库 runner 只读取显式 `REELOOM_TEST_POSTGRES_DSN`，不读取 `.env*`。
 - application DSN 来自 deployment-only settings，不进入普通 config API。
