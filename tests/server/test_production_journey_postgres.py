@@ -17,6 +17,7 @@ from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
     TmdbLanguage,
+    TmdbMovieDetails,
     TmdbSearchCandidate,
     TmdbSeasonDetails,
     TmdbSeriesDetails,
@@ -73,6 +74,26 @@ class _Tmdb:
             first_air_year=2025,
             seasons=(),
             work_type=work_type,
+        )
+
+    async def get_movie(
+        self,
+        *,
+        tmdb_id: int,
+        work_type: TmdbWorkType,
+        language: TmdbLanguage,
+    ) -> TmdbMovieDetails:
+        assert work_type is TmdbWorkType.MOVIE
+        return TmdbMovieDetails(
+            tmdb_id=tmdb_id,
+            language=language,
+            localized_title="旅程电影",
+            original_title="Journey Movie",
+            release_year=2025,
+            original_language="ja",
+            adult=False,
+            genre_ids=(16,),
+            work_type=TmdbWorkType.MOVIE,
         )
 
     async def get_season(
@@ -164,6 +185,38 @@ def _mapping_model(episode: int) -> ScriptedModel:
                     "subtitles": [],
                 },
                 call_id=f"mapping-{episode}",
+            ),
+        )
+    )
+
+
+def _movie_mapping_model() -> ScriptedModel:
+    return ScriptedModel(
+        (
+            ToolCallStep(
+                name="list_candidates",
+                arguments={"kind": "video", "cursor": 0, "limit": 10},
+                call_id="list-movie",
+            ),
+            ToolCallStep(
+                name="search_tmdb",
+                arguments={"query": "Journey Movie", "work_type": "movie"},
+                call_id="search-movie",
+            ),
+            ToolCallStep(
+                name="get_tmdb_movie",
+                arguments={"tmdb_id": 700, "language": "zh-CN"},
+                call_id="details-movie",
+            ),
+            ToolCallStep(
+                name="select_movie",
+                arguments={"tmdb_id": 700},
+                call_id="select-movie",
+            ),
+            ToolCallStep(
+                name="submit_mapping",
+                arguments={"video_id": "video:1", "subtitle_ids": []},
+                call_id="mapping-movie",
             ),
         )
     )
@@ -598,18 +651,29 @@ def test_production_builder_manual_revision_apply_reapply_recover(
 
 
 @pytest.mark.postgres
+@pytest.mark.parametrize("movie", (False, True), ids=("anime", "movie"))
 def test_production_builder_automatic_policy_uses_exact_approval(
     tmp_path: Path,
+    movie: bool,
 ) -> None:
     state_root = tmp_path / "state"
     incoming = tmp_path / "incoming"
     archive = tmp_path / "archive"
     for root in (state_root, incoming, archive):
         root.mkdir()
-    (incoming / "automatic.mkv").write_bytes(b"automatic-video")
+    primary = incoming / "automatic.mkv"
+    primary.write_bytes(b"automatic-video")
+    if movie:
+        (incoming / "zz-extra.mkv").write_bytes(b"unmapped-extra")
     journey_id = uuid.uuid4().hex
     watch_id = f"automatic-watch-{journey_id}"
-    models = deque((_mapping_model(1),))
+    models = deque(
+        (
+            (_movie_mapping_model(), _movie_mapping_model())
+            if movie
+            else (_mapping_model(1),)
+        )
+    )
 
     def model_factory(config: object, secret: bytes) -> _ModelLease:
         del config
@@ -661,14 +725,18 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                             {
                                 "watch_id": watch_id,
                                 "root": str(incoming),
-                                "work_type": "anime",
+                                "work_type": (
+                                    "movie" if movie else "anime"
+                                ),
                                 "poll_interval_seconds": 1,
                                 "settle_interval_seconds": 1,
                             }
                         ],
                         "archive_routes": [
                             {
-                                "work_type": "anime",
+                                "work_type": (
+                                    "movie" if movie else "anime"
+                                ),
                                 "root": str(archive),
                             }
                         ],
@@ -717,7 +785,33 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                 assert str(row[1]) == "completed"
                 assert row[2] is not None
                 assert tuple(int(item) for item in row[3:]) == (1, 1, 1)
-                assert not (incoming / "automatic.mkv").exists()
+                assert not primary.exists()
+                if movie:
+                    assert (incoming / "zz-extra.mkv").exists()
+                    movie_root = (
+                        archive
+                        / "旅程电影 (2025) {tmdb-700}"
+                    )
+                    target = movie_root / "旅程电影 (2025).mkv"
+                    assert target.read_bytes() == b"automatic-video"
+                    later = movie_root / "later.mkv"
+                    later.write_bytes(b"later-file")
+                    reapplied = await client.post(
+                        f"/api/v1/runs/{row[0]}/reapply",
+                        headers={
+                            "authorization": (
+                                "Bearer operator-token-strong"
+                            ),
+                            "idempotency-key": (
+                                f"movie-reapply-{journey_id}"
+                            ),
+                            "if-match": str(row[2]),
+                        },
+                        json={"message": "Revalidate the exact layout."},
+                    )
+                    assert reapplied.status_code == 200, reapplied.text
+                    assert reapplied.json()["no_op"] is True
+                    assert later.read_bytes() == b"later-file"
                 assert not models
 
         asyncio.run(journey())

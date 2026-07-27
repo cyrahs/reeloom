@@ -5,7 +5,14 @@ from typing import Protocol
 
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.mapping import MappingDraft
-from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.naming import (
+    MovieIdentity,
+    SeriesIdentity,
+    SubtitleVariant,
+)
+from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbWorkType
 
@@ -39,10 +46,23 @@ class PlanCompiler(Protocol):
         created_at: datetime,
     ) -> RenamePlan: ...
 
+    def compile_movie(
+        self,
+        *,
+        run_id: str,
+        movie: MovieIdentity,
+        mapping: MovieMappingDraft,
+        subtitle_variants: tuple[
+            tuple[CandidateId, SubtitleVariant],
+            ...,
+        ],
+        created_at: datetime,
+    ) -> MovieRenamePlan: ...
+
 
 class PlanStore(Protocol):
     """Content-addressed persistence; callers load plans only by hash."""
 
-    def save(self, plan: RenamePlan) -> None: ...
+    def save(self, plan: InitialPlan) -> None: ...
 
     def load(self, plan_hash: str) -> bytes: ...

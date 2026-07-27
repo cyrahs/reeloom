@@ -4,9 +4,14 @@ import json
 from collections.abc import Callable
 
 from reeloom.kernel.candidates import CandidateId
-from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
-from reeloom.kernel.rename_plan import RenamePlan
-from reeloom.kernel.schema import check_fields
+from reeloom.kernel.initial_plan import InitialPlan
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.naming import (
+    MovieIdentity,
+    SeriesIdentity,
+    SubtitleVariant,
+)
+from reeloom.kernel.schema import check_fields, require_object
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.event_codec import (
     _budget,
@@ -17,6 +22,9 @@ from reeloom.runtime.event_codec import (
     _issue_payload,
     _mapping,
     _mapping_payload,
+    _movie_mapping,
+    _movie_mapping_payload,
+    _movie_payload,
     _parse_timestamp,
     _root,
     _root_payload,
@@ -30,8 +38,9 @@ from reeloom.runtime.state import (
     StopReason,
 )
 
-STATE_PROJECTION_SCHEMA = "runtime-state-v1"
-_FIELDS = frozenset(
+LEGACY_STATE_PROJECTION_SCHEMA = "runtime-state-v1"
+STATE_PROJECTION_SCHEMA = "runtime-state-v2"
+_LEGACY_FIELDS = frozenset(
     {
         "applied_count",
         "applied_source_ids",
@@ -70,6 +79,17 @@ _FIELDS = frozenset(
         "work_type",
     }
 )
+_FIELDS = _LEGACY_FIELDS | {
+    "movie_mapping_draft",
+    "selected_movie",
+}
+
+
+def is_supported_projection_schema(value: object) -> bool:
+    return value in {
+        LEGACY_STATE_PROJECTION_SCHEMA,
+        STATE_PROJECTION_SCHEMA,
+    }
 
 
 def _pairs(values: frozenset[tuple[str, str]]) -> list[list[str]]:
@@ -118,6 +138,11 @@ def encode_state(state: RunState) -> dict[str, object]:
             if state.mapping_draft is None
             else _mapping_payload(state.mapping_draft)
         ),
+        "movie_mapping_draft": (
+            None
+            if state.movie_mapping_draft is None
+            else _movie_mapping_payload(state.movie_mapping_draft)
+        ),
         "model_tokens": state.model_tokens,
         "model_turns": state.model_turns,
         "observed_tool_calls": _pairs(state.observed_tool_calls),
@@ -135,6 +160,11 @@ def encode_state(state: RunState) -> dict[str, object]:
             None
             if state.selected_series is None
             else _series_payload(state.selected_series)
+        ),
+        "selected_movie": (
+            None
+            if state.selected_movie is None
+            else _movie_payload(state.selected_movie)
         ),
         "selected_work_type": (
             None
@@ -179,7 +209,7 @@ def patch_state(
     value: object,
     **changes: object,
 ) -> str:
-    payload = check_fields(value, _FIELDS, field="run_state")
+    payload = _normalized_payload(value)
     if not set(changes) <= _FIELDS:
         raise ValueError
     decode_state(
@@ -241,9 +271,9 @@ def _int_pairs(value: object) -> tuple[tuple[int, int], ...]:
 def decode_state(
     value: object,
     *,
-    load_plan: Callable[[str], RenamePlan],
+    load_plan: Callable[[str], InitialPlan],
 ) -> RunState:
-    payload = check_fields(value, _FIELDS, field="run_state")
+    payload = _normalized_payload(value)
     series = payload["selected_series"]
     if series is None:
         selected_series = None
@@ -258,6 +288,12 @@ def decode_state(
             year=raw["year"],
             tmdb_id=raw["tmdb_id"],
         )
+    movie = payload["selected_movie"]
+    selected_movie = (
+        None
+        if movie is None
+        else MovieIdentity.from_dict(movie)
+    )
     candidate_ids = payload["candidate_ids"]
     rename_plan_hash = payload["rename_plan_hash"]
     subtitle_variants = payload["subtitle_variants"]
@@ -315,6 +351,7 @@ def decode_state(
             _candidate_refs(payload["tmdb_candidates"])
         ),
         selected_series=selected_series,
+        selected_movie=selected_movie,
         selected_work_type=(
             None
             if payload["selected_work_type"] is None
@@ -331,6 +368,11 @@ def decode_state(
             None
             if payload["mapping_draft"] is None
             else _mapping(payload["mapping_draft"])
+        ),
+        movie_mapping_draft=(
+            None
+            if payload["movie_mapping_draft"] is None
+            else _movie_mapping(payload["movie_mapping_draft"])
         ),
         rename_plan=(
             None
@@ -358,3 +400,18 @@ def decode_state(
         ),
         failure_code=_optional_text(payload["failure_code"]),
     )
+
+
+def _normalized_payload(value: object) -> dict[str, object]:
+    raw = require_object(value, field="run_state")
+    keys = frozenset(raw)
+    if keys == _FIELDS:
+        return dict(check_fields(raw, _FIELDS, field="run_state"))
+    if keys == _LEGACY_FIELDS:
+        payload = dict(
+            check_fields(raw, _LEGACY_FIELDS, field="run_state")
+        )
+        payload["movie_mapping_draft"] = None
+        payload["selected_movie"] = None
+        return payload
+    return dict(check_fields(raw, _FIELDS, field="run_state"))

@@ -12,6 +12,7 @@ from reeloom.runtime.events import InteractionCompleted
 from reeloom.runtime.reducer import reduce_interaction_head
 from reeloom.runtime.state_codec import (
     STATE_PROJECTION_SCHEMA,
+    is_supported_projection_schema,
     patch_state,
 )
 from reeloom.runtime.state import Phase
@@ -369,7 +370,9 @@ class PostgresInteractionRepository:
                         runtime is None
                         or str(runtime[3]) != "stopped"
                         or not bool(runtime[12])
-                        or str(runtime[13]) != STATE_PROJECTION_SCHEMA
+                        or not is_supported_projection_schema(
+                            str(runtime[13])
+                        )
                         or int(runtime[1]) + execution.model_tokens
                         > int(runtime[11])
                         or int(runtime[5]) + execution.model_turns
@@ -516,6 +519,7 @@ class PostgresInteractionRepository:
                             phase = %s,
                             runtime_status = 'stopped',
                             plan_hash = %s,
+                            projection_schema = %s,
                             projection_payload = %s::jsonb,
                             updated_at = clock_timestamp()
                         WHERE run_id = %s
@@ -527,6 +531,7 @@ class PostgresInteractionRepository:
                             execution.failures,
                             final_phase.value,
                             reduced_plan_hash,
+                            STATE_PROJECTION_SCHEMA,
                             patch_state(
                                 runtime[14],
                                 event_count=int(runtime[0]) + 1,

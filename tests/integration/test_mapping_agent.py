@@ -30,6 +30,7 @@ from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
     TmdbLanguage,
+    TmdbMovieDetails,
     TmdbSearchCandidate,
     TmdbSeasonDetails,
     TmdbSeriesDetails,
@@ -86,6 +87,31 @@ class _FakeTmdb:
             first_air_year=2024,
             seasons=(),
             work_type=work_type,
+        )
+
+    async def get_movie(
+        self,
+        *,
+        tmdb_id: int,
+        work_type: TmdbWorkType,
+        language: TmdbLanguage,
+    ) -> TmdbMovieDetails:
+        assert tmdb_id == 200
+        assert work_type is TmdbWorkType.MOVIE
+        return TmdbMovieDetails(
+            tmdb_id=tmdb_id,
+            language=language,
+            localized_title=(
+                "正确电影"
+                if language is TmdbLanguage.ZH_CN
+                else "Correct Movie"
+            ),
+            original_title="Correct Movie",
+            release_year=2024,
+            original_language="ja",
+            adult=False,
+            genre_ids=(16,),
+            work_type=TmdbWorkType.MOVIE,
         )
 
     async def get_season(
@@ -285,6 +311,111 @@ def _correcting_mapping_model() -> ScriptedModel:
             ),
         )
     )
+
+
+def _movie_context(tmp_path: Path):
+    source_root = tmp_path / "incoming"
+    output_root = tmp_path / "movies"
+    plan_store_root = tmp_path / "plans"
+    source_root.mkdir()
+    output_root.mkdir()
+    plan_store_root.mkdir()
+    (source_root / "movie.mkv").write_bytes(b"movie")
+    (source_root / "movie.chs.ass").write_bytes(b"subtitle")
+    (source_root / "zz-extra.mp4").write_bytes(b"extra")
+    scan = FilesystemScanner().scan(AuthorizedRoot.create(source_root))
+    source = SnapshotCandidateSource.from_scanned(scan.snapshot)
+    return create_organizer_context(
+        run_id="run-movie",
+        candidate_source=source,
+        work_type=TmdbWorkType.MOVIE,
+        tmdb_provider=_FakeTmdb(),
+        inventory=ExistingInventory(
+            work_type=TmdbWorkType.MOVIE,
+            tmdb_id=200,
+        ),
+        subtitle_provider=_FakeSubtitleProvider(source),
+        plan_compiler=FilesystemPlanCompiler(
+            scan=scan,
+            output_root=AuthorizedRoot.create(output_root),
+        ),
+        plan_store=FilesystemPlanStore(
+            AuthorizedRoot.create(plan_store_root)
+        ),
+        clock=lambda: datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+        budget=RunBudget(max_model_turns=7),
+    )
+
+
+def test_movie_agent_builds_plan_and_leaves_extra_video_unmapped(
+    tmp_path: Path,
+) -> None:
+    model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="list_candidates",
+                arguments={"kind": "video", "cursor": 0, "limit": 10},
+                call_id="videos",
+            ),
+            ToolCallStep(
+                name="list_candidates",
+                arguments={
+                    "kind": "subtitle",
+                    "cursor": 0,
+                    "limit": 10,
+                },
+                call_id="subtitles",
+            ),
+            ToolCallStep(
+                name="search_tmdb",
+                arguments={
+                    "query": "Correct Movie",
+                    "work_type": "movie",
+                },
+                call_id="search",
+            ),
+            ToolCallStep(
+                name="get_tmdb_movie",
+                arguments={"tmdb_id": 200, "language": "zh-CN"},
+                call_id="details",
+            ),
+            ToolCallStep(
+                name="select_movie",
+                arguments={"tmdb_id": 200},
+                call_id="select",
+            ),
+            ToolCallStep(
+                name="detect_subtitle_variant",
+                arguments={"subtitle_id": "subtitle:1"},
+                call_id="variant",
+            ),
+            ToolCallStep(
+                name="submit_mapping",
+                arguments={
+                    "video_id": "video:1",
+                    "subtitle_ids": ["subtitle:1"],
+                },
+                call_id="mapping",
+            ),
+        )
+    )
+
+    result = asyncio.run(
+        run_episode_organizer(
+            context=_movie_context(tmp_path),
+            model=model,
+            prompt="Map the Movie candidate.",
+        )
+    )
+
+    assert result.state.phase is Phase.AWAITING_APPROVAL
+    assert result.state.rename_plan is not None
+    assert result.state.rename_plan.verify_hash()
+    assert tuple(
+        str(item)
+        for item in result.state.rename_plan.draft.unmapped_candidate_ids
+    ) == ("video:2",)
+    assert model.exhausted
 
 
 def test_agent_corrects_mapping_from_structured_validation_feedback(

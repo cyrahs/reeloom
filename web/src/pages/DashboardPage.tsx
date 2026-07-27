@@ -10,6 +10,7 @@ import {
   healthSchema,
   runsSchema,
 } from "../schemas";
+import { workTypeLabel } from "../workTypes";
 
 export function DashboardPage() {
   const { api } = useAuth();
@@ -128,7 +129,7 @@ export function DashboardPage() {
                         {run.run_id}
                       </HashLink>
                     </td>
-                    <td>{run.work_type}</td>
+                    <td>{workTypeLabel(run.work_type)}</td>
                     <td>{run.phase ?? "—"}</td>
                     <td><ShortHash value={run.plan_hash} /></td>
                     <td><Status value={run.status} /></td>
@@ -157,7 +158,9 @@ export function DashboardPage() {
             <article key={item.discovery_id}>
               <div>
                 <strong>{item.watch_id}</strong>
-                <span>{item.work_type} · {formatTime(item.discovered_at)}</span>
+                <span>
+                  {workTypeLabel(item.work_type)} · {formatTime(item.discovered_at)}
+                </span>
               </div>
               {item.run_id ? (
                 <HashLink to={`/runs/${encodeURIComponent(item.run_id)}`}>

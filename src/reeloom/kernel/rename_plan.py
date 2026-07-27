@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import cast
 
-from reeloom.kernel.candidates import CandidateId, CandidateKind
+from reeloom.kernel.candidates import Candidate, CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.mapping import (
     EpisodeCatalog,
@@ -26,6 +26,7 @@ from reeloom.kernel.scanner import (
     ScannedFile,
     ScannedCandidateSnapshot,
     build_candidate_snapshot,
+    rebuild_candidate_snapshot,
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 
@@ -430,10 +431,13 @@ def _parse_root(value: object, *, field: str) -> RootBinding:
     )
 
 
-def _parse_sources(value: object) -> ScannedCandidateSnapshot:
+def _parse_sources(
+    value: object,
+    *,
+    preserve_candidate_ids: bool = False,
+) -> ScannedCandidateSnapshot:
     raw_sources = _require_list(value, field="sources")
-    scanned: list[ScannedFile] = []
-    expected_ids: list[CandidateId] = []
+    parsed: list[tuple[CandidateId, ScannedFile]] = []
     for index, item in enumerate(raw_sources):
         field = f"sources[{index}]"
         payload = check_fields(item, _SOURCE_FIELDS, field=field)
@@ -442,26 +446,47 @@ def _parse_sources(value: object) -> ScannedCandidateSnapshot:
             kind = CandidateKind(raw_kind)
         except ValueError:
             raise DomainError(ErrorCode.INVALID_CANDIDATE_KIND) from None
-        expected_ids.append(CandidateId.parse(payload["candidate_id"]))
-        scanned.append(
-            ScannedFile(
-                relative_path=PurePosixPath(
-                    _require_str(
-                        payload["relative_path"],
-                        field=f"{field}.relative_path",
-                    )
+        parsed.append(
+            (
+                CandidateId.parse(payload["candidate_id"]),
+                ScannedFile(
+                    relative_path=PurePosixPath(
+                        _require_str(
+                            payload["relative_path"],
+                            field=f"{field}.relative_path",
+                        )
+                    ),
+                    kind=kind,
+                    size_bytes=payload["size_bytes"],  # type: ignore[arg-type]
+                    device=payload["device"],  # type: ignore[arg-type]
+                    inode=payload["inode"],  # type: ignore[arg-type]
+                    mtime_ns=payload["mtime_ns"],  # type: ignore[arg-type]
+                    ctime_ns=payload["ctime_ns"],  # type: ignore[arg-type]
+                    sample_digest=payload["sample_digest"],  # type: ignore[arg-type]
                 ),
-                kind=kind,
-                size_bytes=payload["size_bytes"],  # type: ignore[arg-type]
-                device=payload["device"],  # type: ignore[arg-type]
-                inode=payload["inode"],  # type: ignore[arg-type]
-                mtime_ns=payload["mtime_ns"],  # type: ignore[arg-type]
-                ctime_ns=payload["ctime_ns"],  # type: ignore[arg-type]
-                sample_digest=payload["sample_digest"],  # type: ignore[arg-type]
             )
         )
+    if preserve_candidate_ids:
+        return rebuild_candidate_snapshot(
+            CandidateRecord(
+                candidate=Candidate(
+                    id=candidate_id,
+                    kind=scanned.kind,
+                    display_name=scanned.relative_path.as_posix(),
+                ),
+                relative_path=scanned.relative_path,
+                size_bytes=scanned.size_bytes,
+                device=scanned.device,
+                inode=scanned.inode,
+                mtime_ns=scanned.mtime_ns,
+                ctime_ns=scanned.ctime_ns,
+                sample_digest=scanned.sample_digest,
+            )
+            for candidate_id, scanned in parsed
+        )
+    scanned = [item for _, item in parsed]
     snapshot = build_candidate_snapshot(scanned)
-    if tuple(expected_ids) != tuple(
+    if tuple(candidate_id for candidate_id, _ in parsed) != tuple(
         record.candidate.id for record in snapshot.records
     ):
         raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)

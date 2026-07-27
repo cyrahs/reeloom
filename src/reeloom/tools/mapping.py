@@ -12,6 +12,7 @@ from reeloom.kernel.inventory import (
     ExistingInventory,
 )
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
+from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.subtitles import (
     MAX_SUBTITLE_SAMPLE_BYTES,
     detect_subtitle_variant as classify_subtitle_variant,
@@ -22,6 +23,7 @@ from reeloom.runtime.events import (
     ExistingInventoryObserved,
     MappingRejected,
     MappingSubmitted,
+    MovieMappingSubmitted,
     SubtitleVariantDetected,
 )
 from reeloom.runtime.state import MappingValidationIssue, Phase
@@ -503,6 +505,82 @@ async def submit_mapping(
             "phase": Phase.BUILD_PLAN.value,
             "video_count": len(mapping.videos),
             "subtitle_count": len(mapping.subtitles),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+async def submit_movie_mapping(
+    runtime: ToolRuntime,
+    candidates: SnapshotCandidateSource | None,
+    *,
+    call_id: str,
+    payload: object,
+) -> str:
+    """Validate a complete single-feature Movie mapping."""
+
+    tool_name = "submit_mapping"
+    rejection = _begin(runtime, call_id=call_id, tool_name=tool_name)
+    if rejection is not None:
+        return rejection
+    state = runtime.state
+    if (
+        state.phase is not Phase.MAP_MOVIE
+        or state.selected_movie is None
+        or candidates is None
+        or not isinstance(candidates, SnapshotCandidateSource)
+        or candidates.snapshot_id != state.candidate_snapshot_id
+        or candidates.candidate_count != state.candidate_count
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
+            retryable=False,
+        )
+    try:
+        mapping = MovieMappingDraft.from_dict(
+            payload,
+            candidates=candidates.snapshot,
+        )
+        detected = {
+            candidate_id for candidate_id, _ in state.subtitle_variants
+        }
+        missing = next(
+            (
+                candidate_id
+                for candidate_id in mapping.subtitle_ids
+                if candidate_id not in detected
+            ),
+            None,
+        )
+        if missing is not None:
+            raise DomainError(
+                ErrorCode.SUBTITLE_VARIANT_REQUIRED,
+                context={"subtitle_id": str(missing)},
+            )
+    except DomainError as error:
+        return _mapping_rejection(
+            runtime,
+            call_id=call_id,
+            issue=_validation_issue(error),
+        )
+    runtime.store.append(
+        MovieMappingSubmitted(
+            call_id=call_id,
+            candidate_snapshot_id=candidates.snapshot_id,
+            mapping=mapping,
+        )
+    )
+    runtime.succeed(call_id=call_id, tool_name=tool_name)
+    return json.dumps(
+        {
+            "ok": True,
+            "phase": Phase.BUILD_PLAN.value,
+            "subtitle_count": len(mapping.subtitle_ids),
+            "video_count": 1,
         },
         separators=(",", ":"),
         sort_keys=True,

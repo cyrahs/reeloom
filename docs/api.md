@@ -1,4 +1,4 @@
-# M9 HTTP API 与 Web UI
+# M10 HTTP API 与 Web UI
 
 所有 `/api/v1/*` 请求使用 `Authorization: Bearer ...`，不接受 Cookie 或 query
 token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
@@ -53,6 +53,11 @@ stale revision、缺失 retain target 和格式混用均 fail closed。
 Admin interaction history 只返回 M9 起显式保存的 request message 与 final reply；
 旧记录标记 `content_available=false`。prompt、SDK transcript、tool call 和
 observation 永不进入此投影。每页最多 100 条。
+
+所有 read model 中的 `work_type` 为 `anime | tv | movie`。Movie 不增加 endpoint；
+它复用相同的 lineage、preview、interaction、approve/apply、reapply 和 recovery
+契约。Movie initial preview 返回 `move/unmapped`，amendment 返回
+`move/unchanged`，且仍只包含相对路径。
 
 Canonical OpenAPI snapshot 位于 [openapi-v1.json](openapi-v1.json)，可运行：
 

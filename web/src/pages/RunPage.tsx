@@ -37,6 +37,7 @@ import {
   readAllEvents,
   streamRunEvents,
 } from "../sse";
+import { workTypeLabel } from "../workTypes";
 
 type ActionKind = "question" | "revision" | "reapply";
 type ActionAttempt = {
@@ -353,7 +354,7 @@ export function RunPage({ runId }: { runId: string }) {
         <div>
           <div className="heading-status">
             <Status value={run.data.status} />
-            <span>{run.data.work_type}</span>
+            <span>{workTypeLabel(run.data.work_type)}</span>
             <span>{run.data.phase ?? "无活动阶段"}</span>
           </div>
           <h1>{run.data.run_id}</h1>

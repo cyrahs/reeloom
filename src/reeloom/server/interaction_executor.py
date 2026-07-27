@@ -20,6 +20,7 @@ from reeloom.adapters.filesystem import (
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.agents.organizer import (
     EPISODE_ORGANIZER_TOOL_NAMES,
+    MOVIE_ORGANIZER_TOOL_NAMES,
     create_organizer_context,
     run_episode_organizer,
 )
@@ -27,11 +28,17 @@ from reeloom.kernel.amendment import (
     DesiredLayoutMove,
     compile_amendment,
 )
+from reeloom.kernel.movie_amendment import (
+    compile_movie_amendment,
+)
 from reeloom.kernel.rename_plan import compile_plan_draft
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
-from reeloom.runtime.events import MappingSubmitted
+from reeloom.runtime.events import (
+    MappingSubmitted,
+    MovieMappingSubmitted,
+)
 from reeloom.runtime.state import Phase
 from reeloom.runtime.store import InMemoryEventStore
 from reeloom.server.agent_worker import (
@@ -57,6 +64,8 @@ from reeloom.server.inventory import ArchiveInventoryProvider
 from reeloom.server.organizer_definition import (
     ORGANIZER_NAME,
     ORGANIZER_SCHEMA_VERSION,
+    MOVIE_ORGANIZER_NAME,
+    MOVIE_ORGANIZER_SCHEMA_VERSION,
 )
 from reeloom.server.provider import ModelLease
 from reeloom.server.scheduler import AgentJobContext
@@ -105,11 +114,24 @@ class AgentInteractionExecutor:
         definition, session_id = self.definitions.load_bound(
             run_id=job.registration.run_id,
         )
+        expected_definition = (
+            (
+                MOVIE_ORGANIZER_NAME,
+                MOVIE_ORGANIZER_SCHEMA_VERSION,
+                MOVIE_ORGANIZER_TOOL_NAMES,
+            )
+            if work_type is TmdbWorkType.MOVIE
+            else (
+                ORGANIZER_NAME,
+                ORGANIZER_SCHEMA_VERSION,
+                EPISODE_ORGANIZER_TOOL_NAMES,
+            )
+        )
         if (
-            definition.name != ORGANIZER_NAME
-            or definition.schema_version != ORGANIZER_SCHEMA_VERSION
-            or definition.tools != EPISODE_ORGANIZER_TOOL_NAMES
-        ):
+            definition.name,
+            definition.schema_version,
+            definition.tools,
+        ) != expected_definition:
             raise ValueError("bound agent definition is unsupported")
         session = BufferedAgentSession(
             repository=self.sessions,
@@ -232,19 +254,34 @@ class AgentInteractionExecutor:
             instructions=instructions,
         )
         state = result.state
-        if (
-            state.phase is not Phase.BUILD_PLAN
-            or state.mapping_draft is None
-            or state.selected_series is None
-            or not any(
-                isinstance(stored.event, MappingSubmitted)
-                for stored in transient.events
+        movie = work_type is TmdbWorkType.MOVIE
+        fresh_mapping = any(
+            isinstance(
+                stored.event,
+                MovieMappingSubmitted if movie else MappingSubmitted,
             )
-        ):
+            for stored in transient.events
+        )
+        if state.phase is not Phase.BUILD_PLAN or not fresh_mapping:
             raise ValueError("fresh complete mapping was not submitted")
-        mapped_subtitles = {
-            item.subtitle_id for item in state.mapping_draft.subtitles
-        }
+        if movie:
+            if (
+                state.movie_mapping_draft is None
+                or state.selected_movie is None
+            ):
+                raise ValueError("fresh Movie mapping was not submitted")
+            mapped_subtitles = set(
+                state.movie_mapping_draft.subtitle_ids
+            )
+        else:
+            if (
+                state.mapping_draft is None
+                or state.selected_series is None
+            ):
+                raise ValueError("fresh episode mapping was not submitted")
+            mapped_subtitles = {
+                item.subtitle_id for item in state.mapping_draft.subtitles
+            }
         variants = tuple(
             (candidate_id, variant)
             for candidate_id, variant in state.subtitle_variants
@@ -253,13 +290,24 @@ class AgentInteractionExecutor:
         plan_hash: str | None
         domain_events = ["mapping_submitted"]
         if request.reservation.kind is InteractionKind.REVISION:
-            plan = FilesystemPlanCompiler(scan, output_root).compile(
-                run_id=job.registration.run_id,
-                work_type=work_type,
-                series=state.selected_series,
-                mapping=state.mapping_draft,
-                subtitle_variants=variants,
-                created_at=datetime.now(UTC),
+            compiler = FilesystemPlanCompiler(scan, output_root)
+            plan = (
+                compiler.compile_movie(
+                    run_id=job.registration.run_id,
+                    movie=state.selected_movie,
+                    mapping=state.movie_mapping_draft,
+                    subtitle_variants=variants,
+                    created_at=datetime.now(UTC),
+                )
+                if movie
+                else compiler.compile(
+                    run_id=job.registration.run_id,
+                    work_type=work_type,
+                    series=state.selected_series,
+                    mapping=state.mapping_draft,
+                    subtitle_variants=variants,
+                    created_at=datetime.now(UTC),
+                )
             )
             self.plans.save(plan)
             plan_hash = plan.plan_hash
@@ -268,33 +316,44 @@ class AgentInteractionExecutor:
         else:
             if layout is None:
                 raise AssertionError
-            draft = compile_plan_draft(
-                series=state.selected_series,
-                mapping=state.mapping_draft,
-                candidates=scan.snapshot,
-                subtitle_variants=variants,
-            )
-            desired = tuple(
-                DesiredLayoutMove(
-                    source_id=move.source_id,
-                    video_id=move.video_id,
-                    destination=move.destination,
-                    season=move.span.season,
-                    episode_start=move.span.episode_start,
-                    episode_end=move.span.episode_end,
+            if movie:
+                amendment = compile_movie_amendment(
+                    layout=layout,
+                    movie=state.selected_movie,
+                    subtitle_variants=variants,
+                    created_at=datetime.now(UTC),
                 )
-                for move in draft.moves
-            )
-            amendment = compile_amendment(
-                layout=layout,
-                desired=desired,
-                created_at=datetime.now(UTC),
-            )
+            else:
+                draft = compile_plan_draft(
+                    series=state.selected_series,
+                    mapping=state.mapping_draft,
+                    candidates=scan.snapshot,
+                    subtitle_variants=variants,
+                )
+                desired = tuple(
+                    DesiredLayoutMove(
+                        source_id=move.source_id,
+                        video_id=move.video_id,
+                        destination=move.destination,
+                        season=move.span.season,
+                        episode_start=move.span.episode_start,
+                        episode_end=move.span.episode_end,
+                    )
+                    for move in draft.moves
+                )
+                amendment = compile_amendment(
+                    layout=layout,
+                    desired=desired,
+                    created_at=datetime.now(UTC),
+                )
             if amendment is None:
                 plan_hash = None
                 lineage_parent_hash = None
             else:
-                self.plans.save_amendment(amendment)
+                if movie:
+                    self.plans.save_movie_amendment(amendment)
+                else:
+                    self.plans.save_amendment(amendment)
                 plan_hash = amendment.plan_hash
                 lineage_parent_hash = amendment.parent_plan_hash
                 domain_events.append("plan_built")
@@ -393,7 +452,9 @@ class AgentInteractionExecutor:
             return TmdbWorkType.ANIME
         if value is ServerWorkType.TV:
             return TmdbWorkType.TV_SERIES
-        raise ValueError("movie episode mapping is not supported")
+        if value is ServerWorkType.MOVIE:
+            return TmdbWorkType.MOVIE
+        raise ValueError("unsupported work type")
 
     @staticmethod
     def _settings(settings: ModelSettings) -> ModelSettings:

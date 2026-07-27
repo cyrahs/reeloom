@@ -24,6 +24,7 @@ class RuntimeErrorCode(StrEnum):
     WORK_TYPE_NOT_AUTHORIZED = "work_type_not_authorized"
     UNSUPPORTED_WORK_TYPE = "unsupported_work_type"
     SERIES_IDENTITY_UNAVAILABLE = "series_identity_unavailable"
+    MOVIE_IDENTITY_UNAVAILABLE = "movie_identity_unavailable"
     TOOL_OBSERVATION_TOO_LARGE = "tool_observation_too_large"
     EPISODE_CATALOG_UNAVAILABLE = "episode_catalog_unavailable"
     INVENTORY_NOT_OBSERVED = "inventory_not_observed"

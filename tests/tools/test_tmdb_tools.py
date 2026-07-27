@@ -9,6 +9,7 @@ from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
     TmdbLanguage,
+    TmdbMovieDetails,
     TmdbSearchCandidate,
     TmdbSeasonDetails,
     TmdbSeriesDetails,
@@ -25,8 +26,10 @@ from reeloom.runtime.state import Phase
 from reeloom.runtime.store import InMemoryEventStore
 from reeloom.runtime.tool_runtime import ToolRuntime
 from reeloom.tools.tmdb import (
+    get_tmdb_movie,
     get_tmdb_season,
     search_tmdb,
+    select_movie,
     select_series,
 )
 
@@ -38,14 +41,17 @@ class _FakeTmdb:
         search_results: tuple[TmdbSearchCandidate, ...] = (),
         series: TmdbSeriesDetails | None = None,
         season: TmdbSeasonDetails | None = None,
+        movie: TmdbMovieDetails | None = None,
         error: TmdbProviderError | None = None,
     ) -> None:
         self.search_results = search_results
         self.series = series
         self.season = season
+        self.movie = movie
         self.error = error
         self.search_calls: list[TmdbWorkType] = []
         self.series_calls: list[int] = []
+        self.movie_calls: list[int] = []
 
     async def search_titles(
         self,
@@ -94,6 +100,19 @@ class _FakeTmdb:
             raise self.error
         assert self.season is not None
         return self.season
+
+    async def get_movie(
+        self,
+        *,
+        tmdb_id: int,
+        work_type: TmdbWorkType,
+        language: TmdbLanguage,
+    ) -> TmdbMovieDetails:
+        del language
+        assert work_type is TmdbWorkType.MOVIE
+        self.movie_calls.append(tmdb_id)
+        assert self.movie is not None
+        return self.movie
 
 
 def _runtime(
@@ -206,7 +225,7 @@ def test_search_filter_must_match_trusted_run_work_type() -> None:
     assert runtime.state.tmdb_candidates == frozenset()
 
 
-def test_movie_search_returns_type_but_series_selection_is_closed() -> None:
+def test_movie_search_rejects_episode_selection() -> None:
     provider = _FakeTmdb(
         search_results=(
             _candidate(100, work_type=TmdbWorkType.MOVIE),
@@ -239,9 +258,66 @@ def test_movie_search_returns_type_but_series_selection_is_closed() -> None:
 
     assert search_result["results"][0]["work_type"] == "movie"
     assert search_result["results"][0]["media_type"] == "movie"
-    assert select_result["error"]["code"] == "unsupported_work_type"
+    assert select_result["error"]["code"] == "tool_not_allowed"
     assert provider.series_calls == []
-    assert runtime.state.phase is Phase.IDENTIFY_SERIES
+    assert runtime.state.phase is Phase.IDENTIFY_MOVIE
+
+
+def test_movie_details_and_selection_advance_movie_phase() -> None:
+    details = TmdbMovieDetails(
+        tmdb_id=100,
+        language=TmdbLanguage.ZH_CN,
+        localized_title="电影",
+        original_title="Movie",
+        release_year=2024,
+        original_language="zh",
+        adult=False,
+        genre_ids=(18,),
+        work_type=TmdbWorkType.MOVIE,
+    )
+    provider = _FakeTmdb(
+        search_results=(
+            _candidate(100, work_type=TmdbWorkType.MOVIE),
+        ),
+        movie=details,
+    )
+    runtime = _runtime(work_type=TmdbWorkType.MOVIE)
+    asyncio.run(
+        search_tmdb(
+            runtime,
+            provider,
+            call_id="search",
+            query="movie",
+            work_type=TmdbWorkType.MOVIE,
+        )
+    )
+
+    observed = json.loads(
+        asyncio.run(
+            get_tmdb_movie(
+                runtime,
+                provider,
+                call_id="details",
+                tmdb_id=100,
+                language=TmdbLanguage.ZH_CN,
+            )
+        )
+    )
+    selected = json.loads(
+        asyncio.run(
+            select_movie(
+                runtime,
+                provider,
+                call_id="select",
+                tmdb_id=100,
+            )
+        )
+    )
+
+    assert observed["movie"]["release_year"] == 2024
+    assert selected["phase"] == "map_movie"
+    assert runtime.state.selected_movie is not None
+    assert runtime.state.phase is Phase.MAP_MOVIE
 
 
 def test_select_series_uses_zh_cn_title_and_advances_phase() -> None:

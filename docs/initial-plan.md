@@ -1,10 +1,10 @@
 # Reeloom 初步实施计划
 
-状态：Draft v0.5
+状态：Draft v0.6
 
 日期：2026-07-26
 
-当前进度：M0-M9 已完成；M9 同源交互式 Web UI 已通过验收。
+当前进度：M0-M10 已完成；Movie 领域闭环已通过验收。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -21,12 +21,13 @@ result、transaction lease、typed approval resume 和幂等崩溃恢复。M7 �
 严格版本化的 runtime event codec、no-follow append-only checkpoint 与 SDK
 session、进程重启 replay、scripted transcript、固定 eval dataset、脱敏 trace、
 任务指标、显式 OpenAI Responses provider 配置和 opt-in live eval 均已建立。
-M8 将从这条 M7 基线重新实现服务器控制面：PostgreSQL 从第一步起就是唯一
+M8 从这条 M7 基线实现服务器控制面：PostgreSQL 从第一步起就是唯一
 control-plane metadata owner，文件系统只保留 Secret、Plan、Journal 和媒体。
 M8.0-M8.8 的详细分步见 [M8 计划](m8-plan.md)，完成证明见
 [M8 Requirement Matrix](m8-requirements.md) 和
-[M8 实现评审](m8-review.md)。下一步是基于稳定 API/SSE 建立交互式 Web UI；
-movie 的选择、mapping 和命名仍需要独立领域契约，不能复用 episode mapping。
+[M8 实现评审](m8-review.md)。M9 在稳定 API/SSE 上建立同源 Web UI；M10 以
+独立 Movie identity、mapping 和 plan family 完成电影闭环，不复用 Episode
+mapping。
 
 ## 1. 项目目标
 
@@ -509,8 +510,8 @@ control-plane，而是从 PostgreSQL 17 foundation 开始逐阶段构建；验�
 
 - 配置只属于 authenticated admin，Agent 和普通 run API 不接受路径、URL 或
   secret；
-- `work_type = null` 必须先建立 trusted type；尚未实现的 movie pipeline
-  返回 `unsupported_work_type`；
+- `work_type = null` 必须先建立 trusted type；Anime/TV/Movie 都只能由
+  trusted watch 配置确定；
 - API key write-only，永不进入 config response、event、session、trace 或日志；
 - question 不改变领域状态；revision 继续原 Agent session、生成新 plan hash，
   不修改旧 plan/approval；
@@ -547,8 +548,31 @@ UI 不编译 plan、不生成路径、不签发审批，也不推断 filesystem 
 - UI approval 始终 `automatic: false`，recovery 只使用服务端 exact approval ID。
 
 完成证明见 [M9 计划](m9-plan.md)、[M9 Requirement Matrix](m9-requirements.md)
-和 [M9 实现评审](m9-review.md)。Movie 选择、mapping 与命名的独立领域契约进入
-M10。
+和 [M9 实现评审](m9-review.md)。
+
+### M10：Movie 领域支持
+
+学习目标：理解同一安全执行平面上多个严格 plan family 的兼容方式，以及
+single-feature Movie mapping、整目录不存在约束和 completed-layout reapply。
+
+当前状态：M10.0-M10.6 已完成。Movie 使用独立 `MovieIdentity`、
+`MovieMappingDraft`、`MovieRenamePlan v1` 与 `MovieAmendmentPlan v1`；复用
+既有配置、lineage/preview、interaction、approval、Executor、rollback、
+recovery 和 Web 页面。
+
+固定边界：
+
+- 每个 Movie run 只选择一个正片视频；未选视频和字幕保持 unmapped；
+- Movie Agent 只开放 Movie TMDB capability、字幕检测和完整 mapping；
+- 缺少可靠上映年份时停止规划；
+- initial Movie 根目录必须完全不存在，compile、preflight 与原子 mkdir 均检查；
+- Movie destination 只允许两层；Episode 继续只允许 `Sxx` 三层；
+- amendment 绑定当前 completed parent hash 与 transaction，执行前再次核对 head；
+- reapply 只复验 durable completed layout，后来出现的文件不进入；
+- no-op 不创建 plan、approval 或 transaction。
+
+完成证明见 [M10 计划](m10-plan.md)、[M10 Requirement Matrix](m10-requirements.md)
+和 [M10 实现评审](m10-review.md)。
 
 ## 9. 第一条端到端验收测试
 
@@ -606,4 +630,4 @@ approve exact run_id + plan_hash
 2. Executor 是否采用单独进程、单独系统用户或容器隔离。
 3. TMDB cache 的位置、TTL 和离线导入格式。
 4. trace 的保留周期和用户可见脱敏视图。
-5. 独立 M10 中 movie domain contract 的范围和交付顺序。
+5. Movie multipart、extras 和既有目录增量合并是否应作为独立后续里程碑。

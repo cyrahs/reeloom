@@ -463,6 +463,44 @@ def test_movie_metadata_rejects_non_boolean_adult_flag() -> None:
     assert error.value.code is TmdbErrorCode.INVALID_RESPONSE
 
 
+@pytest.mark.parametrize(
+    "release_date",
+    ("2024-02-30", "2024-not-a-date"),
+)
+def test_movie_metadata_rejects_invalid_release_date(
+    release_date: str,
+) -> None:
+    adapter = TmdbHttpAdapter(
+        api_key="test-key-not-secret",
+        transport=httpx.MockTransport(
+            lambda request: _json_response(
+                {
+                    "adult": False,
+                    "genres": [],
+                    "id": 1358188,
+                    "original_language": "en",
+                    "original_title": "Invalid date",
+                    "release_date": release_date,
+                    "title": "Invalid date",
+                }
+            )
+        ),
+    )
+    try:
+        with pytest.raises(TmdbProviderError) as error:
+            asyncio.run(
+                adapter.get_movie(
+                    tmdb_id=1358188,
+                    work_type=TmdbWorkType.MOVIE,
+                    language=TmdbLanguage.EN_US,
+                )
+            )
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert error.value.code is TmdbErrorCode.INVALID_RESPONSE
+
+
 def test_adult_search_option_requires_strict_boolean() -> None:
     request_count = 0
 

@@ -6,9 +6,11 @@ from enum import StrEnum
 
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.mapping import MappingDraft
-from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
-from reeloom.kernel.rename_plan import RenamePlan, RootBinding
+from reeloom.kernel.initial_plan import InitialPlan
+from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.budget import RunBudget
 
@@ -17,6 +19,8 @@ class Phase(StrEnum):
     BOOTSTRAP = "bootstrap"
     IDENTIFY_SERIES = "identify_series"
     MAP_EPISODES = "map_episodes"
+    IDENTIFY_MOVIE = "identify_movie"
+    MAP_MOVIE = "map_movie"
     BUILD_PLAN = "build_plan"
     AWAITING_APPROVAL = "awaiting_approval"
     APPLYING = "applying"
@@ -107,6 +111,7 @@ class RunState:
     authorized_output_root: RootBinding | None = None
     tmdb_candidates: frozenset[TmdbCandidateRef] = frozenset()
     selected_series: SeriesIdentity | None = None
+    selected_movie: MovieIdentity | None = None
     selected_work_type: TmdbWorkType | None = None
     episode_catalog_counts: tuple[tuple[int, int], ...] = ()
     inventory_episodes: tuple[tuple[int, int], ...] | None = None
@@ -115,7 +120,8 @@ class RunState:
         ...,
     ] = ()
     mapping_draft: MappingDraft | None = None
-    rename_plan: RenamePlan | None = None
+    movie_mapping_draft: MovieMappingDraft | None = None
+    rename_plan: InitialPlan | None = None
     plan_hash: str | None = None
     approval_id: str | None = None
     transaction_id: str | None = None

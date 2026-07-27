@@ -11,21 +11,34 @@ def _default_rules() -> Mapping[str, frozenset[Phase]]:
     return MappingProxyType(
         {
             "list_candidates": frozenset(
-                {Phase.IDENTIFY_SERIES, Phase.MAP_EPISODES}
+                {
+                    Phase.IDENTIFY_SERIES,
+                    Phase.MAP_EPISODES,
+                    Phase.IDENTIFY_MOVIE,
+                    Phase.MAP_MOVIE,
+                }
             ),
-            "search_tmdb": frozenset({Phase.IDENTIFY_SERIES}),
+            "search_tmdb": frozenset(
+                {Phase.IDENTIFY_SERIES, Phase.IDENTIFY_MOVIE}
+            ),
             "get_tmdb_series": frozenset(
                 {Phase.IDENTIFY_SERIES, Phase.MAP_EPISODES}
             ),
             "get_tmdb_season": frozenset({Phase.MAP_EPISODES}),
             "select_series": frozenset({Phase.IDENTIFY_SERIES}),
+            "get_tmdb_movie": frozenset(
+                {Phase.IDENTIFY_MOVIE, Phase.MAP_MOVIE}
+            ),
+            "select_movie": frozenset({Phase.IDENTIFY_MOVIE}),
             "get_existing_inventory": frozenset(
                 {Phase.MAP_EPISODES}
             ),
             "detect_subtitle_variant": frozenset(
-                {Phase.MAP_EPISODES}
+                {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
             ),
-            "submit_mapping": frozenset({Phase.MAP_EPISODES}),
+            "submit_mapping": frozenset(
+                {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
+            ),
         }
     )
 

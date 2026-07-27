@@ -327,12 +327,22 @@ class ApplyCoordinator:
                 raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
             source = AuthorizedRoot.create(watch.root)
             output = AuthorizedRoot.create(route.root)
+            content = self._executor.plans.load(plan_hash)
             manifest = ExecutionManifest.from_canonical_bytes(
-                self._executor.plans.load(plan_hash),
+                content,
                 plan_hash=plan_hash,
             )
             if (
                 manifest.run_id != run_id
+                or (
+                    manifest.work_type is not None
+                    and manifest.work_type.value
+                    != (
+                        "tv_series"
+                        if reservation.work_type == "tv"
+                        else reservation.work_type
+                    )
+                )
                 or not self._same_root(manifest.output_root, output)
                 or (
                     reservation.plan_kind == "initial"
@@ -350,11 +360,78 @@ class ApplyCoordinator:
                 not in {"initial", "amendment"}
             ):
                 raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            if reservation.plan_kind == "amendment":
+                self._validate_amendment_head(
+                    run_id=run_id,
+                    content=content,
+                )
         except (ServerError, ExecutorError):
             raise
         except Exception:
             raise ServerError(
                 ServerErrorCode.INTERACTION_CONFLICT
+            ) from None
+
+    def _validate_amendment_head(
+        self,
+        *,
+        run_id: str,
+        content: bytes,
+    ) -> None:
+        try:
+            payload = json.loads(content)
+            parent_hash = payload["parent_plan_hash"]
+            transaction_id = payload["completed_transaction_id"]
+            sources = payload["sources"]
+            source_root = payload["roots"]["source"]
+            if (
+                not isinstance(parent_hash, str)
+                or not isinstance(transaction_id, str)
+                or not isinstance(sources, list)
+                or not isinstance(source_root, dict)
+            ):
+                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            with self._pool.connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT h.plan_hash, l.transaction_id, l.layout_payload
+                    FROM completed_layout_heads AS h
+                    JOIN completed_layouts AS l
+                      ON l.run_id = h.run_id
+                     AND l.version = h.version
+                     AND l.plan_hash = h.plan_hash
+                    WHERE h.run_id = %s
+                    """,
+                    (run_id,),
+                ).fetchone()
+            layout = (
+                None
+                if row is None
+                else (
+                    row[2]
+                    if isinstance(row[2], dict)
+                    else json.loads(str(row[2]))
+                )
+            )
+            if (
+                row is None
+                or str(row[0]) != parent_hash
+                or str(row[1]) != transaction_id
+                or not isinstance(layout, dict)
+                or layout.get("run_id") != run_id
+                or layout.get("files") != sources
+                or layout.get("root") != source_root
+            ):
+                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+        except ServerError:
+            raise
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            raise ServerError(
+                ServerErrorCode.INTERACTION_CONFLICT
+            ) from None
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
 
     @staticmethod

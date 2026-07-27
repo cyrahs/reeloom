@@ -7,10 +7,12 @@ from reeloom.kernel.tmdb import (
     TmdbCandidateRef,
     TmdbEpisode,
     TmdbLanguage,
+    TmdbMovieDetails,
     TmdbSearchCandidate,
     TmdbSeasonDetails,
     TmdbSeriesDetails,
     TmdbWorkType,
+    preferred_movie_identity,
     preferred_series_identity,
 )
 from reeloom.ports.tmdb import (
@@ -20,6 +22,7 @@ from reeloom.ports.tmdb import (
 )
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
+    MovieSelected,
     SeriesSelected,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
@@ -139,6 +142,25 @@ def _series_is_authorized(
         and state.selected_series is not None
         and state.selected_series.tmdb_id == tmdb_id
         and state.selected_work_type is work_type
+    )
+
+
+def _movie_is_authorized(
+    runtime: ToolRuntime,
+    tmdb_id: int,
+) -> bool:
+    reference = TmdbCandidateRef(
+        work_type=TmdbWorkType.MOVIE,
+        tmdb_id=tmdb_id,
+    )
+    state = runtime.state
+    if state.phase is Phase.IDENTIFY_MOVIE:
+        return reference in state.tmdb_candidates
+    return (
+        state.phase is Phase.MAP_MOVIE
+        and state.selected_movie is not None
+        and state.selected_movie.tmdb_id == tmdb_id
+        and state.selected_work_type is TmdbWorkType.MOVIE
     )
 
 
@@ -388,6 +410,84 @@ async def get_tmdb_series(
                     }
                     for season in details.seasons
                 ],
+            },
+        },
+        runtime=runtime,
+        call_id=call_id,
+        tool_name=tool_name,
+    )
+
+
+async def get_tmdb_movie(
+    runtime: ToolRuntime,
+    provider: TmdbProvider | None,
+    *,
+    call_id: str,
+    tmdb_id: int,
+    language: TmdbLanguage,
+) -> str:
+    tool_name = "get_tmdb_movie"
+    rejection = _begin(runtime, call_id=call_id, tool_name=tool_name)
+    if rejection is not None:
+        return rejection
+    if (
+        not _valid_tmdb_id(tmdb_id)
+        or not isinstance(language, TmdbLanguage)
+        or not _movie_is_authorized(runtime, tmdb_id)
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.UNKNOWN_TMDB_CANDIDATE.value,
+            retryable=True,
+        )
+    if provider is None:
+        return _provider_missing(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+        )
+    try:
+        details = await provider.get_movie(
+            tmdb_id=tmdb_id,
+            work_type=TmdbWorkType.MOVIE,
+            language=language,
+        )
+    except TmdbProviderError as error:
+        return _provider_failure(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            error=error,
+        )
+    if (
+        not isinstance(details, TmdbMovieDetails)
+        or details.tmdb_id != tmdb_id
+        or details.work_type is not TmdbWorkType.MOVIE
+        or details.language is not language
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=TmdbErrorCode.INVALID_RESPONSE.value,
+            retryable=False,
+        )
+    return _bounded_observation(
+        {
+            "ok": True,
+            "movie": {
+                "adult": details.adult,
+                "genre_ids": list(details.genre_ids),
+                "language": details.language.value,
+                "localized_title": details.localized_title,
+                "media_type": details.media_type.value,
+                "original_language": details.original_language,
+                "original_title": details.original_title,
+                "release_year": details.release_year,
+                "tmdb_id": details.tmdb_id,
+                "work_type": details.work_type.value,
             },
         },
         runtime=runtime,
@@ -660,6 +760,97 @@ async def select_series(
         )
     runtime.store.append(
         SeriesSelected(series=series, work_type=work_type)
+    )
+    runtime.succeed(call_id=call_id, tool_name=tool_name)
+    return observation
+
+
+async def select_movie(
+    runtime: ToolRuntime,
+    provider: TmdbProvider | None,
+    *,
+    call_id: str,
+    tmdb_id: int,
+) -> str:
+    tool_name = "select_movie"
+    rejection = _begin(runtime, call_id=call_id, tool_name=tool_name)
+    if rejection is not None:
+        return rejection
+    if not _valid_tmdb_id(tmdb_id) or not _movie_is_authorized(
+        runtime, tmdb_id
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.UNKNOWN_TMDB_CANDIDATE.value,
+            retryable=True,
+        )
+    if provider is None:
+        return _provider_missing(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+        )
+    try:
+        details = await provider.get_movie(
+            tmdb_id=tmdb_id,
+            work_type=TmdbWorkType.MOVIE,
+            language=TmdbLanguage.ZH_CN,
+        )
+    except TmdbProviderError as error:
+        return _provider_failure(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            error=error,
+        )
+    if (
+        not isinstance(details, TmdbMovieDetails)
+        or details.tmdb_id != tmdb_id
+        or details.language is not TmdbLanguage.ZH_CN
+        or details.work_type is not TmdbWorkType.MOVIE
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=TmdbErrorCode.INVALID_RESPONSE.value,
+            retryable=False,
+        )
+    try:
+        movie = preferred_movie_identity(details)
+    except DomainError:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.MOVIE_IDENTITY_UNAVAILABLE.value,
+            retryable=False,
+        )
+    observation = _serialize_observation(
+        {
+            "ok": True,
+            "phase": Phase.MAP_MOVIE.value,
+            "selected": {
+                "media_type": "movie",
+                "release_year": movie.release_year,
+                "title_zh_cn": movie.title_zh_cn,
+                "tmdb_id": movie.tmdb_id,
+                "work_type": TmdbWorkType.MOVIE.value,
+            },
+        }
+    )
+    if observation is None:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.TOOL_OBSERVATION_TOO_LARGE.value,
+            retryable=False,
+        )
+    runtime.store.append(
+        MovieSelected(movie=movie, work_type=TmdbWorkType.MOVIE)
     )
     runtime.succeed(call_id=call_id, tool_name=tool_name)
     return observation

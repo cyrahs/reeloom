@@ -1,14 +1,14 @@
 # Reeloom
 
-M9 在 PostgreSQL 17-first 单实例 control plane 上提供同源 React Web UI、
-versioned API 与 durable SSE。默认操作仍只生成 immutable plan；只有 exact
+M10 在 PostgreSQL 17-first 单实例 control plane 和同源 React Web UI 上增加
+独立 Movie 领域支持。默认操作仍只生成 immutable plan；只有 exact
 `ApprovalRecord` 被一次性 claim 后，隔离 Executor 才能移动文件。
 
-部署与接口见 [deployment](docs/deployment.md) 和 [HTTP API](docs/api.md)；M9 的
-设计边界与分阶段完成条件见 [M9 plan](docs/m9-plan.md)。
+部署与接口见 [deployment](docs/deployment.md) 和 [HTTP API](docs/api.md)；Movie
+边界与完成条件见 [M10 plan](docs/m10-plan.md)。
 
-Reeloom 是一个从零设计的 **agent-native 动画剧集整理器**。它与
-`aninamer` 追求相同的用户结果：识别动画剧集和外置中文字幕，结合
+Reeloom 是一个从零设计的 **agent-native 动画、电视剧与电影整理器**。它能识别
+剧集或单部电影及其外置中文字幕，结合
 TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 这个仓库不是 `aninamer` 的迁移分支。旧项目只作为需求说明、领域规则
@@ -16,12 +16,11 @@ TMDB 元数据生成安全的重命名计划，并在用户批准后执行。
 
 ## 当前状态
 
-**M9 / 交互式 Web UI（已完成并通过验收）**
+**M10 / Movie 领域支持（已完成并通过验收）**
 
-M9 在 M8 稳定 API/SSE 上建立只接受 Admin Bearer 的浏览器闭环：配置、观察、
-计划 lineage/preview、Agent question/revision/reapply、exact approval、
-apply settlement 与 typed recovery 均可从同源 UI 完成。详细见
-[M9 验收结论](docs/m9-review.md)。
+Movie 使用独立 identity、单正片 mapping、initial/amendment plan 与专用 Agent
+tool set，但复用既有浏览器 preview、interaction、approval、Executor、rollback
+和 recovery。详细见 [M10 验收结论](docs/m10-review.md)。
 
 M0-M5 已能把 Agent 的语义结果编译为可精确审批的事务输入；M6 建立了独立于
 Agent/LLM 的审批消费、最终检查、执行与恢复边界：
@@ -93,9 +92,8 @@ endpoint，并强制 `store=False` 和单一顺序 tool call。线上 eval 必�
 `--live --model ...`，只读取进程环境的 `OPENAI_API_KEY`；pytest 和默认 eval
 始终离线。
 
-M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允许
-`anime/tv_series`。电影选择、单文件 mapping 和电影命名必须先建立独立领域
-契约，不能伪装成 `SxxExx` 流程。
+M10 已在不放宽 `select_series` 的前提下加入独立 `select_movie`、单正片
+mapping 和两层 Movie 命名；Movie 不会被伪装成 `SxxExx`。
 
 详细路线见 [初步实施计划](docs/initial-plan.md)，M0 验收结论见
 [M0 Definition of Done](docs/m0-review.md)，M1 验收结论见
@@ -107,7 +105,8 @@ M3 已支持 movie 搜索和类型化候选，但 `select_series` 刻意只允�
 [M6 Definition of Done](docs/m6-review.md)，M7 验收结论见
 [M7 Definition of Done](docs/m7-review.md)，M8 验收结论见
 [M8 implementation review](docs/m8-review.md)，M9 验收结论见
-[M9 implementation review](docs/m9-review.md)。
+[M9 implementation review](docs/m9-review.md)，M10 验收结论见
+[M10 implementation review](docs/m10-review.md)。
 
 ## 本地验证
 

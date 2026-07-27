@@ -12,11 +12,17 @@ from reeloom.adapters._immutable_file import (
 )
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.kernel.rename_plan import (
-    RenamePlan,
     is_valid_plan_hash,
-    verify_plan_bytes,
+)
+from reeloom.kernel.initial_plan import (
+    InitialPlan,
+    verify_initial_plan_bytes,
 )
 from reeloom.kernel.amendment import AmendmentPlan, verify_amendment_bytes
+from reeloom.kernel.movie_amendment import (
+    MovieAmendmentPlan,
+    verify_movie_amendment_bytes,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 
 _MAX_PLAN_BYTES = 4 * 1024 * 1024
@@ -28,8 +34,8 @@ class FilesystemPlanStore:
 
     root: AuthorizedRoot
 
-    def save(self, plan: RenamePlan) -> None:
-        if not isinstance(plan, RenamePlan) or not plan.verify_hash():
+    def save(self, plan: InitialPlan) -> None:
+        if not plan.verify_hash():
             raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         content = plan.canonical_bytes()
         if not 0 < len(content) <= _MAX_PLAN_BYTES:
@@ -54,7 +60,19 @@ class FilesystemPlanStore:
             os.close(root_fd)
 
     def save_amendment(self, plan: AmendmentPlan) -> None:
-        if not isinstance(plan, AmendmentPlan) or not plan.verify_hash():
+        self._save_amendment(plan)
+
+    def save_movie_amendment(self, plan: MovieAmendmentPlan) -> None:
+        self._save_amendment(plan)
+
+    def _save_amendment(
+        self,
+        plan: AmendmentPlan | MovieAmendmentPlan,
+    ) -> None:
+        if (
+            not isinstance(plan, (AmendmentPlan, MovieAmendmentPlan))
+            or not plan.verify_hash()
+        ):
             raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         content = plan.canonical_bytes()
         if not 0 < len(content) <= _MAX_PLAN_BYTES:
@@ -96,8 +114,9 @@ class FilesystemPlanStore:
                     limit=_MAX_PLAN_BYTES,
                 )
             if not (
-                verify_plan_bytes(content, plan_hash)
+                verify_initial_plan_bytes(content, plan_hash)
                 or verify_amendment_bytes(content, plan_hash)
+                or verify_movie_amendment_bytes(content, plan_hash)
             ):
                 raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
             return content

@@ -16,6 +16,7 @@ from reeloom.runtime.event_codec import encode_event
 from reeloom.runtime.events import ExecutionSettled
 from reeloom.runtime.state_codec import (
     STATE_PROJECTION_SCHEMA,
+    is_supported_projection_schema,
     patch_state,
 )
 from reeloom.kernel.amendment import CompletedLayout, CompletedLayoutFile
@@ -298,7 +299,9 @@ class PostgresCompletedLayoutRepository:
                         runtime is None
                         or str(runtime[1]) != "awaiting_approval"
                         or str(runtime[2]) != result.plan_hash
-                        or str(runtime[3]) != STATE_PROJECTION_SCHEMA
+                        or not is_supported_projection_schema(
+                            str(runtime[3])
+                        )
                     ):
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
@@ -333,6 +336,7 @@ class PostgresCompletedLayoutRepository:
                         UPDATE run_states
                         SET event_sequence = event_sequence + 1,
                             phase = %s, runtime_status = 'stopped',
+                            projection_schema = %s,
                             projection_payload = %s::jsonb,
                             updated_at = clock_timestamp()
                         WHERE run_id = %s
@@ -343,6 +347,7 @@ class PostgresCompletedLayoutRepository:
                                 if result.status is ApplyStatus.COMPLETED
                                 else "rolled_back"
                             ),
+                            STATE_PROJECTION_SCHEMA,
                             patch_state(
                                 runtime[4],
                                 applied_count=result.applied_count,

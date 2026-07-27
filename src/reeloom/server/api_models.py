@@ -31,7 +31,7 @@ class HealthResponse(_StrictModel):
 class RunSummary(_StrictModel):
     run_id: str
     status: str
-    work_type: str
+    work_type: Literal["anime", "tv", "movie"]
     created_at: str
     phase: str | None
     plan_hash: str | None
@@ -44,7 +44,7 @@ class RunsResponse(_StrictModel):
 class DiscoverySummary(_StrictModel):
     discovery_id: str
     watch_id: str
-    work_type: str
+    work_type: Literal["anime", "tv", "movie"]
     discovered_at: str
     run_id: str | None
     run_status: str | None
@@ -68,7 +68,7 @@ class RunSettlement(_StrictModel):
 class RunResponse(_StrictModel):
     run_id: str
     status: str
-    work_type: str
+    work_type: Literal["anime", "tv", "movie"]
     phase: str | None
     runtime_status: str | None
     event_sequence: int = Field(ge=0)

@@ -15,6 +15,9 @@ from reeloom.kernel.mapping import EpisodeSpan
 from reeloom.kernel.schema import check_fields
 
 _SERIES_FIELDS = frozenset({"title_zh_cn", "year", "tmdb_id"})
+_MOVIE_FIELDS = frozenset(
+    {"title_zh_cn", "release_year", "tmdb_id"}
+)
 _FORBIDDEN_COMPONENT_CHARACTERS = frozenset('<>:"/\\|?*')
 _WINDOWS_RESERVED_NAMES = frozenset(
     {
@@ -28,6 +31,10 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 _MAX_SAFE_TITLE_BYTES = 160
 _EXTENSION_PATTERN = re.compile(r"^\.[a-z0-9]{1,8}$")
+
+
+def filesystem_name_key(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).casefold()
 
 
 def _truncate_utf8(value: str, *, max_bytes: int) -> str:
@@ -110,6 +117,38 @@ class SeriesIdentity:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class MovieIdentity:
+    """Canonical movie identity used by the deterministic naming compiler."""
+
+    title_zh_cn: str
+    release_year: int
+    tmdb_id: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "title_zh_cn",
+            _sanitize_title(self.title_zh_cn),
+        )
+        if (
+            type(self.release_year) is not int
+            or not 1000 <= self.release_year <= 9999
+        ):
+            raise DomainError(ErrorCode.INVALID_YEAR)
+        if type(self.tmdb_id) is not int or self.tmdb_id < 1:
+            raise DomainError(ErrorCode.INVALID_TMDB_ID)
+
+    @classmethod
+    def from_dict(cls, payload: object) -> MovieIdentity:
+        payload = check_fields(payload, _MOVIE_FIELDS, field="movie")
+        return cls(
+            title_zh_cn=payload["title_zh_cn"],  # type: ignore[arg-type]
+            release_year=payload["release_year"],  # type: ignore[arg-type]
+            tmdb_id=payload["tmdb_id"],  # type: ignore[arg-type]
+        )
+
+
 class SubtitleVariant(StrEnum):
     CHS = "chs"
     CHT = "cht"
@@ -123,6 +162,53 @@ def series_root_name(series: SeriesIdentity) -> str:
             context={"field": "series", "expected": "SeriesIdentity"},
         )
     return f"{series.title_zh_cn} ({series.year}) {{tmdb-{series.tmdb_id}}}"
+
+
+def movie_root_name(movie: MovieIdentity) -> str:
+    if not isinstance(movie, MovieIdentity):
+        raise DomainError(
+            ErrorCode.INVALID_FIELD_TYPE,
+            context={"field": "movie", "expected": "MovieIdentity"},
+        )
+    return (
+        f"{movie.title_zh_cn} ({movie.release_year}) "
+        f"{{tmdb-{movie.tmdb_id}}}"
+    )
+
+
+def movie_video_relative_path(
+    movie: MovieIdentity,
+    extension: object,
+) -> PurePosixPath:
+    canonical_extension = _canonical_extension(
+        extension,
+        allowed=VIDEO_EXTENSIONS,
+    )
+    root = movie_root_name(movie)
+    filename = (
+        f"{movie.title_zh_cn} ({movie.release_year})"
+        f"{canonical_extension}"
+    )
+    return PurePosixPath(root, filename)
+
+
+def movie_subtitle_relative_path(
+    movie: MovieIdentity,
+    variant: SubtitleVariant,
+    extension: object,
+) -> PurePosixPath:
+    if not isinstance(variant, SubtitleVariant):
+        raise DomainError(ErrorCode.INVALID_SUBTITLE_VARIANT)
+    canonical_extension = _canonical_extension(
+        extension,
+        allowed=SUBTITLE_EXTENSIONS,
+    )
+    root = movie_root_name(movie)
+    filename = (
+        f"{movie.title_zh_cn} ({movie.release_year}).{variant.value}"
+        f"{canonical_extension}"
+    )
+    return PurePosixPath(root, filename)
 
 
 def _episode_tokens(span: EpisodeSpan) -> tuple[str, str]:

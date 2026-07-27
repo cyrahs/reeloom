@@ -6,8 +6,12 @@ import { ApiError, idempotencyKey } from "../api";
 import { useAuth } from "../auth";
 import { PageError } from "../components/Status";
 import { configSchema, type Config } from "../schemas";
+import {
+  workTypeLabel,
+  workTypes,
+  type WorkType,
+} from "../workTypes";
 
-type WorkType = "anime" | "tv";
 type RootMode = "retain" | "replace";
 type WatchForm = {
   watch_id: string;
@@ -266,8 +270,11 @@ export function ConfigPage() {
                       )
                     }
                   >
-                    <option value="anime">动画</option>
-                    <option value="tv">电视剧</option>
+                    {workTypes.map((value) => (
+                      <option value={value} key={value}>
+                        {workTypeLabel(value)}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="轮询间隔（秒）">
@@ -367,8 +374,11 @@ export function ConfigPage() {
                     )
                   }
                 >
-                  <option value="anime">动画</option>
-                  <option value="tv">电视剧</option>
+                  {workTypes.map((value) => (
+                    <option value={value} key={value}>
+                      {workTypeLabel(value)}
+                    </option>
+                  ))}
                 </select>
               </Field>
               <SecretChoice
@@ -399,17 +409,22 @@ export function ConfigPage() {
           <button
             type="button"
             className="secondary"
+            disabled={workTypes.every((value) =>
+              form.routes.some((item) => item.work_type === value),
+            )}
             onClick={() =>
               setForm((current) => ({
                 ...current,
                 routes: [
                   ...current.routes,
                   {
-                    work_type: current.routes.some(
-                      (item) => item.work_type === "anime",
-                    )
-                      ? "tv"
-                      : "anime",
+                    work_type:
+                      workTypes.find(
+                        (value) =>
+                          !current.routes.some(
+                            (item) => item.work_type === value,
+                          ),
+                      ) ?? "anime",
                     rootMode: "replace",
                     rootPath: "",
                   },

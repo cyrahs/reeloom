@@ -441,6 +441,11 @@
             "type": "string"
           },
           "work_type": {
+            "enum": [
+              "anime",
+              "tv",
+              "movie"
+            ],
             "title": "Work Type",
             "type": "string"
           }
@@ -1293,6 +1298,11 @@
             "type": "integer"
           },
           "work_type": {
+            "enum": [
+              "anime",
+              "tv",
+              "movie"
+            ],
             "title": "Work Type",
             "type": "string"
           }
@@ -1417,6 +1427,11 @@
             "type": "string"
           },
           "work_type": {
+            "enum": [
+              "anime",
+              "tv",
+              "movie"
+            ],
             "title": "Work Type",
             "type": "string"
           }

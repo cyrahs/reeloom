@@ -1,4 +1,5 @@
-import { previewSchema } from "../src/schemas";
+import { previewSchema, workTypeSchema } from "../src/schemas";
+import { workTypeLabel } from "../src/workTypes";
 
 const preview = {
   run_id: "run-1",
@@ -40,4 +41,9 @@ test("preview destination is bound to the move disposition", () => {
       ],
     }).success,
   ).toBe(false);
+});
+
+test("Movie uses the shared read model and Chinese label", () => {
+  expect(workTypeSchema.parse("movie")).toBe("movie");
+  expect(workTypeLabel("movie")).toBe("电影");
 });

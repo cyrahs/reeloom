@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date
 
 import httpx
 
@@ -620,9 +621,7 @@ class TmdbHttpAdapter:
     def _year(value: str) -> int | None:
         if not value:
             return None
-        if len(value) < 4 or not value[:4].isdigit():
-            raise ValueError("invalid date")
-        year = int(value[:4])
+        year = date.fromisoformat(value).year
         if not 1000 <= year <= 9999:
             raise ValueError("invalid year")
         return year

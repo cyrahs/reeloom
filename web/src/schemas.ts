@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const workTypeSchema = z.enum(["anime", "tv", "movie"]);
+
 export const sessionSchema = z
   .object({
     api_version: z.literal("1.0.0"),
@@ -19,7 +21,7 @@ export const runSummarySchema = z
   .object({
     run_id: z.string(),
     status: z.string(),
-    work_type: z.string(),
+    work_type: workTypeSchema,
     created_at: z.string(),
     phase: z.string().nullable(),
     plan_hash: z.string().nullable(),
@@ -34,7 +36,7 @@ export const discoverySchema = z
   .object({
     discovery_id: z.string(),
     watch_id: z.string(),
-    work_type: z.string(),
+    work_type: workTypeSchema,
     discovered_at: z.string(),
     run_id: z.string().nullable(),
     run_status: z.string().nullable(),
@@ -49,7 +51,7 @@ export const runSchema = z
   .object({
     run_id: z.string(),
     status: z.string(),
-    work_type: z.string(),
+    work_type: workTypeSchema,
     phase: z.string().nullable(),
     runtime_status: z.string().nullable(),
     event_sequence: z.number().int().nonnegative(),
@@ -181,7 +183,7 @@ export const eventsSchema = z
 const watchSchema = z
   .object({
     watch_id: z.string(),
-    work_type: z.enum(["anime", "tv"]),
+    work_type: workTypeSchema,
     poll_interval_seconds: z.number().int(),
     settle_interval_seconds: z.number().int(),
     root_configured: z.boolean(),
@@ -190,7 +192,7 @@ const watchSchema = z
 
 const routeSchema = z
   .object({
-    work_type: z.enum(["anime", "tv"]),
+    work_type: workTypeSchema,
     root_configured: z.boolean(),
   })
   .strict();

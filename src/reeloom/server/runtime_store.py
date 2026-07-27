@@ -13,11 +13,12 @@ from reeloom.runtime.state_codec import (
     STATE_PROJECTION_SCHEMA,
     canonical_state,
     decode_state,
+    is_supported_projection_schema,
 )
 from reeloom.runtime.state import Phase, RunState
 from reeloom.runtime.store import StoredEvent
 from reeloom.ports.plans import PlanStore
-from reeloom.kernel.rename_plan import RenamePlan
+from reeloom.kernel.initial_plan import InitialPlan, parse_initial_plan
 
 _MAX_PROJECTION_BYTES = 10 * 1024 * 1024
 
@@ -232,7 +233,7 @@ class PostgresEventStore:
             self._state = None
             return
         try:
-            if str(projection[13]) != STATE_PROJECTION_SCHEMA:
+            if not is_supported_projection_schema(str(projection[13])):
                 raise ValueError
             state = decode_state(
                 projection[14],
@@ -259,10 +260,10 @@ class PostgresEventStore:
             raise _error(RuntimeErrorCode.EVENT_STORE_CORRUPT) from None
         self._state = state
 
-    def _load_plan(self, plan_hash: str) -> RenamePlan:
+    def _load_plan(self, plan_hash: str) -> InitialPlan:
         if self._plans is None:
             raise ValueError
-        return RenamePlan.from_canonical_bytes(
+        return parse_initial_plan(
             self._plans.load(plan_hash),
             plan_hash=plan_hash,
         )

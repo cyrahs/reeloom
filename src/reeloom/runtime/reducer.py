@@ -8,7 +8,9 @@ from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.inventory import MAX_INVENTORY_EPISODES
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
-from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
@@ -24,6 +26,8 @@ from reeloom.runtime.events import (
     InteractionCompleted,
     MappingRejected,
     MappingSubmitted,
+    MovieMappingSubmitted,
+    MovieSelected,
     ModelUsageRecorded,
     MoveApplied,
     PlanApproved,
@@ -350,7 +354,11 @@ def reduce_event(
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
         return replace(
             state,
-            phase=Phase.IDENTIFY_SERIES,
+            phase=(
+                Phase.IDENTIFY_MOVIE
+                if state.work_type is TmdbWorkType.MOVIE
+                else Phase.IDENTIFY_SERIES
+            ),
             event_count=event_count,
             candidate_snapshot_id=event.snapshot_id,
             candidate_count=event.candidate_count,
@@ -380,7 +388,8 @@ def reduce_event(
 
     if isinstance(event, TmdbCandidatesObserved):
         if (
-            state.phase is not Phase.IDENTIFY_SERIES
+            state.phase
+            not in {Phase.IDENTIFY_SERIES, Phase.IDENTIFY_MOVIE}
             or not isinstance(event.candidates, tuple)
             or len(event.candidates) > 20
             or len(set(event.candidates)) != len(event.candidates)
@@ -424,6 +433,29 @@ def reduce_event(
             phase=Phase.MAP_EPISODES,
             event_count=event_count,
             selected_series=series,
+            selected_work_type=event.work_type,
+        )
+
+    if isinstance(event, MovieSelected):
+        movie = event.movie
+        if (
+            state.phase is not Phase.IDENTIFY_MOVIE
+            or state.selected_movie is not None
+            or not isinstance(movie, MovieIdentity)
+            or event.work_type is not TmdbWorkType.MOVIE
+            or event.work_type is not state.work_type
+            or TmdbCandidateRef(
+                work_type=event.work_type,
+                tmdb_id=movie.tmdb_id,
+            )
+            not in state.tmdb_candidates
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return replace(
+            state,
+            phase=Phase.MAP_MOVIE,
+            event_count=event_count,
+            selected_movie=movie,
             selected_work_type=event.work_type,
         )
 
@@ -502,7 +534,7 @@ def reduce_event(
             tool_name="detect_subtitle_variant",
         )
         if (
-            state.phase is not Phase.MAP_EPISODES
+            state.phase not in {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
             or not isinstance(event.subtitle_id, CandidateId)
             or event.subtitle_id.kind is not CandidateKind.SUBTITLE
             or state.candidate_ids is None
@@ -534,7 +566,7 @@ def reduce_event(
             tool_name="submit_mapping",
         )
         if (
-            state.phase is not Phase.MAP_EPISODES
+            state.phase not in {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
             or not isinstance(event.issue, MappingValidationIssue)
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
@@ -542,6 +574,37 @@ def reduce_event(
             state,
             event_count=event_count,
             validation_issues=(event.issue,),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, MovieMappingSubmitted):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="submit_mapping",
+        )
+        detected = {
+            candidate_id for candidate_id, _ in state.subtitle_variants
+        }
+        if (
+            state.phase is not Phase.MAP_MOVIE
+            or state.selected_movie is None
+            or not isinstance(event.mapping, MovieMappingDraft)
+            or event.candidate_snapshot_id != state.candidate_snapshot_id
+            or state.candidate_ids is None
+            or event.mapping.video_id not in state.candidate_ids
+            or any(
+                item not in state.candidate_ids or item not in detected
+                for item in event.mapping.subtitle_ids
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return replace(
+            state,
+            phase=Phase.BUILD_PLAN,
+            event_count=event_count,
+            movie_mapping_draft=event.mapping,
+            validation_issues=(),
             observed_tool_calls=observed,
         )
 
@@ -610,19 +673,33 @@ def reduce_event(
 
     if isinstance(event, PlanBuilt):
         plan = event.plan
+        movie_plan = isinstance(plan, MovieRenamePlan)
+        plan_matches_domain = (
+            (
+                movie_plan
+                and state.work_type is TmdbWorkType.MOVIE
+                and plan.draft.movie == state.selected_movie
+                and plan.draft.mapping == state.movie_mapping_draft
+            )
+            or (
+                isinstance(plan, RenamePlan)
+                and state.work_type is not TmdbWorkType.MOVIE
+                and plan.draft.series == state.selected_series
+                and plan.draft.mapping == state.mapping_draft
+            )
+        )
         if (
             state.phase is not Phase.BUILD_PLAN
             or state.rename_plan is not None
             or state.plan_hash is not None
             or state.pending_tool_calls
-            or not isinstance(plan, RenamePlan)
+            or not isinstance(plan, (RenamePlan, MovieRenamePlan))
             or not plan.verify_hash()
             or plan.run_id != state.run_id
             or plan.work_type is not state.work_type
             or plan.candidate_snapshot_id
             != state.candidate_snapshot_id
-            or plan.draft.series != state.selected_series
-            or plan.draft.mapping != state.mapping_draft
+            or not plan_matches_domain
             or plan.source_root != state.authorized_source_root
             or plan.output_root != state.authorized_output_root
             or state.candidate_ids is None

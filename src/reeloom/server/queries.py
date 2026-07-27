@@ -9,7 +9,10 @@ from reeloom.server.config import ConfigRevision
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.executor.manifest import ExecutionManifest
 from reeloom.kernel.amendment import verify_amendment_bytes
-from reeloom.kernel.rename_plan import verify_plan_bytes
+from reeloom.kernel.movie_amendment import (
+    verify_movie_amendment_bytes,
+)
+from reeloom.kernel.initial_plan import verify_initial_plan_bytes
 
 
 class PlanContentStore(Protocol):
@@ -36,6 +39,16 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
             "tmdb_id": (
                 series.get("tmdb_id")
                 if isinstance(series, dict)
+                else None
+            ),
+            "work_type": payload.get("work_type"),
+        }
+    if event_type == "movie_selected":
+        movie = payload.get("movie")
+        return {
+            "tmdb_id": (
+                movie.get("tmdb_id")
+                if isinstance(movie, dict)
                 else None
             ),
             "work_type": payload.get("work_type"),
@@ -67,6 +80,24 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
         )
         return {
             "video_count": len(videos) if isinstance(videos, list) else 0,
+            "subtitle_count": (
+                len(subtitles) if isinstance(subtitles, list) else 0
+            ),
+        }
+    if event_type == "movie_mapping_submitted":
+        mapping = payload.get("mapping")
+        subtitles = (
+            mapping.get("subtitle_ids")
+            if isinstance(mapping, dict)
+            else None
+        )
+        return {
+            "video_count": (
+                1
+                if isinstance(mapping, dict)
+                and isinstance(mapping.get("video_id"), str)
+                else 0
+            ),
             "subtitle_count": (
                 len(subtitles) if isinstance(subtitles, list) else 0
             ),
@@ -527,14 +558,18 @@ class PostgresQueries:
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         try:
             canonical_bytes = self._plans.load(plan_hash)
-            is_amendment = verify_amendment_bytes(
-                canonical_bytes,
-                plan_hash,
+            is_amendment = (
+                verify_amendment_bytes(canonical_bytes, plan_hash)
+                or verify_movie_amendment_bytes(
+                    canonical_bytes, plan_hash
+                )
             )
             if plan_kind == "initial":
                 valid_kind = (
                     not is_amendment
-                    and verify_plan_bytes(canonical_bytes, plan_hash)
+                    and verify_initial_plan_bytes(
+                        canonical_bytes, plan_hash
+                    )
                 )
             else:
                 valid_kind = is_amendment

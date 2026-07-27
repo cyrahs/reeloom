@@ -1,4 +1,4 @@
-# M9 deployment
+# M10 deployment
 
 Reeloom M8 固定为一个 server process、一个 worker 和一个 PostgreSQL 17
 control plane。`compose.yaml` 是最小 production composition；部署必须通过 secret

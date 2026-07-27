@@ -16,6 +16,7 @@ from reeloom.executor.manifest import (
 from reeloom.executor.preflight import FilesystemPreflightExecutor
 from reeloom.executor.transaction import TransactionRecord
 from reeloom.kernel.approval import ApprovalScope
+from reeloom.kernel.naming import filesystem_name_key
 from reeloom.ports.approvals import ApprovalStore
 from reeloom.ports.journals import (
     JournalStore,
@@ -138,35 +139,172 @@ class FilesystemExecutor:
         approval_id: str,
     ) -> ApplyResult:
         applied: list[ExecutionMove] = []
+        bound_destination_fd: int | None = None
         try:
-            for move in manifest.moves:
-                self._apply_move(manifest, move)
-                applied.append(move)
-                self.journals.record_move(
+            try:
+                if manifest.required_absent_directory is not None:
+                    bound_destination_fd = (
+                        self._create_required_directory(manifest)
+                    )
+                for move in manifest.moves:
+                    if bound_destination_fd is not None:
+                        self._require_bound_directory(
+                            manifest,
+                            bound_destination_fd,
+                        )
+                    self._apply_move(
+                        manifest,
+                        move,
+                        bound_destination_fd=bound_destination_fd,
+                    )
+                    applied.append(move)
+                    self.journals.record_move(
+                        transaction,
+                        move.source_id,
+                    )
+                    if bound_destination_fd is not None:
+                        self._require_bound_directory(
+                            manifest,
+                            bound_destination_fd,
+                        )
+                if bound_destination_fd is not None:
+                    self._require_bound_directory(
+                        manifest,
+                        bound_destination_fd,
+                    )
+            except ExecutorError as error:
+                if error.code is ExecutorErrorCode.RECOVERY_REQUIRED:
+                    raise
+                return self._rollback_after_failure(
+                    manifest,
                     transaction,
-                    move.source_id,
+                    applied,
+                    error,
+                    bound_destination_fd=bound_destination_fd,
                 )
-        except ExecutorError as error:
-            if error.code is ExecutorErrorCode.RECOVERY_REQUIRED:
-                raise
-            return self._rollback_after_failure(
+            try:
+                self.journals.record_completed(transaction)
+            except ExecutorError:
+                raise ExecutorError(
+                    ExecutorErrorCode.RECOVERY_REQUIRED
+                ) from None
+
+            return self._terminal_result(
                 manifest,
                 transaction,
-                applied,
-                error,
+                approval_id=approval_id,
             )
-        try:
-            self.journals.record_completed(transaction)
-        except ExecutorError:
-            raise ExecutorError(
-                ExecutorErrorCode.RECOVERY_REQUIRED
-            ) from None
+        finally:
+            if bound_destination_fd is not None:
+                os.close(bound_destination_fd)
 
-        return self._terminal_result(
-            manifest,
-            transaction,
-            approval_id=approval_id,
+    @staticmethod
+    def _create_required_directory(
+        manifest: ExecutionManifest,
+    ) -> int:
+        directory = manifest.required_absent_directory
+        if (
+            directory is None
+            or directory.is_absolute()
+            or len(directory.parts) != 1
+        ):
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        root_fd = FilesystemPreflightExecutor._open_bound_root(
+            manifest.output_root
         )
+        try:
+            FilesystemPreflightExecutor._check_required_absent_directory(
+                root_fd,
+                directory,
+            )
+            try:
+                os.mkdir(directory.name, 0o755, dir_fd=root_fd)
+                os.fsync(root_fd)
+            except FileExistsError:
+                try:
+                    metadata = os.stat(
+                        directory.name,
+                        dir_fd=root_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError:
+                    raise ExecutorError(
+                        ExecutorErrorCode.MOVE_FAILED
+                    ) from None
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise ExecutorError(
+                        ExecutorErrorCode.SYMLINK_NOT_ALLOWED
+                    )
+                raise ExecutorError(
+                    ExecutorErrorCode.DESTINATION_COLLISION
+                ) from None
+            except OSError:
+                raise ExecutorError(
+                    ExecutorErrorCode.MOVE_FAILED
+                ) from None
+            return FilesystemPreflightExecutor._open_existing_directory(
+                root_fd,
+                directory.name,
+                missing_code=ExecutorErrorCode.MOVE_FAILED,
+                nondirectory_code=(
+                    ExecutorErrorCode.DESTINATION_COLLISION
+                ),
+            )
+        finally:
+            os.close(root_fd)
+
+    @staticmethod
+    def _require_bound_directory(
+        manifest: ExecutionManifest,
+        directory_fd: int,
+    ) -> None:
+        directory = manifest.required_absent_directory
+        if (
+            directory is None
+            or directory.is_absolute()
+            or len(directory.parts) != 1
+        ):
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        root_fd = FilesystemPreflightExecutor._open_bound_root(
+            manifest.output_root
+        )
+        try:
+            try:
+                matching = tuple(
+                    entry
+                    for entry in os.listdir(root_fd)
+                    if filesystem_name_key(entry)
+                    == filesystem_name_key(directory.name)
+                )
+                if matching != (directory.name,):
+                    raise ExecutorError(
+                        ExecutorErrorCode.DESTINATION_COLLISION
+                    )
+                current = os.stat(
+                    directory.name,
+                    dir_fd=root_fd,
+                    follow_symlinks=False,
+                )
+                bound = os.fstat(directory_fd)
+            except OSError:
+                raise ExecutorError(
+                    ExecutorErrorCode.DESTINATION_COLLISION
+                ) from None
+            if stat.S_ISLNK(current.st_mode):
+                raise ExecutorError(
+                    ExecutorErrorCode.SYMLINK_NOT_ALLOWED
+                )
+            if (
+                not stat.S_ISDIR(current.st_mode)
+                or not stat.S_ISDIR(bound.st_mode)
+                or current.st_dev != bound.st_dev
+                or current.st_ino != bound.st_ino
+            ):
+                raise ExecutorError(
+                    ExecutorErrorCode.DESTINATION_COLLISION
+                )
+        finally:
+            os.close(root_fd)
 
     def recover(
         self,
@@ -256,6 +394,8 @@ class FilesystemExecutor:
         transaction: TransactionRecord,
         applied: list[ExecutionMove],
         failure: ExecutorError,
+        *,
+        bound_destination_fd: int | None = None,
     ) -> ApplyResult:
         try:
             self.journals.record_failure(
@@ -267,6 +407,7 @@ class FilesystemExecutor:
                 manifest,
                 transaction,
                 applied,
+                bound_destination_fd=bound_destination_fd,
             )
             raise ExecutorError(
                 ExecutorErrorCode.RECOVERY_REQUIRED
@@ -276,6 +417,7 @@ class FilesystemExecutor:
             manifest,
             transaction,
             applied,
+            bound_destination_fd=bound_destination_fd,
         )
         try:
             self.journals.record_rolled_back(transaction)
@@ -336,6 +478,8 @@ class FilesystemExecutor:
         manifest: ExecutionManifest,
         transaction: TransactionRecord,
         applied: list[ExecutionMove],
+        *,
+        bound_destination_fd: int | None = None,
     ) -> int:
         rolled_back = 0
         try:
@@ -348,6 +492,7 @@ class FilesystemExecutor:
                     manifest,
                     move,
                     allow_restored=False,
+                    bound_destination_fd=bound_destination_fd,
                 ):
                     rolled_back += 1
                     self.journals.record_rollback(
@@ -365,6 +510,8 @@ class FilesystemExecutor:
         cls,
         manifest: ExecutionManifest,
         move: ExecutionMove,
+        *,
+        bound_destination_fd: int | None = None,
     ) -> None:
         source = cls._source_for(manifest, move)
         source_root_fd = (
@@ -376,18 +523,28 @@ class FilesystemExecutor:
         source_parent_fd: int | None = None
         destination_parent_fd: int | None = None
         try:
-            output_root_fd = (
-                FilesystemPreflightExecutor._open_bound_root(
-                    manifest.output_root
+            if bound_destination_fd is None:
+                output_root_fd = (
+                    FilesystemPreflightExecutor._open_bound_root(
+                        manifest.output_root
+                    )
                 )
-            )
+                destination_parent_fd = cls._open_destination_parent(
+                    output_root_fd,
+                    move,
+                    source,
+                )
+            else:
+                destination_parent_fd = (
+                    cls._duplicate_bound_destination_parent(
+                        manifest,
+                        move,
+                        source,
+                        bound_destination_fd,
+                    )
+                )
             source_parent_fd = cls._open_source_parent(
                 source_root_fd,
-                source,
-            )
-            destination_parent_fd = cls._open_destination_parent(
-                output_root_fd,
-                move,
                 source,
             )
             FilesystemPreflightExecutor._check_source_file(
@@ -467,6 +624,7 @@ class FilesystemExecutor:
         move: ExecutionMove,
         *,
         allow_restored: bool,
+        bound_destination_fd: int | None = None,
     ) -> bool:
         source = cls._source_for(manifest, move)
         source_root_fd = (
@@ -478,11 +636,6 @@ class FilesystemExecutor:
         source_parent_fd: int | None = None
         destination_parent_fd: int | None = None
         try:
-            output_root_fd = (
-                FilesystemPreflightExecutor._open_bound_root(
-                    manifest.output_root
-                )
-            )
             source_parent_fd = cls._open_source_parent(
                 source_root_fd,
                 source,
@@ -500,17 +653,32 @@ class FilesystemExecutor:
                     source,
                     moved=True,
                 )
-            try:
-                destination_parent_fd = cls._open_existing_parent(
-                    output_root_fd,
-                    move.destination.parts[:-1],
+            if bound_destination_fd is not None:
+                destination_parent_fd = (
+                    cls._duplicate_bound_destination_parent(
+                        manifest,
+                        move,
+                        source,
+                        bound_destination_fd,
+                    )
                 )
-            except FileNotFoundError:
-                if source_state == "expected":
-                    return False
-                raise ExecutorError(
-                    ExecutorErrorCode.RECOVERY_REQUIRED
-                ) from None
+            else:
+                output_root_fd = (
+                    FilesystemPreflightExecutor._open_bound_root(
+                        manifest.output_root
+                    )
+                )
+                try:
+                    destination_parent_fd = cls._open_existing_parent(
+                        output_root_fd,
+                        move.destination.parts[:-1],
+                    )
+                except FileNotFoundError:
+                    if source_state == "expected":
+                        return False
+                    raise ExecutorError(
+                        ExecutorErrorCode.RECOVERY_REQUIRED
+                    ) from None
             destination_state = cls._source_state(
                 destination_parent_fd,
                 move.destination.name,
@@ -674,6 +842,37 @@ class FilesystemExecutor:
         except Exception:
             os.close(current_fd)
             raise
+
+    @staticmethod
+    def _duplicate_bound_destination_parent(
+        manifest: ExecutionManifest,
+        move: ExecutionMove,
+        source: ExecutionSource,
+        directory_fd: int,
+    ) -> int:
+        directory = manifest.required_absent_directory
+        if (
+            directory is None
+            or move.destination.parts[:-1] != directory.parts
+        ):
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        duplicated: int | None = None
+        try:
+            duplicated = os.dup(directory_fd)
+            metadata = os.fstat(duplicated)
+        except OSError:
+            if duplicated is not None:
+                os.close(duplicated)
+            raise ExecutorError(
+                ExecutorErrorCode.MOVE_FAILED
+            ) from None
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_dev != source.device
+        ):
+            os.close(duplicated)
+            raise ExecutorError(ExecutorErrorCode.CROSS_FILESYSTEM)
+        return duplicated
 
     @classmethod
     def _source_state(

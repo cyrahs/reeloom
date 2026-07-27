@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from reeloom.kernel.errors import DomainError, ErrorCode
-from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.specials import SpecialKind
 
 _MAX_TITLE_BYTES = 240
@@ -431,5 +431,21 @@ def preferred_series_identity(details: TmdbSeriesDetails) -> SeriesIdentity:
     return SeriesIdentity(
         title_zh_cn=title,
         year=details.first_air_year,
+        tmdb_id=details.tmdb_id,
+    )
+
+
+def preferred_movie_identity(details: TmdbMovieDetails) -> MovieIdentity:
+    """Derive the only path-authoritative Movie identity from details."""
+
+    if (
+        not isinstance(details, TmdbMovieDetails)
+        or details.language is not TmdbLanguage.ZH_CN
+        or details.release_year is None
+    ):
+        raise DomainError(ErrorCode.INVALID_TMDB_DATA)
+    return MovieIdentity(
+        title_zh_cn=details.localized_title or details.original_title,
+        release_year=details.release_year,
         tmdb_id=details.tmdb_id,
     )

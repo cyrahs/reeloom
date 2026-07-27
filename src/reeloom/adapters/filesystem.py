@@ -11,7 +11,14 @@ from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.file_types import candidate_kind_for_filename
 from reeloom.kernel.mapping import MappingDraft
-from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
+from reeloom.kernel.movie import MovieMappingDraft, compile_movie_plan_draft
+from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.naming import (
+    MovieIdentity,
+    SeriesIdentity,
+    SubtitleVariant,
+    filesystem_name_key,
+)
 from reeloom.kernel.rename_plan import (
     RenamePlan,
     RootBinding,
@@ -129,6 +136,37 @@ class FilesystemPlanCompiler:
             checked_destinations=checked,
         )
 
+    def compile_movie(
+        self,
+        *,
+        run_id: str,
+        movie: MovieIdentity,
+        mapping: MovieMappingDraft,
+        subtitle_variants: tuple[
+            tuple[CandidateId, SubtitleVariant],
+            ...,
+        ],
+        created_at: datetime,
+    ) -> MovieRenamePlan:
+        draft = compile_movie_plan_draft(
+            movie=movie,
+            mapping=mapping,
+            candidates=self.scan.snapshot,
+            subtitle_variants=subtitle_variants,
+        )
+        destinations = tuple(move.destination for move in draft.moves)
+        self._check_movie_root_absent(destinations)
+        return MovieRenamePlan.create(
+            run_id=run_id,
+            created_at=created_at,
+            source_root=self.source_root_binding,
+            output_root=self.output_root_binding,
+            candidate_snapshot=self.scan.snapshot,
+            subtitle_variants=subtitle_variants,
+            draft=draft,
+            checked_destinations=destinations,
+        )
+
     @staticmethod
     def _root_binding(root: AuthorizedRoot) -> RootBinding:
         return RootBinding(
@@ -148,6 +186,39 @@ class FilesystemPlanCompiler:
         finally:
             os.close(root_fd)
         return destinations
+
+    def _check_movie_root_absent(
+        self,
+        destinations: tuple[PurePosixPath, ...],
+    ) -> None:
+        if (
+            not destinations
+            or len({item.parts[0] for item in destinations}) != 1
+        ):
+            raise DomainError(ErrorCode.PLAN_PREFLIGHT_MISMATCH)
+        root_fd = FilesystemScanner._open_root(self.output_root)
+        try:
+            try:
+                entries = os.listdir(root_fd)
+            except OSError:
+                raise DomainError(ErrorCode.SCAN_FAILED) from None
+            target = filesystem_name_key(destinations[0].parts[0])
+            for entry in entries:
+                if filesystem_name_key(entry) != target:
+                    continue
+                try:
+                    metadata = os.stat(
+                        entry,
+                        dir_fd=root_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError:
+                    raise DomainError(ErrorCode.SCAN_FAILED) from None
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise DomainError(ErrorCode.SYMLINK_NOT_ALLOWED)
+                raise DomainError(ErrorCode.DESTINATION_COLLISION)
+        finally:
+            os.close(root_fd)
 
     @staticmethod
     def _check_destination(

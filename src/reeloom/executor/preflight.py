@@ -5,7 +5,7 @@ import hmac
 import os
 import stat
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from reeloom.adapters.filesystem import FilesystemScanner
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
@@ -15,6 +15,7 @@ from reeloom.executor.manifest import (
     ExecutionSource,
 )
 from reeloom.kernel.errors import DomainError, ErrorCode
+from reeloom.kernel.naming import filesystem_name_key
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.plans import PlanStore
@@ -76,6 +77,11 @@ class FilesystemPreflightExecutor:
                 source.candidate_id: source
                 for source in manifest.sources
             }
+            if manifest.required_absent_directory is not None:
+                self._check_required_absent_directory(
+                    output_fd,
+                    manifest.required_absent_directory,
+                )
             for move in manifest.moves:
                 source = sources[move.source_id]
                 if source.device != manifest.output_root.device:
@@ -87,6 +93,41 @@ class FilesystemPreflightExecutor:
             if output_fd is not None:
                 os.close(output_fd)
             os.close(source_fd)
+
+    @staticmethod
+    def _check_required_absent_directory(
+        root_fd: int,
+        directory: PurePosixPath,
+    ) -> None:
+        if directory.is_absolute() or len(directory.parts) != 1:
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        try:
+            entries = os.listdir(root_fd)
+        except OSError:
+            raise ExecutorError(
+                ExecutorErrorCode.PREFLIGHT_FAILED
+            ) from None
+        target = filesystem_name_key(directory.name)
+        for entry in entries:
+            if filesystem_name_key(entry) != target:
+                continue
+            try:
+                metadata = os.stat(
+                    entry,
+                    dir_fd=root_fd,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                raise ExecutorError(
+                    ExecutorErrorCode.PREFLIGHT_FAILED
+                ) from None
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ExecutorError(
+                    ExecutorErrorCode.SYMLINK_NOT_ALLOWED
+                )
+            raise ExecutorError(
+                ExecutorErrorCode.DESTINATION_COLLISION
+            )
 
     @staticmethod
     def _open_bound_root(binding: RootBinding) -> int:

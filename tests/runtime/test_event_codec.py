@@ -7,8 +7,14 @@ from pathlib import PurePosixPath
 import pytest
 
 from reeloom.kernel.candidates import CandidateId, CandidateKind
+from reeloom.kernel.candidates import Candidate, CandidateSnapshot
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
-from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.naming import (
+    MovieIdentity,
+    SeriesIdentity,
+    SubtitleVariant,
+)
 from reeloom.kernel.rename_plan import (
     RenamePlan,
     RootBinding,
@@ -28,6 +34,8 @@ from reeloom.runtime.events import (
     InteractionCompleted,
     MappingRejected,
     MappingSubmitted,
+    MovieMappingSubmitted,
+    MovieSelected,
     ModelUsageRecorded,
     MoveApplied,
     PlanApproved,
@@ -100,6 +108,27 @@ def _mapping_and_plan() -> tuple[MappingDraft, RenamePlan]:
 
 def _event_samples() -> tuple[object, ...]:
     mapping, plan = _mapping_and_plan()
+    movie_candidates = CandidateSnapshot.create(
+        (
+            Candidate(
+                CandidateId(CandidateKind.VIDEO, 1),
+                CandidateKind.VIDEO,
+                "video:1",
+            ),
+            Candidate(
+                CandidateId(CandidateKind.SUBTITLE, 1),
+                CandidateKind.SUBTITLE,
+                "subtitle:1",
+            ),
+        )
+    )
+    movie_mapping = MovieMappingDraft.from_dict(
+        {
+            "video_id": "video:1",
+            "subtitle_ids": ["subtitle:1"],
+        },
+        candidates=movie_candidates,
+    )
     source_root = RootBinding(PurePosixPath("/source"), 1, 10)
     output_root = RootBinding(PurePosixPath("/output"), 1, 11)
     series = SeriesIdentity("测试动画", 2025, 42)
@@ -116,6 +145,10 @@ def _event_samples() -> tuple[object, ...]:
             (TmdbCandidateRef(TmdbWorkType.ANIME, 42),)
         ),
         SeriesSelected(series, TmdbWorkType.ANIME),
+        MovieSelected(
+            MovieIdentity("测试电影", 2025, 43),
+            TmdbWorkType.MOVIE,
+        ),
         TmdbSeasonCatalogObserved(
             "call-1", 42, TmdbWorkType.ANIME, 1, 12
         ),
@@ -135,6 +168,11 @@ def _event_samples() -> tuple[object, ...]:
             ),
         ),
         MappingSubmitted("call-5", "snapshot:1", mapping),
+        MovieMappingSubmitted(
+            "call-movie",
+            "snapshot:movie",
+            movie_mapping,
+        ),
         PlanBuilt(plan),
         ApprovalRequested(plan.plan_hash),
         PlanApproved(plan.plan_hash, "approval:1"),

@@ -46,7 +46,7 @@ from reeloom.tools.candidates import SnapshotCandidateSource
 
 _INITIAL_PROMPT = (
     "Inspect the authorized candidate snapshot and submit one complete, "
-    "validated episode mapping for its configured work type."
+    "validated mapping for its configured work type."
 )
 
 
@@ -175,13 +175,11 @@ class InitialAgentWorker:
         )
         if archive is None:
             raise ValueError("archive route missing from exact config revision")
-        if watch.work_type is ServerWorkType.MOVIE:
-            raise ValueError("movie episode mapping is not supported")
-        work_type = (
-            TmdbWorkType.ANIME
-            if watch.work_type is ServerWorkType.ANIME
-            else TmdbWorkType.TV_SERIES
-        )
+        work_type = {
+            ServerWorkType.ANIME: TmdbWorkType.ANIME,
+            ServerWorkType.TV: TmdbWorkType.TV_SERIES,
+            ServerWorkType.MOVIE: TmdbWorkType.MOVIE,
+        }[watch.work_type]
         return watch, archive, work_type
 
     @staticmethod

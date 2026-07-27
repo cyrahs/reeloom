@@ -229,3 +229,32 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
   expect(approvalHeaders["if-match"]).toBe(planHash);
   expect(approvalHeaders["idempotency-key"]).toMatch(/^ui-v1-/);
 });
+
+test("Movie review shows exact paths and completed reapply converges to no-op", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "reeloom.admin_bearer.v1",
+      "admin-e2e-token-strong",
+    );
+  });
+
+  await page.goto("/");
+  const movieRun = page.locator("tbody tr").filter({ hasText: "电影" }).first();
+  await expect(movieRun).toContainText("completed");
+  await movieRun.getByRole("link").click();
+  await expect(page.getByText("电影", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("旅程电影 (2025) {tmdb-700}/旅程电影 (2025).mkv"),
+  ).toBeVisible();
+  await expect(page.getByText("zz-extra.mkv")).toBeVisible();
+  await expect(page.getByText("执行状态：completed")).toBeVisible();
+  await page.getByRole("button", { name: "重新整理已完成布局" }).click();
+  await page.getByLabel("重新整理已完成布局").fill("复验当前布局");
+  await page.getByRole("button", { name: "提交" }).click();
+
+  await expect(
+    page.getByText("布局没有变化；服务端保留原 head，未创建空 amendment。"),
+  ).toBeVisible();
+});

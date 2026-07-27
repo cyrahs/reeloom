@@ -16,8 +16,14 @@ from reeloom.kernel.mapping import (
     MappingDraft,
     VideoMapping,
 )
-from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
-from reeloom.kernel.rename_plan import RenamePlan, RootBinding
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.naming import (
+    MovieIdentity,
+    SeriesIdentity,
+    SubtitleVariant,
+)
+from reeloom.kernel.initial_plan import parse_initial_plan
+from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.schema import check_fields
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
@@ -32,6 +38,8 @@ from reeloom.runtime.events import (
     InteractionCompleted,
     MappingRejected,
     MappingSubmitted,
+    MovieMappingSubmitted,
+    MovieSelected,
     ModelUsageRecorded,
     MoveApplied,
     PlanApproved,
@@ -263,6 +271,45 @@ def _mapping(value: object) -> MappingDraft:
     )
 
 
+def _movie_payload(movie: MovieIdentity) -> dict[str, object]:
+    return {
+        "release_year": movie.release_year,
+        "title_zh_cn": movie.title_zh_cn,
+        "tmdb_id": movie.tmdb_id,
+    }
+
+
+def _movie_mapping_payload(
+    mapping: MovieMappingDraft,
+) -> dict[str, object]:
+    return {
+        "subtitle_ids": [
+            str(candidate_id) for candidate_id in mapping.subtitle_ids
+        ],
+        "video_id": str(mapping.video_id),
+    }
+
+
+def _movie_mapping(value: object) -> MovieMappingDraft:
+    payload = check_fields(
+        value,
+        frozenset({"subtitle_ids", "video_id"}),
+        field="movie_mapping",
+    )
+    video_id = _candidate_id(payload["video_id"])
+    subtitle_ids = tuple(
+        _candidate_id(item) for item in _list(payload["subtitle_ids"])
+    )
+    candidates = CandidateSnapshot.create(
+        Candidate(candidate_id, candidate_id.kind, str(candidate_id))
+        for candidate_id in (video_id, *subtitle_ids)
+    )
+    return MovieMappingDraft.from_dict(
+        payload,
+        candidates=candidates,
+    )
+
+
 def _issue_payload(issue: MappingValidationIssue) -> dict[str, object]:
     return {
         "code": issue.code,
@@ -365,6 +412,11 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "series": _series_payload(event.series),
             "work_type": event.work_type.value,
         }
+    if isinstance(event, MovieSelected):
+        return "movie_selected", {
+            "movie": _movie_payload(event.movie),
+            "work_type": event.work_type.value,
+        }
     if isinstance(event, TmdbSeasonCatalogObserved):
         return "tmdb_season_catalog_observed", {
             "call_id": event.call_id,
@@ -396,6 +448,12 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "call_id": event.call_id,
             "candidate_snapshot_id": event.candidate_snapshot_id,
             "mapping": _mapping_payload(event.mapping),
+        }
+    if isinstance(event, MovieMappingSubmitted):
+        return "movie_mapping_submitted", {
+            "call_id": event.call_id,
+            "candidate_snapshot_id": event.candidate_snapshot_id,
+            "mapping": _movie_mapping_payload(event.mapping),
         }
     if isinstance(event, PlanBuilt):
         return "plan_built", {
@@ -546,6 +604,12 @@ def _event_from_payload(
             SeriesIdentity.from_dict(p["series"]),
             _work_type(p["work_type"]),
         )
+    if event_type == "movie_selected":
+        p = _fields(value, {"movie", "work_type"}, field=event_type)
+        return MovieSelected(
+            MovieIdentity.from_dict(p["movie"]),
+            _work_type(p["work_type"]),
+        )
     if event_type == "tmdb_season_catalog_observed":
         p = _fields(
             value,
@@ -614,6 +678,17 @@ def _event_from_payload(
             _str(p["candidate_snapshot_id"]),
             _mapping(p["mapping"]),
         )
+    if event_type == "movie_mapping_submitted":
+        p = _fields(
+            value,
+            {"call_id", "candidate_snapshot_id", "mapping"},
+            field=event_type,
+        )
+        return MovieMappingSubmitted(
+            _str(p["call_id"]),
+            _str(p["candidate_snapshot_id"]),
+            _movie_mapping(p["mapping"]),
+        )
     if event_type == "plan_built":
         p = _fields(
             value,
@@ -621,7 +696,7 @@ def _event_from_payload(
             field=event_type,
         )
         return PlanBuilt(
-            RenamePlan.from_canonical_bytes(
+            parse_initial_plan(
                 _str(p["canonical_plan"]).encode("ascii"),
                 plan_hash=_str(p["plan_hash"]),
             )

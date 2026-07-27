@@ -21,10 +21,19 @@ from reeloom.kernel.rename_plan import (
     RootBinding,
     verify_plan_bytes,
 )
+from reeloom.kernel.movie_plan import (
+    MovieRenamePlan,
+    verify_movie_plan_bytes,
+)
 from reeloom.kernel.amendment import (
     CURRENT_AMENDMENT_POLICY_VERSION,
     CURRENT_AMENDMENT_SCHEMA_VERSION,
     verify_amendment_bytes,
+)
+from reeloom.kernel.movie_amendment import (
+    CURRENT_MOVIE_AMENDMENT_POLICY_VERSION,
+    CURRENT_MOVIE_AMENDMENT_SCHEMA_VERSION,
+    verify_movie_amendment_bytes,
 )
 from reeloom.kernel.schema import check_fields
 from reeloom.kernel.tmdb import TmdbWorkType
@@ -66,6 +75,26 @@ _AMENDMENT_FIELDS = frozenset(
         "sources",
         "unmapped_candidate_ids",
     }
+)
+_MOVIE_AMENDMENT_FIELDS = frozenset(
+    {
+        "completed_transaction_id",
+        "created_at",
+        "moves",
+        "movie",
+        "parent_plan_hash",
+        "policy_version",
+        "roots",
+        "run_id",
+        "schema_version",
+        "sources",
+        "subtitle_variants",
+        "unchanged_candidate_ids",
+        "work_type",
+    }
+)
+_MOVIE_MOVE_FIELDS = frozenset(
+    {"destination", "destination_preflight", "source_id", "video_id"}
 )
 _ROOT_FIELDS = frozenset({"device", "inode", "path"})
 _ROOTS_FIELDS = frozenset({"output", "source"})
@@ -153,6 +182,16 @@ def _destination(value: object) -> PurePosixPath:
     if (
         len(path.parts) != 3
         or _SEASON_PATTERN.fullmatch(path.parts[1]) is None
+        or any(len(part.encode("utf-8")) > 255 for part in path.parts)
+    ):
+        raise _invalid_plan()
+    return path
+
+
+def _movie_destination(value: object) -> PurePosixPath:
+    path = _relative_path(value)
+    if (
+        len(path.parts) != 2
         or any(len(part.encode("utf-8")) > 255 for part in path.parts)
     ):
         raise _invalid_plan()
@@ -276,6 +315,8 @@ class ExecutionManifest:
     output_root: RootBinding
     sources: tuple[ExecutionSource, ...]
     moves: tuple[ExecutionMove, ...]
+    work_type: TmdbWorkType | None = None
+    required_absent_directory: PurePosixPath | None = None
 
     @classmethod
     def from_canonical_bytes(
@@ -289,6 +330,16 @@ class ExecutionManifest:
             or not 0 < len(canonical_bytes) <= _MAX_PLAN_BYTES
         ):
             raise _invalid_plan()
+        if verify_movie_plan_bytes(canonical_bytes, plan_hash):
+            return cls._from_movie_plan(
+                canonical_bytes,
+                plan_hash=plan_hash,
+            )
+        if verify_movie_amendment_bytes(canonical_bytes, plan_hash):
+            return cls._from_movie_amendment(
+                canonical_bytes,
+                plan_hash=plan_hash,
+            )
         amendment = verify_amendment_bytes(canonical_bytes, plan_hash)
         if not amendment and not verify_plan_bytes(
             canonical_bytes, plan_hash
@@ -373,6 +424,9 @@ class ExecutionManifest:
                 output_root=_root(roots["output"]),
                 sources=sources,
                 moves=moves,
+                work_type=TmdbWorkType(
+                    _require_str(payload["work_type"])
+                ),
             )
             manifest._validate_partition(unmapped)
             return manifest
@@ -385,6 +439,178 @@ class ExecutionManifest:
             UnicodeEncodeError,
             ValueError,
         ):
+            raise _invalid_plan() from None
+
+    @classmethod
+    def _from_movie_amendment(
+        cls,
+        canonical_bytes: bytes,
+        *,
+        plan_hash: str,
+    ) -> ExecutionManifest:
+        try:
+            payload = check_fields(
+                json.loads(
+                    canonical_bytes.decode("ascii"),
+                    parse_constant=_reject_json_constant,
+                ),
+                _MOVIE_AMENDMENT_FIELDS,
+                field="movie_amendment",
+            )
+            if (
+                json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("ascii")
+                != canonical_bytes
+                or payload["schema_version"]
+                != CURRENT_MOVIE_AMENDMENT_SCHEMA_VERSION
+                or payload["policy_version"]
+                != CURRENT_MOVIE_AMENDMENT_POLICY_VERSION
+                or payload["work_type"] != TmdbWorkType.MOVIE.value
+                or not isinstance(payload["created_at"], str)
+                or not isinstance(payload["parent_plan_hash"], str)
+                or not isinstance(
+                    payload["completed_transaction_id"], str
+                )
+            ):
+                raise _invalid_plan()
+            roots = check_fields(
+                payload["roots"],
+                _ROOTS_FIELDS,
+                field="roots",
+            )
+            source_root = _root(roots["source"])
+            output_root = _root(roots["output"])
+            if source_root != output_root:
+                raise _invalid_plan()
+            sources = tuple(
+                ExecutionSource.parse(item)
+                for item in _require_list(payload["sources"])
+            )
+            moves: list[ExecutionMove] = []
+            for item in _require_list(payload["moves"]):
+                move = check_fields(
+                    item,
+                    _MOVIE_MOVE_FIELDS,
+                    field="movie_move",
+                )
+                if move["destination_preflight"] != "absent":
+                    raise _invalid_plan()
+                moves.append(
+                    ExecutionMove(
+                        source_id=CandidateId.parse(move["source_id"]),
+                        video_id=CandidateId.parse(move["video_id"]),
+                        destination=_movie_destination(
+                            move["destination"]
+                        ),
+                    )
+                )
+            unchanged = tuple(
+                CandidateId.parse(item)
+                for item in _require_list(
+                    payload["unchanged_candidate_ids"]
+                )
+            )
+            source_roots = {
+                item.relative_path.parts[0] for item in sources
+            }
+            destination_roots = {
+                item.destination.parts[0] for item in moves
+            }
+            required_absent = (
+                PurePosixPath(next(iter(destination_roots)))
+                if len(destination_roots) == 1
+                and destination_roots.isdisjoint(source_roots)
+                else None
+            )
+            manifest = cls(
+                plan_hash=plan_hash,
+                run_id=_require_str(payload["run_id"]),
+                source_root=source_root,
+                output_root=output_root,
+                sources=sources,
+                moves=tuple(moves),
+                work_type=TmdbWorkType.MOVIE,
+                required_absent_directory=required_absent,
+            )
+            manifest._validate_partition(
+                unchanged,
+                allow_unmoved_video_reference=True,
+            )
+            return manifest
+        except ExecutorError:
+            raise
+        except (
+            DomainError,
+            json.JSONDecodeError,
+            UnicodeError,
+            ValueError,
+        ):
+            raise _invalid_plan() from None
+
+    @classmethod
+    def _from_movie_plan(
+        cls,
+        canonical_bytes: bytes,
+        *,
+        plan_hash: str,
+    ) -> ExecutionManifest:
+        try:
+            plan = MovieRenamePlan.from_canonical_bytes(
+                canonical_bytes,
+                plan_hash=plan_hash,
+            )
+            sources = tuple(
+                ExecutionSource(
+                    candidate_id=item.candidate_id,
+                    kind=item.kind,
+                    relative_path=item.relative_path,
+                    size_bytes=item.size_bytes,
+                    device=item.device,
+                    inode=item.inode,
+                    mtime_ns=item.mtime_ns,
+                    ctime_ns=item.ctime_ns,
+                    sample_digest=item.sample_digest,
+                )
+                for item in plan.sources
+            )
+            for source in sources:
+                if (
+                    candidate_kind_for_filename(source.relative_path.name)
+                    is not source.kind
+                ):
+                    raise _invalid_plan()
+            moves = tuple(
+                ExecutionMove(
+                    source_id=item.source_id,
+                    video_id=item.video_id,
+                    destination=_movie_destination(
+                        item.destination.as_posix()
+                    ),
+                )
+                for item in plan.draft.moves
+            )
+            movie_root = PurePosixPath(moves[0].destination.parts[0])
+            manifest = cls(
+                plan_hash=plan_hash,
+                run_id=plan.run_id,
+                source_root=plan.source_root,
+                output_root=plan.output_root,
+                sources=sources,
+                moves=moves,
+                work_type=TmdbWorkType.MOVIE,
+                required_absent_directory=movie_root,
+            )
+            manifest._validate_partition(
+                plan.draft.unmapped_candidate_ids
+            )
+            return manifest
+        except ExecutorError:
+            raise
+        except (DomainError, ValueError, IndexError):
             raise _invalid_plan() from None
 
     @classmethod

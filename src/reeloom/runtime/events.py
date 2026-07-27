@@ -6,9 +6,11 @@ from typing import TypeAlias
 
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.mapping import MappingDraft
-from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
-from reeloom.kernel.rename_plan import RenamePlan, RootBinding
+from reeloom.kernel.initial_plan import InitialPlan
+from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.state import MappingValidationIssue, StopReason
@@ -41,6 +43,12 @@ class TmdbCandidatesObserved:
 @dataclass(frozen=True, slots=True)
 class SeriesSelected:
     series: SeriesIdentity
+    work_type: TmdbWorkType
+
+
+@dataclass(frozen=True, slots=True)
+class MovieSelected:
+    movie: MovieIdentity
     work_type: TmdbWorkType
 
 
@@ -82,8 +90,15 @@ class MappingSubmitted:
 
 
 @dataclass(frozen=True, slots=True)
+class MovieMappingSubmitted:
+    call_id: str
+    candidate_snapshot_id: str
+    mapping: MovieMappingDraft
+
+
+@dataclass(frozen=True, slots=True)
 class PlanBuilt:
-    plan: RenamePlan
+    plan: InitialPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,11 +206,13 @@ RuntimeEvent: TypeAlias = (
     | CandidateSnapshotCreated
     | TmdbCandidatesObserved
     | SeriesSelected
+    | MovieSelected
     | TmdbSeasonCatalogObserved
     | ExistingInventoryObserved
     | SubtitleVariantDetected
     | MappingRejected
     | MappingSubmitted
+    | MovieMappingSubmitted
     | PlanBuilt
     | ApprovalRequested
     | PlanApproved
