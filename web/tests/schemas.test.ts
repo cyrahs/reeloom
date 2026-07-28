@@ -1,4 +1,9 @@
-import { previewSchema, workTypeSchema } from "../src/schemas";
+import {
+  previewSchema,
+  runDeletionSchema,
+  runSchema,
+  workTypeSchema,
+} from "../src/schemas";
 import { workTypeLabel } from "../src/workTypes";
 
 const preview = {
@@ -46,4 +51,22 @@ test("preview destination is bound to the move disposition", () => {
 test("Movie uses the shared read model and Chinese label", () => {
   expect(workTypeSchema.parse("movie")).toBe("movie");
   expect(workTypeLabel("movie")).toBe("电影");
+});
+
+test("run deletion and action schemas remain strict", () => {
+  expect(
+    runDeletionSchema.safeParse({
+      run_id: "run-1",
+      deleted_at: "2026-07-28T12:00:00Z",
+    }).success,
+  ).toBe(true);
+  expect(
+    runDeletionSchema.safeParse({
+      run_id: "run-1",
+      deleted_at: "2026-07-28T12:00:00Z",
+      extra: true,
+    }).success,
+  ).toBe(false);
+  const actions = runSchema.shape.available_actions;
+  expect(actions.parse(["delete_run"])).toEqual(["delete_run"]);
 });

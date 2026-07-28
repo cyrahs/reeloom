@@ -29,6 +29,7 @@ import {
   previewSchema,
   reapplyResultSchema,
   recoveryResultSchema,
+  runDeletionSchema,
   runSchema,
   type Preview,
   type Run,
@@ -78,6 +79,8 @@ export function RunPage({ runId }: { runId: string }) {
   const [streamState, setStreamState] = useState("正在同步");
   const [approveOpen, setApproveOpen] = useState(false);
   const [folderConfirmOpen, setFolderConfirmOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteAttemptKey, setDeleteAttemptKey] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState("");
   const [uncertainAttempt, setUncertainAttempt] =
     useState<UncertainAttempt | null>(null);
@@ -373,6 +376,51 @@ export function RunPage({ runId }: { runId: string }) {
       } else {
         setUncertainAttempt(null);
         await invalidateRun();
+      }
+    },
+  });
+
+  const finishDeletion = async () => {
+    window.localStorage.removeItem(cursorKey(runId));
+    queryClient.removeQueries({ queryKey: ["run", runId] });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["runs"] }),
+      queryClient.invalidateQueries({ queryKey: ["discoveries"] }),
+      queryClient.invalidateQueries({ queryKey: ["folders"] }),
+    ]);
+    window.location.hash = "/";
+  };
+
+  const deleteRun = useMutation({
+    mutationFn: async (key: string) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}`,
+        runDeletionSchema,
+        {
+          method: "DELETE",
+          headers: { "Idempotency-Key": key },
+        },
+      ),
+    onSuccess: finishDeletion,
+    onError: async (error) => {
+      setDeleteConfirmOpen(false);
+      if (!(error instanceof ApiError) || error.code !== "network_uncertain") {
+        setDeleteAttemptKey(null);
+        return;
+      }
+      try {
+        await api.request(`/api/v1/runs/${encodedRunId}`, runSchema);
+        setActionNotice(
+          "删除结果不确定；记录仍可读取，可使用原请求键安全重试。",
+        );
+      } catch (readError) {
+        if (readError instanceof ApiError && readError.status === 404) {
+          await finishDeletion();
+          return;
+        }
+        setActionNotice(
+          "删除结果不确定且暂时无法对账；请稍后使用原请求键重试。",
+        );
       }
     },
   });
@@ -697,6 +745,15 @@ export function RunPage({ runId }: { runId: string }) {
                     恢复文件夹事务
                   </button>
                 ) : null}
+                {available.has("delete_run") ? (
+                  <button
+                    className="danger-button wide"
+                    disabled={deleteRun.isPending || blocked}
+                    onClick={() => setDeleteConfirmOpen(true)}
+                  >
+                    删除运行记录
+                  </button>
+                ) : null}
               </>
             )}
             {actionNotice ? (
@@ -713,6 +770,17 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {folderDisposition.error instanceof ApiError ? (
               <PageError code={folderDisposition.error.code} />
+            ) : null}
+            {deleteRun.error instanceof ApiError ? (
+              <PageError code={deleteRun.error.code} />
+            ) : null}
+            {deleteAttemptKey && !deleteRun.isPending ? (
+              <button
+                className="secondary wide"
+                onClick={() => deleteRun.mutate(deleteAttemptKey)}
+              >
+                使用原请求键重试删除
+              </button>
             ) : null}
           </section>
 
@@ -766,6 +834,18 @@ export function RunPage({ runId }: { runId: string }) {
               key: idempotencyKey(),
             })
           }
+        />
+      ) : null}
+      {deleteConfirmOpen && available.has("delete_run") ? (
+        <DeleteRunDialog
+          runId={runId}
+          pending={deleteRun.isPending}
+          onCancel={() => setDeleteConfirmOpen(false)}
+          onConfirm={() => {
+            const key = idempotencyKey();
+            setDeleteAttemptKey(key);
+            deleteRun.mutate(key);
+          }}
         />
       ) : null}
     </main>
@@ -1077,6 +1157,58 @@ function FolderDispositionDialog({
             onClick={onConfirm}
           >
             {pending ? "等待服务端结算…" : "确认执行"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function DeleteRunDialog({
+  runId,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  runId: string;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+  return (
+    <div className="modal-backdrop">
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-run-title"
+      >
+        <p className="eyebrow">RUN RECORD</p>
+        <h2 id="delete-run-title">删除运行记录？</h2>
+        <p>
+          {runId} 将从控制台和公开 API 中永久隐藏。媒体文件不会改变，
+          底层计划、事件和事务审计会继续保留。
+        </p>
+        <label className="risk-check">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+            autoFocus
+          />
+          <span>我理解此操作不会删除媒体，但无法恢复显示这条记录。</span>
+        </label>
+        <div className="button-row end">
+          <button className="ghost" disabled={pending} onClick={onCancel}>
+            取消
+          </button>
+          <button
+            className="danger-button"
+            disabled={!confirmed || pending}
+            onClick={onConfirm}
+          >
+            {pending ? "正在删除记录…" : "确认删除记录"}
           </button>
         </div>
       </div>

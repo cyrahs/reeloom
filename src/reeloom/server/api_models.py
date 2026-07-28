@@ -140,6 +140,7 @@ class RunResponse(_StrictModel):
             "settle_folder",
             "dispose_failed_folder",
             "recover_folder_disposition",
+            "delete_run",
         ]
     ]
     settlement: RunSettlement | None
@@ -224,6 +225,11 @@ class SafeEvent(_StrictModel):
 
 class EventsResponse(_StrictModel):
     items: list[SafeEvent]
+
+
+class RunDeletionResponse(_StrictModel):
+    run_id: str
+    deleted_at: str
 
 
 class ConfigWatchResponse(_StrictModel):

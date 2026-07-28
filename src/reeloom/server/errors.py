@@ -32,6 +32,8 @@ class ServerErrorCode(StrEnum):
     INTERACTION_INVALID_RESULT = "interaction_invalid_result"
     FRESH_MAPPING_REQUIRED = "fresh_mapping_required"
     RUN_BUSY = "run_busy"
+    RUN_NOT_FOUND = "run_not_found"
+    RUN_DELETE_CONFLICT = "run_delete_conflict"
 
 
 class ServerError(RuntimeError):

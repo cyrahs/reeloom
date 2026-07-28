@@ -58,6 +58,7 @@ from reeloom.server.api_models import (
     ReapplyResponse,
     RecoveryRequest,
     RecoveryResponse,
+    RunDeletionResponse,
     RunResponse,
     RunsResponse,
     SessionResponse,
@@ -107,6 +108,8 @@ def _folder_disposition_payload(
 
 class ApiQueries(Protocol):
     def get_run(self, run_id: str) -> dict[str, object] | None: ...
+
+    def is_run_visible(self, run_id: str) -> bool: ...
 
     def list_events(
         self,
@@ -190,6 +193,12 @@ class ApiDependencies:
         Callable[[str], dict[str, object]] | None
     ) = None
     idempotency: object | None = None
+    run_delete: (
+        Callable[[str], dict[str, object]] | None
+    ) = None
+    run_delete_resolve: (
+        Callable[[str], dict[str, object] | None] | None
+    ) = None
     sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
     sse_poll_seconds: float = _SSE_POLL_SECONDS
     sse_heartbeat_seconds: float = 15.0
@@ -501,7 +510,7 @@ class _SecurityBoundary:
                     ),
                     (
                         b"access-control-allow-methods",
-                        b"GET, POST, PUT, OPTIONS",
+                        b"GET, POST, PUT, DELETE, OPTIONS",
                     ),
                 ]
             )
@@ -810,6 +819,8 @@ def create_api(
                 ServerErrorCode.INTERACTION_NOT_FOUND: 404,
                 ServerErrorCode.INTERACTION_CONFLICT: 409,
                 ServerErrorCode.RUN_BUSY: 409,
+                ServerErrorCode.RUN_NOT_FOUND: 404,
+                ServerErrorCode.RUN_DELETE_CONFLICT: 409,
                 ServerErrorCode.FRESH_MAPPING_REQUIRED: 422,
                 ServerErrorCode.DATABASE_UNAVAILABLE: 503,
                 ServerErrorCode.PROVIDER_UNAVAILABLE: 503,
@@ -827,6 +838,16 @@ def create_api(
             {"error": {"code": "internal_error"}},
             status_code=500,
         )
+
+    async def require_visible_run(run_id: str) -> None:
+        visible = await asyncio.to_thread(
+            dependencies.queries.is_run_visible,
+            run_id,
+        )
+        if not visible:
+            raise HTTPException(
+                404, detail={"code": "run_not_found"}
+            )
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> dict[str, object]:
@@ -859,6 +880,7 @@ def create_api(
     @app.get("/api/v1/runs/{run_id}", response_model=RunResponse)
     async def get_run(
         run_id: str,
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         value = await asyncio.to_thread(
             dependencies.queries.get_run, run_id
@@ -866,6 +888,38 @@ def create_api(
         if value is None:
             raise HTTPException(404, detail={"code": "run_not_found"})
         return value
+
+    @app.delete(
+        "/api/v1/runs/{run_id}",
+        response_model=RunDeletionResponse,
+    )
+    async def delete_run(
+        run_id: str,
+        key: str = Depends(_idempotency_key),
+    ) -> dict[str, object]:
+        if dependencies.run_delete is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def execute() -> dict[str, object]:
+            return dependencies.run_delete(run_id)
+
+        resolve = (
+            None
+            if dependencies.run_delete_resolve is None
+            else lambda: dependencies.run_delete_resolve(run_id)
+        )
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="run_delete",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={},
+                execute=execute,
+                resolve=resolve,
+            )
+        )
 
     @app.get("/api/v1/runs", response_model=RunsResponse)
     async def list_runs(
@@ -1004,6 +1058,7 @@ def create_api(
     async def get_plan(
         run_id: str,
         version: int | None = None,
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if version is not None and version < 1:
             raise HTTPException(400, detail={"code": "invalid_version"})
@@ -1024,6 +1079,7 @@ def create_api(
         run_id: str,
         before_version: int | None = None,
         limit: int = 50,
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if (
             before_version is not None
@@ -1050,6 +1106,7 @@ def create_api(
         version: int,
         after: int = 0,
         limit: int = 50,
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if (
             version < 1
@@ -1076,6 +1133,7 @@ def create_api(
         run_id: str,
         before: str | None = None,
         limit: int = 50,
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
@@ -1098,6 +1156,7 @@ def create_api(
         run_id: str,
         after: int = 0,
         limit: int = 50,
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if after < 0 or not 1 <= limit <= _MAX_PAGE_SIZE:
             raise HTTPException(400, detail={"code": "invalid_page"})
@@ -1117,6 +1176,7 @@ def create_api(
         request: Request,
         run_id: str,
         cursor: int = Depends(_cursor),
+        _: None = Depends(require_visible_run),
     ) -> StreamingResponse:
         latest = await asyncio.to_thread(
             dependencies.queries.latest_event_id, run_id
@@ -1186,6 +1246,7 @@ def create_api(
         body: InteractionRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1228,6 +1289,7 @@ def create_api(
         body: ReapplyRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1257,6 +1319,7 @@ def create_api(
         body: ApproveApplyRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1377,6 +1440,7 @@ def create_api(
         run_id: str,
         body: FolderDispositionRequest,
         key: str = Depends(_idempotency_key),
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.folder_dispositions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1427,6 +1491,7 @@ def create_api(
         run_id: str,
         body: FolderDispositionRecoveryRequest,
         key: str = Depends(_idempotency_key),
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.folder_dispositions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1477,6 +1542,7 @@ def create_api(
         body: RecoveryRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})

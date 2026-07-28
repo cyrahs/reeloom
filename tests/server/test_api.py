@@ -21,6 +21,9 @@ from reeloom.server.queries import _safe_event
 
 @dataclass
 class _Queries:
+    def is_run_visible(self, run_id: str) -> bool:
+        return run_id == "run-1"
+
     def list_runs(
         self,
         *,
@@ -216,11 +219,13 @@ def _app(
     *,
     static_root: Path | None = None,
     directory_list: Callable[[str], dict[str, object]] | None = None,
+    run_delete: Callable[[str], dict[str, object]] | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
             queries=_Queries(),
             directory_list=directory_list,
+            run_delete=run_delete,
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -230,6 +235,42 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+def test_admin_can_delete_an_eligible_run_record() -> None:
+    deleted: list[str] = []
+
+    def delete(run_id: str) -> dict[str, object]:
+        deleted.append(run_id)
+        return {
+            "run_id": run_id,
+            "deleted_at": "2026-07-28T10:00:00+00:00",
+        }
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app(run_delete=delete)),
+            base_url="http://reeloom.test",
+        ) as client:
+            missing_key = await client.delete(
+                "/api/v1/runs/run-1",
+                headers={"authorization": "Bearer admin-token-strong"},
+            )
+            result = await client.delete(
+                "/api/v1/runs/run-1",
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                    "idempotency-key": "delete-run-1",
+                },
+            )
+            return missing_key, result
+
+    missing_key, result = asyncio.run(scenario())
+
+    assert missing_key.status_code == 400
+    assert result.status_code == 200
+    assert result.json()["run_id"] == "run-1"
+    assert deleted == ["run-1"]
 
 
 def test_admin_can_list_bounded_pod_directories() -> None:
@@ -387,7 +428,7 @@ def test_openapi_uses_named_strict_ui_contracts() -> None:
     paths = schema["paths"]
     for path, path_item in paths.items():
         for method, operation in path_item.items():
-            if method not in {"get", "post", "put"}:
+            if method not in {"get", "post", "put", "delete"}:
                 continue
             if path.endswith("/events/stream"):
                 continue

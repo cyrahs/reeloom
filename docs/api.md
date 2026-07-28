@@ -1,9 +1,9 @@
 # M10 HTTP API 与 Web UI
 
 所有 `/api/v1/*` 请求使用 `Authorization: Bearer ...`，不接受 Cookie 或 query
-token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
-`plan_hash`）。请求使用 strict JSON；duplicate key、额外字段、超限 body/page/text
-会被拒绝。
+token。mutation 还需 `Idempotency-Key`；修改配置或计划的 mutation 另需
+`If-Match`（exact revision 或 `plan_hash`）。请求使用 strict JSON；duplicate
+key、额外字段、超限 body/page/text 会被拒绝。
 
 主要 endpoint：
 
@@ -15,6 +15,7 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 - `GET /api/v1/folders`
 - `GET /api/v1/runs`
 - `GET /api/v1/runs/{run_id}`
+- `DELETE /api/v1/runs/{run_id}`
 - `GET /api/v1/runs/{run_id}/plan`
 - `GET /api/v1/runs/{run_id}/plans`
 - `GET /api/v1/runs/{run_id}/plans/{version}/preview`
@@ -95,6 +96,13 @@ folder settlement 是两个 durable owner：成功媒体的残留目录由独立
 `folder_disposition` approval/transaction 收敛，失败或断线不会让浏览器推断其
 已归档。所有 bucket 目标都只以 `archive/name[.n]` 或 `fail/name[.n]` 相对路径
 返回。
+
+终态且没有未结算 interaction、media/folder transaction 的 run 会暴露
+`delete_run` action。Admin 使用 `DELETE /api/v1/runs/{run_id}` 主动删除后，
+该 run 及其 plans、events、interactions 会从公开 read model 隐藏，关联
+discovery/folder projection 的 `run_id` 变为 `null`。实现只追加不可逆
+tombstone，不删除媒体、canonical plan、journal 或底层审计历史；重复请求必须
+复用原 `Idempotency-Key`。
 
 Canonical OpenAPI snapshot 位于 [openapi-v1.json](openapi-v1.json)，可运行：
 

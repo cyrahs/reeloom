@@ -18,6 +18,7 @@ filename display 和浏览器 mutation intent。
 | Plan store → preview | tamper、wrong plan kind、absolute path leak | lineage pinning、canonical/hash verification、typed projector、allowlisted fields |
 | Config editing | root/secret loss、capability substitution、无界 Agent 成本 | Admin-readable paths、write-only secret、exact revision retain/replace、bounded run budget |
 | Pod directory browser | path escape、symlink traversal、file or dotenv disclosure | Admin-only endpoint、rooted at current Pod `/`、relative canonical navigation、no-follow directory descriptors、directory names only、`.env*` exclusion |
+| Run record deletion | active/recovery state hidden、double submit、audit loss | terminal settlement gate、stable idempotency key、append-only tombstone、preserved immutable history |
 
 ## Residual risks
 

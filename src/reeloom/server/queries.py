@@ -188,7 +188,43 @@ class PostgresQueries:
                            folder.file_count,
                            folder.reason_code,
                            folder.status,
-                           folder.approval_id
+                           folder.approval_id,
+                           NOT EXISTS (
+                               SELECT 1 FROM interactions AS interaction
+                               WHERE interaction.run_id = r.run_id
+                                 AND interaction.status = 'active'
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM approval_claims AS claim
+                               LEFT JOIN approval_settlements AS settled
+                                 ON settled.approval_id = claim.approval_id
+                               WHERE claim.run_id = r.run_id
+                                 AND settled.approval_id IS NULL
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM folder_disposition_approvals AS approval
+                               JOIN folder_disposition_claims AS claim
+                                 ON claim.approval_id =
+                                    approval.approval_id
+                               LEFT JOIN folder_disposition_settlements
+                                    AS settled
+                                 ON settled.approval_id =
+                                    claim.approval_id
+                               WHERE approval.run_id = r.run_id
+                                 AND settled.approval_id IS NULL
+                           )
+                           AND (
+                               d.folder_generation_id IS NULL
+                               OR EXISTS (
+                                   SELECT 1
+                                   FROM watch_folder_observations AS observed
+                                   WHERE observed.discovery_id =
+                                         d.discovery_id
+                                     AND observed.status = 'settled'
+                               )
+                           ) AS deletion_ready
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -257,6 +293,10 @@ class PostgresQueries:
                         LIMIT 1
                     ) AS folder ON true
                     WHERE r.run_id = %s
+                      AND NOT EXISTS (
+                          SELECT 1 FROM run_deletions AS deleted
+                          WHERE deleted.run_id = r.run_id
+                      )
                     """,
                     (run_id,),
                 ).fetchone()
@@ -310,6 +350,12 @@ class PostgresQueries:
             and row[29] is not None
         ):
             actions.append("recover_folder_disposition")
+        if (
+            not busy
+            and status in {"completed", "failed", "rolled_back"}
+            and bool(row[30])
+        ):
+            actions.append("delete_run")
         return {
             "run_id": str(row[0]),
             "status": status,
@@ -392,6 +438,10 @@ class PostgresQueries:
                             SELECT created_at, run_id FROM page_cursor
                         )
                     )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM run_deletions AS deleted
+                          WHERE deleted.run_id = r.run_id
+                      )
                     ORDER BY r.created_at DESC, r.run_id DESC
                     LIMIT %s
                     """,
@@ -437,6 +487,10 @@ class PostgresQueries:
                     FROM discoveries AS d
                     LEFT JOIN runs AS r
                       ON r.discovery_id = d.discovery_id
+                     AND NOT EXISTS (
+                         SELECT 1 FROM run_deletions AS deleted
+                         WHERE deleted.run_id = r.run_id
+                     )
                     WHERE (
                         %s::text IS NULL
                         OR (d.discovered_at, d.discovery_id) < (
@@ -480,6 +534,10 @@ class PostgresQueries:
                     FROM watch_folder_observations AS o
                     LEFT JOIN runs AS r
                       ON r.discovery_id = o.discovery_id
+                     AND NOT EXISTS (
+                         SELECT 1 FROM run_deletions AS deleted
+                         WHERE deleted.run_id = r.run_id
+                     )
                     ORDER BY o.first_observed_at DESC,
                              o.watch_id, o.folder_name
                     LIMIT %s
@@ -503,6 +561,30 @@ class PostgresQueries:
             }
             for row in rows
         )
+
+    def is_run_visible(self, run_id: str) -> bool:
+        try:
+            with self._pool.connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM runs AS run
+                        WHERE run.run_id = %s
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM run_deletions AS deleted
+                              WHERE deleted.run_id = run.run_id
+                          )
+                    )
+                    """,
+                    (run_id,),
+                ).fetchone()
+                return bool(row[0])
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
 
     def list_events(
         self,

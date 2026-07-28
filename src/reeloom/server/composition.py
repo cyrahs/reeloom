@@ -51,6 +51,7 @@ from reeloom.server.interactions import (
 )
 from reeloom.server.idempotency import PostgresIdempotencyService
 from reeloom.server.queries import PostgresQueries
+from reeloom.server.run_deletion import PostgresRunDeletionService
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
@@ -210,6 +211,7 @@ def build_application(
         interactions_repository.reconcile_active()
         idempotency = PostgresIdempotencyService(database.pool)
         idempotency.reconcile_active()
+        run_deletions = PostgresRunDeletionService(database.pool)
         scheduler = PostgresSchedulerRepository(database.pool)
         scheduler.reconcile_boot(current_boot_id=boot_id)
         config_repository = PostgresConfigRepository(database.pool)
@@ -362,6 +364,8 @@ def build_application(
                 provider_probe=probe_provider,
                 directory_list=PodDirectoryBrowser().list,
                 idempotency=idempotency,
+                run_delete=run_deletions.delete,
+                run_delete_resolve=run_deletions.get,
                 sse_max_empty_polls=None,
                 sse_poll_seconds=0.5,
                 sse_heartbeat_seconds=15.0,

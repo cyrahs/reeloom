@@ -91,6 +91,7 @@ export const runSchema = z
         "settle_folder",
         "dispose_failed_folder",
         "recover_folder_disposition",
+        "delete_run",
       ]),
     ),
     settlement: z
@@ -338,6 +339,13 @@ export const recoveryResultSchema = z
     status: z.string(),
     applied_count: z.number().int().nonnegative(),
     rolled_back_count: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const runDeletionSchema = z
+  .object({
+    run_id: z.string(),
+    deleted_at: z.string(),
   })
   .strict();
 
