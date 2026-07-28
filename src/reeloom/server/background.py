@@ -7,13 +7,20 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from agents import MaxTurnsExceeded
+
 from reeloom.executor.apply import ApplyStatus
+from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.runtime.errors import BudgetExceeded, RuntimeDomainError, RuntimeErrorCode
 from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.folder_disposition import FolderDispositionCoordinator
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
@@ -31,6 +38,7 @@ class BackgroundServices:
     scheduler: PostgresSchedulerRepository
     worker: InitialAgentWorker
     apply: ApplyCoordinator
+    folder_dispositions: FolderDispositionCoordinator | None = None
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -131,20 +139,22 @@ class BackgroundServices:
                 now + watch.poll_interval_seconds
             )
             try:
-                snapshot = self.watcher.scan(
+                scan = self.watcher.scan_folders(
                     AuthorizedRoot.create(watch.root)
                 )
-                result = self.scheduler.reconcile_poll(
+                result = self.scheduler.reconcile_folders(
                     watch_id=watch.watch_id,
                     config_revision=config.revision,
                     fence=config.revision,
                     observed_at=datetime.now(UTC),
-                    snapshot=snapshot,
+                    scan=scan,
                 )
-                if result.discovery is not None:
+                for discovery in result.discoveries:
                     self.scheduler.register_run(
-                        discovery_id=result.discovery.discovery_id
+                        discovery_id=discovery.discovery_id
                     )
+                for run_id in result.disposition_run_ids:
+                    self._settle_late_content(run_id=run_id)
             except Exception as error:
                 if (
                     isinstance(error, ServerError)
@@ -159,12 +169,56 @@ class BackgroundServices:
                 )
         return progressed
 
+    def _settle_late_content(self, *, run_id: str) -> None:
+        if self.folder_dispositions is None:
+            return
+        plan = self.folder_dispositions.prepare_current(run_id=run_id)
+        if plan is None:
+            return
+        context = self.scheduler.get_job_context(run_id=run_id)
+        config = self.configs.get(context.registration.config_revision)
+        if config.apply_policy is ApplyPolicy.AUTOMATIC:
+            self.folder_dispositions.approve_and_execute(
+                run_id=run_id,
+                plan_hash=plan.plan_hash,
+                automatic=True,
+            )
+
     def _execute_job(self, job_id: str, run_id: str) -> None:
         succeeded = False
+        retry = False
+        restarted = False
+        folder_run = False
         database_error: ServerError | None = None
         try:
-            plan_hash = asyncio.run(self.worker.run(run_id=run_id))
             context = self.scheduler.get_job_context(run_id=run_id)
+            discovery = getattr(context, "discovery", None)
+            folder_run = (
+                discovery is not None
+                and discovery.folder_generation_id is not None
+            )
+            if (
+                folder_run
+                and not any(
+                    item.kind is CandidateKind.VIDEO
+                    for item in discovery.snapshot.files
+                )
+            ):
+                self._prepare_terminal_failure(
+                    run_id=run_id,
+                    reason_code="no_supported_video",
+                )
+                succeeded = True
+                return
+            plan_hash = asyncio.run(self.worker.run(run_id=run_id))
+            disposition = (
+                None
+                if self.folder_dispositions is None
+                else self.folder_dispositions.prepare_success(
+                    run_id=run_id,
+                    media_plan_hash=plan_hash,
+                )
+            )
             config = self.configs.get(
                 context.registration.config_revision
             )
@@ -175,7 +229,36 @@ class BackgroundServices:
                     automatic=True,
                 )
                 if result.status is not ApplyStatus.COMPLETED:
-                    raise RuntimeError("automatic apply did not complete")
+                    raise ExecutorError(
+                        result.failure_code
+                        or ExecutorErrorCode.RECOVERY_REQUIRED
+                    )
+                if disposition is not None:
+                    try:
+                        self.folder_dispositions.approve_and_execute(
+                            run_id=run_id,
+                            plan_hash=disposition.plan_hash,
+                            automatic=True,
+                        )
+                    except ServerError as error:
+                        if (
+                            error.code
+                            is ServerErrorCode.DATABASE_UNAVAILABLE
+                        ):
+                            raise
+                        _LOG.warning(
+                            "folder_disposition_pending "
+                            "run_id=%s error_type=%s",
+                            run_id,
+                            type(error).__name__,
+                        )
+                    except Exception as error:
+                        _LOG.warning(
+                            "folder_disposition_pending "
+                            "run_id=%s error_type=%s",
+                            run_id,
+                            type(error).__name__,
+                        )
             succeeded = True
         except Exception as error:
             if (
@@ -183,16 +266,105 @@ class BackgroundServices:
                 and error.code is ServerErrorCode.DATABASE_UNAVAILABLE
             ):
                 database_error = error
+            reason_code = self._failure_reason(error)
+            if reason_code is not None:
+                try:
+                    self._prepare_terminal_failure(
+                        run_id=run_id,
+                        reason_code=reason_code,
+                    )
+                    succeeded = True
+                except ServerError as disposition_error:
+                    if (
+                        disposition_error.code
+                        is ServerErrorCode.DATABASE_UNAVAILABLE
+                    ):
+                        database_error = disposition_error
+                    else:
+                        retry = folder_run
+                except Exception:
+                    retry = folder_run
+            elif folder_run and database_error is None:
+                try:
+                    self.scheduler.restart_folder_generation(
+                        run_id=run_id
+                    )
+                    restarted = True
+                except ServerError as restart_error:
+                    if (
+                        restart_error.code
+                        is ServerErrorCode.DATABASE_UNAVAILABLE
+                    ):
+                        database_error = restart_error
+                    else:
+                        retry = True
             _LOG.error(
                 "agent_job_failed run_id=%s error_type=%s",
                 run_id,
                 type(error).__name__,
             )
         finally:
-            self.scheduler.settle_job(
-                job_id=job_id,
-                boot_id=self.boot_id,
-                succeeded=succeeded,
-            )
+            if restarted:
+                pass
+            elif retry:
+                self.scheduler.retry_job(
+                    job_id=job_id,
+                    boot_id=self.boot_id,
+                )
+            else:
+                self.scheduler.settle_job(
+                    job_id=job_id,
+                    boot_id=self.boot_id,
+                    succeeded=succeeded,
+                )
         if database_error is not None:
             raise database_error
+
+    def _prepare_terminal_failure(
+        self, *, run_id: str, reason_code: str
+    ) -> None:
+        if self.folder_dispositions is None:
+            raise RuntimeError("folder disposition service unavailable")
+        plan = self.folder_dispositions.prepare_failure(
+            run_id=run_id,
+            reason_code=reason_code,
+        )
+        if plan is None:
+            raise RuntimeError("folder failure disposition unavailable")
+        self.scheduler.mark_run_failed(run_id=run_id)
+        context = self.scheduler.get_job_context(run_id=run_id)
+        config = self.configs.get(context.registration.config_revision)
+        if config.apply_policy is ApplyPolicy.AUTOMATIC:
+            self.folder_dispositions.approve_and_execute(
+                run_id=run_id,
+                plan_hash=plan.plan_hash,
+                automatic=True,
+            )
+
+    @staticmethod
+    def _failure_reason(error: Exception) -> str | None:
+        if isinstance(error, (MaxTurnsExceeded, BudgetExceeded)):
+            return "agent_budget_exhausted"
+        if isinstance(error, DomainError) and error.code in {
+            ErrorCode.DESTINATION_COLLISION,
+            ErrorCode.INVALID_SERIES_TITLE,
+            ErrorCode.INVALID_YEAR,
+            ErrorCode.INVALID_TMDB_DATA,
+            ErrorCode.INVALID_TMDB_ID,
+            ErrorCode.INVENTORY_CONFLICT,
+        }:
+            return f"domain_{error.code.value}"
+        if (
+            isinstance(error, ExecutorError)
+            and error.code is ExecutorErrorCode.DESTINATION_COLLISION
+        ):
+            return "executor_destination_collision"
+        if isinstance(error, RuntimeDomainError) and error.code in {
+            RuntimeErrorCode.FAILURE_BUDGET_EXHAUSTED,
+            RuntimeErrorCode.TOKEN_BUDGET_EXHAUSTED,
+            RuntimeErrorCode.TIME_BUDGET_EXHAUSTED,
+            RuntimeErrorCode.SERIES_IDENTITY_UNAVAILABLE,
+            RuntimeErrorCode.MOVIE_IDENTITY_UNAVAILABLE,
+        }:
+            return f"runtime_{error.code.value}"
+        return None

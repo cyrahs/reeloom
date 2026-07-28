@@ -180,8 +180,18 @@ class PostgresQueries:
                            settlement.applied_count,
                            settlement.rolled_back_count,
                            settlement.failure_code,
-                           settlement.settled_at
+                           settlement.settled_at,
+                           d.source_folder,
+                           folder.plan_hash,
+                           folder.action,
+                           folder.target_relative,
+                           folder.file_count,
+                           folder.reason_code,
+                           folder.status,
+                           folder.approval_id
                     FROM runs AS r
+                    JOIN discoveries AS d
+                      ON d.discovery_id = r.discovery_id
                     JOIN config_revisions AS c
                       ON c.revision = r.config_revision
                     LEFT JOIN run_states AS s ON s.run_id = r.run_id
@@ -209,6 +219,43 @@ class PostgresQueries:
                         ORDER BY settled.settled_at DESC
                         LIMIT 1
                     ) AS settlement ON true
+                    LEFT JOIN LATERAL (
+                        SELECT p.plan_hash, p.action, p.target_relative,
+                               p.file_count, p.reason_code,
+                               COALESCE(
+                                   fs.status,
+                                   txn.status,
+                                   CASE
+                                       WHEN claim.approval_id IS NOT NULL
+                                       THEN 'prepared'
+                                       ELSE 'planned'
+                                   END
+                               ) AS status,
+                               approval.approval_id
+                        FROM folder_disposition_plans AS p
+                        LEFT JOIN LATERAL (
+                            SELECT a.approval_id
+                            FROM folder_disposition_approvals AS a
+                            WHERE a.run_id = p.run_id
+                              AND a.plan_hash = p.plan_hash
+                            ORDER BY a.issued_at DESC, a.approval_id DESC
+                            LIMIT 1
+                        ) AS approval ON true
+                        LEFT JOIN folder_disposition_claims AS claim
+                          ON claim.approval_id = approval.approval_id
+                        LEFT JOIN folder_disposition_transactions AS txn
+                          ON txn.approval_id =
+                             approval.approval_id
+                        LEFT JOIN folder_disposition_settlements AS fs
+                          ON fs.approval_id = approval.approval_id
+                        WHERE p.run_id = r.run_id
+                          AND (
+                              p.media_plan_hash = s.plan_hash
+                              OR p.media_plan_hash IS NULL
+                          )
+                        ORDER BY p.created_at DESC, p.plan_hash DESC
+                        LIMIT 1
+                    ) AS folder ON true
                     WHERE r.run_id = %s
                     """,
                     (run_id,),
@@ -225,6 +272,8 @@ class PostgresQueries:
         recovery_approval_id = row[11]
         apply_policy = str(row[12])
         busy = bool(row[13])
+        folder_status = None if row[28] is None else str(row[28])
+        folder_action = None if row[24] is None else str(row[24])
         actions: list[str] = []
         if not busy and plan_hash is not None:
             if status in {
@@ -245,6 +294,22 @@ class PostgresQueries:
                 actions.append("reapply")
             if recovery_approval_id is not None:
                 actions.append("recover")
+        if (
+            not busy
+            and row[23] is not None
+            and folder_status == "planned"
+        ):
+            actions.append(
+                "dispose_failed_folder"
+                if folder_action == "fail"
+                else "settle_folder"
+            )
+        if (
+            folder_status
+            in {"prepared", "renamed", "recovery_required"}
+            and row[29] is not None
+        ):
+            actions.append("recover_folder_disposition")
         return {
             "run_id": str(row[0]),
             "status": status,
@@ -278,6 +343,26 @@ class PostgresQueries:
                     "settled_at": row[21].isoformat(),
                 }
             ),
+            "source_folder": (
+                None if row[22] is None else str(row[22])
+            ),
+            "folder_disposition": (
+                None
+                if row[23] is None
+                else {
+                    "plan_hash": str(row[23]),
+                    "action": str(row[24]),
+                    "target_relative": (
+                        None if row[25] is None else str(row[25])
+                    ),
+                    "file_count": int(row[26]),
+                    "reason_code": str(row[27]),
+                    "status": str(row[28]),
+                    "recovery_approval_id": (
+                        None if row[29] is None else str(row[29])
+                    ),
+                }
+            ),
         }
 
     def list_runs(
@@ -296,8 +381,10 @@ class PostgresQueries:
                         WHERE run_id = %s
                     )
                     SELECT r.run_id, r.status, r.work_type, r.created_at,
-                           s.phase, s.plan_hash
+                           s.phase, s.plan_hash, d.source_folder
                     FROM runs AS r
+                    JOIN discoveries AS d
+                      ON d.discovery_id = r.discovery_id
                     LEFT JOIN run_states AS s ON s.run_id = r.run_id
                     WHERE (
                         %s::text IS NULL
@@ -322,6 +409,9 @@ class PostgresQueries:
                 "created_at": row[3].isoformat(),
                 "phase": None if row[4] is None else str(row[4]),
                 "plan_hash": row[5],
+                "source_folder": (
+                    None if row[6] is None else str(row[6])
+                ),
             }
             for row in rows
         )
@@ -342,7 +432,8 @@ class PostgresQueries:
                         WHERE discovery_id = %s
                     )
                     SELECT d.discovery_id, d.watch_id, d.work_type,
-                           d.discovered_at, r.run_id, r.status
+                           d.discovered_at, r.run_id, r.status,
+                           d.source_folder
                     FROM discoveries AS d
                     LEFT JOIN runs AS r
                       ON r.discovery_id = d.discovery_id
@@ -370,6 +461,45 @@ class PostgresQueries:
                 "discovered_at": row[3].isoformat(),
                 "run_id": None if row[4] is None else str(row[4]),
                 "run_status": None if row[5] is None else str(row[5]),
+                "source_folder": (
+                    None if row[6] is None else str(row[6])
+                ),
+            }
+            for row in rows
+        )
+
+    def list_folder_observations(
+        self, *, limit: int
+    ) -> tuple[dict[str, object], ...]:
+        try:
+            with self._pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT o.watch_id, o.folder_name, o.status,
+                           o.blocked_reason, o.stable_at, r.run_id
+                    FROM watch_folder_observations AS o
+                    LEFT JOIN runs AS r
+                      ON r.discovery_id = o.discovery_id
+                    ORDER BY o.first_observed_at DESC,
+                             o.watch_id, o.folder_name
+                    LIMIT %s
+                    """,
+                    (limit,),
+                ).fetchall()
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+        return tuple(
+            {
+                "watch_id": str(row[0]),
+                "source_folder": str(row[1]),
+                "status": str(row[2]),
+                "reason_code": None if row[3] is None else str(row[3]),
+                "stable_at": (
+                    None if row[4] is None else row[4].isoformat()
+                ),
+                "run_id": None if row[5] is None else str(row[5]),
             }
             for row in rows
         )

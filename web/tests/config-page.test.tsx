@@ -95,8 +95,8 @@ test("selects a pod directory without requiring manual path entry", async () => 
   const user = userEvent.setup();
   await screen.findByLabelText("Watch ID");
   await user.click(screen.getAllByRole("button", { name: "替换" })[0]!);
-  await user.click(screen.getByRole("button", { name: "浏览源目录" }));
-  await screen.findByRole("dialog", { name: "选择源目录" });
+  await user.click(screen.getByRole("button", { name: "浏览入站目录" }));
+  await screen.findByRole("dialog", { name: "选择入站目录" });
   await screen.findByText("/srv/media");
   await user.click(screen.getByRole("button", { name: "选择当前目录" }));
 

@@ -233,7 +233,9 @@ def test_production_builder_manual_revision_apply_reapply_recover(
         root.mkdir()
     journey_id = uuid.uuid4().hex
     watch_id = f"journey-watch-{journey_id}"
-    (incoming / "untrusted.mkv").write_bytes(b"journey-video")
+    source_folder = incoming / "Journey"
+    source_folder.mkdir()
+    (source_folder / "untrusted.mkv").write_bytes(b"journey-video")
     models = deque(
         (
             _mapping_model(1),
@@ -443,7 +445,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 assert initial_preview.json()["plan_hash"] == initial_hash
                 assert revised_preview.json()["plan_hash"] == revised_hash
                 assert initial_preview.json()["items"][0]["source"] == (
-                    "untrusted.mkv"
+                    "Journey/untrusted.mkv"
                 )
                 assert str(incoming) not in initial_preview.text
                 history = await client.get(
@@ -460,6 +462,13 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                     "content_available"
                 ] is True
 
+                run_before_apply = await client.get(
+                    f"/api/v1/runs/{run_id}",
+                    headers=admin_auth,
+                )
+                disposition_hash = run_before_apply.json()[
+                    "folder_disposition"
+                ]["plan_hash"]
                 applied = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
                     headers={
@@ -467,11 +476,14 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                         "idempotency-key": f"apply-revision-{journey_id}",
                         "if-match": revised_hash,
                     },
-                    json={"automatic": False},
+                    json={
+                        "automatic": False,
+                        "folder_disposition_plan_hash": disposition_hash,
+                    },
                 )
                 assert applied.status_code == 200, applied.text
                 assert applied.json()["status"] == "completed"
-                assert not (incoming / "untrusted.mkv").exists()
+                assert not source_folder.exists()
 
                 reapplied = await client.post(
                     f"/api/v1/runs/{run_id}/reapply",
@@ -652,10 +664,12 @@ def test_production_builder_automatic_policy_uses_exact_approval(
     archive = tmp_path / "archive"
     for root in (state_root, incoming, archive):
         root.mkdir()
-    primary = incoming / "automatic.mkv"
+    source_folder = incoming / "Journey"
+    source_folder.mkdir()
+    primary = source_folder / "automatic.mkv"
     primary.write_bytes(b"automatic-video")
     if movie:
-        (incoming / "zz-extra.mkv").write_bytes(b"unmapped-extra")
+        (source_folder / "zz-extra.mkv").write_bytes(b"unmapped-extra")
     journey_id = uuid.uuid4().hex
     watch_id = f"automatic-watch-{journey_id}"
     models = deque(
@@ -765,7 +779,19 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                             """,
                             (watch_id,),
                         ).fetchone()
-                    if row is not None and str(row[1]) == "completed":
+                    if (
+                        row is not None
+                        and str(row[1]) == "completed"
+                        and (
+                            not movie
+                            or (
+                                incoming
+                                / "archive"
+                                / "Journey"
+                                / "zz-extra.mkv"
+                            ).exists()
+                        )
+                    ):
                         break
                     await asyncio.sleep(0.1)
                 assert row is not None
@@ -774,7 +800,12 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                 assert tuple(int(item) for item in row[3:]) == (1, 1, 1)
                 assert not primary.exists()
                 if movie:
-                    assert (incoming / "zz-extra.mkv").exists()
+                    assert (
+                        incoming
+                        / "archive"
+                        / "Journey"
+                        / "zz-extra.mkv"
+                    ).exists()
                     movie_root = (
                         archive
                         / "旅程电影 (2025) {tmdb-700}"

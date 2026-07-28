@@ -23,6 +23,10 @@ from reeloom.kernel.movie_amendment import (
     MovieAmendmentPlan,
     verify_movie_amendment_bytes,
 )
+from reeloom.kernel.folder_disposition import (
+    FolderDispositionPlan,
+    verify_folder_disposition_bytes,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 
 _MAX_PLAN_BYTES = 4 * 1024 * 1024
@@ -65,6 +69,16 @@ class FilesystemPlanStore:
     def save_movie_amendment(self, plan: MovieAmendmentPlan) -> None:
         self._save_amendment(plan)
 
+    def save_folder_disposition(
+        self, plan: FolderDispositionPlan
+    ) -> None:
+        if not isinstance(plan, FolderDispositionPlan) or not plan.verify_hash():
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        self._write_plan(
+            self._folder_disposition_name(plan.plan_hash),
+            plan.canonical_bytes(),
+        )
+
     def _save_amendment(
         self,
         plan: AmendmentPlan | MovieAmendmentPlan,
@@ -82,6 +96,56 @@ class FilesystemPlanStore:
             write_once_at(
                 root_fd,
                 self._amendment_name(plan.plan_hash),
+                content,
+                limit=_MAX_PLAN_BYTES,
+            )
+        except ImmutableFileError as error:
+            if error.code is ImmutableFileErrorCode.EXISTS:
+                raise ExecutorError(
+                    ExecutorErrorCode.PLAN_ALREADY_EXISTS
+                ) from None
+            raise ExecutorError(
+                ExecutorErrorCode.PLAN_STORE_FAILURE
+            ) from None
+        finally:
+            os.close(root_fd)
+
+    def load_folder_disposition(self, plan_hash: str) -> bytes:
+        root_fd = self._open_root()
+        try:
+            content = read_at(
+                root_fd,
+                self._folder_disposition_name(plan_hash),
+                limit=_MAX_PLAN_BYTES,
+            )
+            if not verify_folder_disposition_bytes(content, plan_hash):
+                raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+            return content
+        except ImmutableFileError as error:
+            if error.code is ImmutableFileErrorCode.NOT_FOUND:
+                raise ExecutorError(
+                    ExecutorErrorCode.PLAN_NOT_FOUND
+                ) from None
+            if error.code is ImmutableFileErrorCode.INVALID:
+                raise ExecutorError(
+                    ExecutorErrorCode.INVALID_PLAN
+                ) from None
+            raise ExecutorError(
+                ExecutorErrorCode.PLAN_STORE_FAILURE
+            ) from None
+        except ExecutorError:
+            raise
+        finally:
+            os.close(root_fd)
+
+    def _write_plan(self, name: str, content: bytes) -> None:
+        if not 0 < len(content) <= _MAX_PLAN_BYTES:
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        root_fd = self._open_root()
+        try:
+            write_once_at(
+                root_fd,
+                name,
                 content,
                 limit=_MAX_PLAN_BYTES,
             )
@@ -157,5 +221,14 @@ class FilesystemPlanStore:
             raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         return (
             "amendment-v1-"
+            f"{plan_hash.removeprefix('sha256:')}.json"
+        )
+
+    @staticmethod
+    def _folder_disposition_name(plan_hash: object) -> str:
+        if not is_valid_plan_hash(plan_hash):
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        return (
+            "folder-disposition-v1-"
             f"{plan_hash.removeprefix('sha256:')}.json"
         )

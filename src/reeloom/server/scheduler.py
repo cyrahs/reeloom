@@ -9,7 +9,12 @@ from enum import StrEnum
 from reeloom.kernel.candidates import CandidateKind
 from reeloom.server.config import ServerWorkType
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.watcher import WatchFile, WatchSnapshot
+from reeloom.server.watcher import (
+    FolderScan,
+    FolderSnapshot,
+    WatchFile,
+    WatchSnapshot,
+)
 
 
 class JobStatus(StrEnum):
@@ -28,12 +33,22 @@ class Discovery:
     work_type: ServerWorkType
     discovered_at: datetime
     snapshot: WatchSnapshot | None = None
+    source_folder: str | None = None
+    folder_generation_id: str | None = None
+    inventory_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PollResult:
     mutated: bool
     discovery: Discovery | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FolderPollResult:
+    mutated: bool
+    discoveries: tuple[Discovery, ...] = ()
+    disposition_run_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +91,15 @@ class _Observation:
 
 
 @dataclass(slots=True)
+class _FolderObservation:
+    folder: FolderSnapshot
+    config_revision: int
+    first_observed_at: datetime
+    stable_at: datetime | None = None
+    discovery_id: str | None = None
+
+
+@dataclass(slots=True)
 class _Job:
     job_id: str
     run_id: str
@@ -95,6 +119,9 @@ class InMemorySchedulerRepository:
         self._lock = threading.RLock()
         self._watches: dict[str, _WatchState] = {}
         self._observations: dict[str, dict[str, _Observation]] = {}
+        self._folder_observations: dict[
+            str, dict[str, _FolderObservation]
+        ] = {}
         self._discoveries: dict[str, Discovery] = {}
         self._discovery_by_snapshot: dict[tuple[str, int, str], str] = {}
         self._runs: dict[str, RunRegistration] = {}
@@ -134,8 +161,16 @@ class InMemorySchedulerRepository:
                 or previous.fence != fence
             ):
                 self._observations[watch_id] = {}
+                self._folder_observations[watch_id] = {
+                    name: item
+                    for name, item in self._folder_observations.get(
+                        watch_id, {}
+                    ).items()
+                    if item.discovery_id is not None
+                }
             else:
                 self._observations.setdefault(watch_id, {})
+                self._folder_observations.setdefault(watch_id, {})
 
     def reconcile_poll(
         self,
@@ -217,6 +252,119 @@ class InMemorySchedulerRepository:
             if mutated:
                 self.observation_mutations += 1
             return PollResult(mutated=mutated, discovery=discovery)
+
+    def reconcile_folders(
+        self,
+        *,
+        watch_id: str,
+        config_revision: int,
+        fence: int,
+        observed_at: datetime,
+        scan: FolderScan,
+    ) -> FolderPollResult:
+        with self._lock:
+            state = self._watches.get(watch_id)
+            if state is None:
+                raise ServerError(ServerErrorCode.WATCH_NOT_FOUND)
+            if (
+                state.config_revision != config_revision
+                or state.fence != fence
+            ):
+                raise ServerError(ServerErrorCode.STALE_WATCH_SCAN)
+            observations = self._folder_observations[watch_id]
+            current_names = {
+                item.name for item in scan.folders
+            } | {item.name for item in scan.blocked}
+            mutated = False
+            for name in tuple(set(observations) - current_names):
+                if observations[name].discovery_id is None:
+                    del observations[name]
+                    mutated = True
+
+            threshold = timedelta(seconds=state.settle_interval_seconds)
+            discoveries: list[Discovery] = []
+            for folder in scan.folders:
+                previous = observations.get(folder.name)
+                identity = (
+                    folder.device,
+                    folder.inode,
+                    folder.inventory_id,
+                    folder.candidates.snapshot_id,
+                )
+                previous_identity = (
+                    None
+                    if previous is None
+                    else (
+                        previous.folder.device,
+                        previous.folder.inode,
+                        previous.folder.inventory_id,
+                        previous.folder.candidates.snapshot_id,
+                    )
+                )
+                if (
+                    previous is None
+                    or previous_identity != identity
+                    or (
+                        previous.discovery_id is None
+                        and previous.config_revision != config_revision
+                    )
+                ):
+                    observations[folder.name] = _FolderObservation(
+                        folder=folder,
+                        config_revision=config_revision,
+                        first_observed_at=observed_at,
+                    )
+                    previous = observations[folder.name]
+                    mutated = True
+                if previous.discovery_id is not None:
+                    continue
+                if previous.stable_at is None:
+                    if (
+                        observed_at - previous.first_observed_at
+                        < threshold
+                    ):
+                        continue
+                    previous.stable_at = observed_at
+                    mutated = True
+                generation_id = _id(
+                    "folder",
+                    watch_id,
+                    folder.name,
+                    str(folder.device),
+                    str(folder.inode),
+                    folder.inventory_id,
+                    previous.first_observed_at.isoformat(),
+                )
+                discovery_id = _id(
+                    "discovery",
+                    watch_id,
+                    str(config_revision),
+                    generation_id,
+                    folder.candidates.snapshot_id,
+                )
+                discovery = Discovery(
+                    discovery_id=discovery_id,
+                    watch_id=watch_id,
+                    config_revision=config_revision,
+                    snapshot_id=folder.candidates.snapshot_id,
+                    work_type=state.work_type,
+                    discovered_at=observed_at,
+                    snapshot=folder.candidates,
+                    source_folder=folder.name,
+                    folder_generation_id=generation_id,
+                    inventory_id=folder.inventory_id,
+                )
+                self._discoveries[discovery_id] = discovery
+                self._discovery_by_snapshot[
+                    (watch_id, config_revision, generation_id)
+                ] = discovery_id
+                previous.discovery_id = discovery_id
+                discoveries.append(discovery)
+                self.audit_count += 1
+                mutated = True
+            if mutated:
+                self.observation_mutations += 1
+            return FolderPollResult(mutated, tuple(discoveries))
 
     def register_run(self, *, discovery_id: str) -> RunRegistration:
         with self._lock:

@@ -255,6 +255,20 @@ class ApplyCoordinator:
                           ON lineage.run_id = h.run_id
                          AND lineage.version = h.version
                         WHERE r.run_id = %s AND h.plan_hash = %s
+                          AND (
+                              lineage.plan_kind = 'amendment'
+                              OR d.folder_generation_id IS NULL
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM watch_folder_observations AS folder
+                                  WHERE folder.discovery_id =
+                                        d.discovery_id
+                                    AND folder.status = 'active'
+                                    AND folder.inventory_id =
+                                        d.inventory_id
+                              )
+                          )
+                        FOR UPDATE OF r
                         """,
                         (run_id, plan_hash),
                     ).fetchone()

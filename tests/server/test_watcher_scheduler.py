@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.adapters.filesystem import FilesystemScanner
 from reeloom.server.config import ServerWorkType
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.scheduler import InMemorySchedulerRepository
@@ -25,6 +26,241 @@ def test_watcher_ignores_symlink_and_env_files(tmp_path: Path) -> None:
     assert tuple(item.relative_path.as_posix() for item in snapshot.files) == (
         "episode.mkv",
     )
+
+
+def test_folder_watcher_scans_direct_children_independently(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "First"
+    second = tmp_path / "Second"
+    first.mkdir()
+    second.mkdir()
+    (first / "episode.mkv").write_bytes(b"video")
+    (first / "notes.nfo").write_text("metadata")
+    (second / "episode.mkv").write_bytes(b"video")
+    (tmp_path / "loose.mkv").write_bytes(b"ignored")
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "old.mkv").write_bytes(b"ignored")
+    (tmp_path / "FAIL").mkdir()
+    (tmp_path / "FAIL" / "bad.mkv").write_bytes(b"ignored")
+    (tmp_path / "ａｒｃｈｉｖｅ").mkdir()
+    (tmp_path / "ａｒｃｈｉｖｅ" / "wide.mkv").write_bytes(b"ignored")
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / "hidden.mkv").write_bytes(b"ignored")
+
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    assert tuple(item.name for item in scan.folders) == ("First", "Second")
+    assert scan.blocked == ()
+    assert tuple(
+        item.relative_path.as_posix()
+        for item in scan.folders[0].candidates.files
+    ) == ("First/episode.mkv",)
+    assert tuple(
+        item.relative_path.as_posix()
+        for item in scan.folders[0].entries
+    ) == ("episode.mkv", "notes.nfo")
+
+
+def test_folder_watcher_tracks_nested_symlink_without_following(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    work.mkdir()
+    (work / "episode.mkv").write_bytes(b"video")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.mkv").write_bytes(b"secret")
+    (work / "link").symlink_to(outside, target_is_directory=True)
+
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    work_snapshot = next(item for item in scan.folders if item.name == "Work")
+    assert tuple(
+        item.relative_path.as_posix() for item in work_snapshot.entries
+    ) == ("episode.mkv", "link")
+    assert tuple(
+        item.relative_path.as_posix()
+        for item in work_snapshot.candidates.files
+    ) == ("Work/episode.mkv",)
+
+
+def test_folder_watcher_blocks_env_without_scanning_candidates(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    work.mkdir()
+    (work / ".env-secret").write_text("forbidden")
+    (work / "episode.mkv").write_bytes(b"video")
+
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    assert scan.folders == ()
+    assert tuple((item.name, item.reason) for item in scan.blocked) == (
+        ("Work", "env_path_forbidden"),
+    )
+
+
+def test_folder_watcher_finds_nested_env_before_reading_subtitle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work = tmp_path / "Work"
+    later = work / "z-later"
+    later.mkdir(parents=True)
+    (work / "a-first.srt").write_text("subtitle")
+    (later / ".env").write_text("forbidden")
+    reads = 0
+
+    def unexpected_read(**_: object) -> str:
+        nonlocal reads
+        reads += 1
+        return "unused"
+
+    monkeypatch.setattr(
+        FilesystemScanner,
+        "_subtitle_sample_digest",
+        unexpected_read,
+    )
+
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    assert scan.folders == ()
+    assert scan.blocked[0].reason == "env_path_forbidden"
+    assert reads == 0
+
+
+def test_folder_discoveries_settle_independently(tmp_path: Path) -> None:
+    first = tmp_path / "First"
+    second = tmp_path / "Second"
+    first.mkdir()
+    second.mkdir()
+    (first / "episode.mkv").write_bytes(b"same")
+    (second / "episode.mkv").write_bytes(b"same")
+    watcher = NoFollowWatcher()
+    repository = InMemorySchedulerRepository()
+    repository.configure_watch(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        work_type=ServerWorkType.ANIME,
+        settle_interval_seconds=10,
+    )
+    started = datetime(2026, 7, 27, tzinfo=UTC)
+
+    first_poll = repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started,
+        scan=watcher.scan_folders(AuthorizedRoot.create(tmp_path)),
+    )
+    stable = repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started + timedelta(seconds=10),
+        scan=watcher.scan_folders(AuthorizedRoot.create(tmp_path)),
+    )
+
+    assert first_poll.discoveries == ()
+    assert {item.source_folder for item in stable.discoveries} == {
+        "First",
+        "Second",
+    }
+    assert len({item.discovery_id for item in stable.discoveries}) == 2
+    assert all(
+        tuple(
+            path.relative_path.parts[0]
+            for path in item.snapshot.files  # type: ignore[union-attr]
+        )
+        in {("First",), ("Second",)}
+        for item in stable.discoveries
+    )
+
+
+def test_folder_change_creates_a_new_generation_after_settling(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    work.mkdir()
+    video = work / "episode.mkv"
+    video.write_bytes(b"first")
+    watcher = NoFollowWatcher()
+    repository = InMemorySchedulerRepository()
+    repository.configure_watch(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        work_type=ServerWorkType.ANIME,
+        settle_interval_seconds=1,
+    )
+    started = datetime(2026, 7, 27, tzinfo=UTC)
+    repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started,
+        scan=watcher.scan_folders(AuthorizedRoot.create(tmp_path)),
+    )
+    first = repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started + timedelta(seconds=1),
+        scan=watcher.scan_folders(AuthorizedRoot.create(tmp_path)),
+    ).discoveries[0]
+    video.write_bytes(b"second")
+    repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started + timedelta(seconds=2),
+        scan=watcher.scan_folders(AuthorizedRoot.create(tmp_path)),
+    )
+    second = repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started + timedelta(seconds=3),
+        scan=watcher.scan_folders(AuthorizedRoot.create(tmp_path)),
+    ).discoveries[0]
+
+    assert second.folder_generation_id != first.folder_generation_id
+
+
+def test_empty_folder_settles_for_no_video_disposition(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Empty").mkdir()
+    repository = InMemorySchedulerRepository()
+    repository.configure_watch(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        work_type=ServerWorkType.MOVIE,
+        settle_interval_seconds=1,
+    )
+    started = datetime(2026, 7, 27, tzinfo=UTC)
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+    repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started,
+        scan=scan,
+    )
+
+    stable = repository.reconcile_folders(
+        watch_id="watch-1",
+        config_revision=1,
+        fence=1,
+        observed_at=started + timedelta(seconds=1),
+        scan=scan,
+    )
+
+    assert stable.discoveries[0].source_folder == "Empty"
+    assert stable.discoveries[0].snapshot.files == ()  # type: ignore[union-attr]
 
 
 def test_unchanged_poll_does_not_grow_history(tmp_path: Path) -> None:

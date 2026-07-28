@@ -574,6 +574,22 @@ recovery 和 Web 页面。
 完成证明见 [M10 计划](m10-plan.md)、[M10 Requirement Matrix](m10-requirements.md)
 和 [M10 实现评审](m10-review.md)。
 
+### M11：以文件夹为单位的入站归档
+
+当前状态：M11 已完成。每个 watch 根的直接子文件夹独立稳定并创建一个 run；
+媒体仍由 M0-M10 immutable plan 执行，随后由独立
+`FolderDispositionPlan v1` 将残留归入 watch-local `archive`、安全移除已验证
+空目录，或将 eligible deterministic failure 归入 `fail`。
+
+`archive`、`fail`、顶层隐藏目录、散落文件和顶层 symlink 不参与发现；嵌套
+symlink 只作为不透明残留，任意 `.env*` 会阻断整个文件夹。Folder disposition
+使用 exact approval、独立 journal、atomic no-replace rename 和 exact recovery；
+迟到内容重新稳定并生成新 hash，不能复用旧组合。
+
+完成证明见 [M11 ADR](adr/0004-m11-folder-intake.md)、
+[M11 Requirement Matrix](m11-requirements.md) 和
+[M11 threat model](m11-threat-model.md)。
+
 ## 9. 第一条端到端验收测试
 
 ```text

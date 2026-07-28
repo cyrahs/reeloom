@@ -25,6 +25,7 @@ export const runSummarySchema = z
     created_at: z.string(),
     phase: z.string().nullable(),
     plan_hash: z.string().nullable(),
+    source_folder: z.string().nullable(),
   })
   .strict();
 
@@ -40,11 +41,29 @@ export const discoverySchema = z
     discovered_at: z.string(),
     run_id: z.string().nullable(),
     run_status: z.string().nullable(),
+    source_folder: z.string().nullable(),
   })
   .strict();
 
 export const discoveriesSchema = z
   .object({ items: z.array(discoverySchema) })
+  .strict();
+
+export const foldersSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          watch_id: z.string(),
+          source_folder: z.string(),
+          status: z.enum(["settling", "active", "blocked", "settled"]),
+          reason_code: z.string().nullable(),
+          stable_at: z.string().nullable(),
+          run_id: z.string().nullable(),
+        })
+        .strict(),
+    ),
+  })
   .strict();
 
 export const runSchema = z
@@ -69,6 +88,9 @@ export const runSchema = z
         "approve_apply",
         "reapply",
         "recover",
+        "settle_folder",
+        "dispose_failed_folder",
+        "recover_folder_disposition",
       ]),
     ),
     settlement: z
@@ -81,6 +103,26 @@ export const runSchema = z
         rolled_back_count: z.number().int().nonnegative(),
         failure_code: z.string().nullable(),
         settled_at: z.string(),
+      })
+      .strict()
+      .nullable(),
+    source_folder: z.string().nullable(),
+    folder_disposition: z
+      .object({
+        plan_hash: z.string(),
+        action: z.enum(["archive", "fail", "remove_empty"]),
+        target_relative: z.string().nullable(),
+        file_count: z.number().int().nonnegative(),
+        reason_code: z.string(),
+        status: z.enum([
+          "planned",
+          "prepared",
+          "renamed",
+          "completed",
+          "blocked",
+          "recovery_required",
+        ]),
+        recovery_approval_id: z.string().nullable(),
       })
       .strict()
       .nullable(),
@@ -259,6 +301,30 @@ export const applyResultSchema = z
     status: z.string(),
     applied_count: z.number().int().nonnegative(),
     rolled_back_count: z.number().int().nonnegative(),
+    folder_disposition: z
+      .object({
+        run_id: z.string(),
+        plan_hash: z.string(),
+        approval_id: z.string(),
+        transaction_id: z.string(),
+        action: z.enum(["archive", "fail", "remove_empty"]),
+        target_relative: z.string().nullable(),
+        status: z.literal("completed"),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const folderDispositionResultSchema = z
+  .object({
+    run_id: z.string(),
+    plan_hash: z.string(),
+    approval_id: z.string(),
+    transaction_id: z.string(),
+    action: z.enum(["archive", "fail", "remove_empty"]),
+    target_relative: z.string().nullable(),
+    status: z.literal("completed"),
   })
   .strict();
 

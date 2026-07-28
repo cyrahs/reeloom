@@ -12,7 +12,7 @@ test("serves the dashboard from the real API and PostgreSQL control plane", asyn
   await expect(
     page.getByRole("heading", { name: "今天的整理进度，一眼看清。" }),
   ).toBeVisible();
-  await expect(page.getByText(/PostgreSQL 17 · Schema 18/)).toBeVisible();
+  await expect(page.getByText(/PostgreSQL 17 · Schema 19/)).toBeVisible();
   const session = await page.evaluate(async () => {
     const response = await fetch("/api/v1/session", {
       headers: {
@@ -31,7 +31,7 @@ test("admin can enter the same-origin dashboard and untrusted text stays text", 
 }) => {
   await page.route("**/health", (route) =>
     route.fulfill({
-      json: { status: "ok", postgres_major: 17, schema_version: 18 },
+      json: { status: "ok", postgres_major: 17, schema_version: 19 },
     }),
   );
   await page.route("**/api/v1/session", async (route) => {
@@ -53,6 +53,7 @@ test("admin can enter the same-origin dashboard and untrusted text stays text", 
             created_at: "2026-07-26T00:00:00Z",
             phase: "awaiting_approval",
             plan_hash: `sha256:${"a".repeat(64)}`,
+            source_folder: null,
           },
         ],
       },
@@ -137,6 +138,8 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
               settled_at: "2026-07-26T00:00:02Z",
             }
           : null,
+        source_folder: null,
+        folder_disposition: null,
       },
     }),
   );
@@ -205,6 +208,7 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
         status: "completed",
         applied_count: 1,
         rolled_back_count: 0,
+        folder_disposition: null,
       },
     });
   });
@@ -225,7 +229,10 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
   await page.getByRole("button", { name: "批准并执行" }).click();
 
   await expect(page.getByText("执行状态：completed")).toBeVisible();
-  expect(approvalBody).toEqual({ automatic: false });
+  expect(approvalBody).toEqual({
+    automatic: false,
+    folder_disposition_plan_hash: null,
+  });
   expect(approvalHeaders["if-match"]).toBe(planHash);
   expect(approvalHeaders["idempotency-key"]).toMatch(/^ui-v1-/);
 });

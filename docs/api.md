@@ -12,6 +12,7 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 - `GET /api/v1/admin/directories`
 - `POST /api/v1/admin/config/provider-probe`
 - `GET /api/v1/discoveries`
+- `GET /api/v1/folders`
 - `GET /api/v1/runs`
 - `GET /api/v1/runs/{run_id}`
 - `GET /api/v1/runs/{run_id}/plan`
@@ -22,8 +23,10 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 - `GET /api/v1/runs/{run_id}/events/stream`
 - `POST /api/v1/runs/{run_id}/interactions`
 - `POST /api/v1/runs/{run_id}/approve-and-apply`
+- `POST /api/v1/runs/{run_id}/folder-disposition`
 - `POST /api/v1/runs/{run_id}/reapply`
 - `POST /api/v1/operations/runs/{run_id}/recover`
+- `POST /api/v1/operations/runs/{run_id}/folder-disposition/recover`
 
 SSE 使用 durable PostgreSQL `event_id` 作为 `id`，通过 `Last-Event-ID` 恢复。
 cursor ahead/invalid fail closed。除 Admin-only 目录选择接口外，浏览器投影只包含
@@ -64,6 +67,14 @@ observation 永不进入此投影。每页最多 100 条。
 它复用相同的 lineage、preview、interaction、approve/apply、reapply 和 recovery
 契约。Movie initial preview 返回 `move/unmapped`，amendment 返回
 `move/unchanged`，且仍只包含相对路径。
+
+M11 folder discovery 为 `DiscoverySummary` 和 run read model 增加可空的
+`source_folder`。新 folder run 的 apply body 同时携带服务端已投影的 exact
+`folder_disposition_plan_hash`；legacy run 继续接受原 wire。媒体 settlement 与
+folder settlement 是两个 durable owner：成功媒体的残留目录由独立
+`folder_disposition` approval/transaction 收敛，失败或断线不会让浏览器推断其
+已归档。所有 bucket 目标都只以 `archive/name[.n]` 或 `fail/name[.n]` 相对路径
+返回。
 
 Canonical OpenAPI snapshot 位于 [openapi-v1.json](openapi-v1.json)，可运行：
 

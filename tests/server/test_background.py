@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.server.background import BackgroundServices
 from reeloom.server.config import ApplyPolicy
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -105,3 +106,18 @@ def test_database_failure_is_rethrown_after_job_is_settled(
 
     assert raised.value.code is ServerErrorCode.DATABASE_UNAVAILABLE
     assert scheduler.settled == [False]
+
+
+def test_only_deterministic_executor_collision_is_terminal() -> None:
+    assert (
+        BackgroundServices._failure_reason(
+            ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
+        )
+        == "executor_destination_collision"
+    )
+    assert (
+        BackgroundServices._failure_reason(
+            ExecutorError(ExecutorErrorCode.SOURCE_DRIFT)
+        )
+        is None
+    )

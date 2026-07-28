@@ -7,6 +7,7 @@ import { HashLink } from "../router";
 import {
   configSchema,
   discoveriesSchema,
+  foldersSchema,
   healthSchema,
   runsSchema,
 } from "../schemas";
@@ -29,6 +30,12 @@ export function DashboardPage() {
     queryKey: ["discoveries"],
     queryFn: () =>
       api.request("/api/v1/discoveries?limit=50", discoveriesSchema),
+    refetchInterval: visible ? 10_000 : false,
+  });
+  const folders = useQuery({
+    queryKey: ["folders"],
+    queryFn: () =>
+      api.request("/api/v1/folders?limit=100", foldersSchema),
     refetchInterval: visible ? 10_000 : false,
   });
   const config = useQuery({
@@ -104,6 +111,42 @@ export function DashboardPage() {
       <section className="panel">
         <div className="panel-heading">
           <div>
+            <p className="eyebrow">INBOUND FOLDERS</p>
+            <h2>入站文件夹</h2>
+          </div>
+          <span className="muted">稳定中、活动与阻断状态</span>
+        </div>
+        {folders.error instanceof ApiError ? (
+          <PageError code={folders.error.code} />
+        ) : null}
+        <div className="discovery-list">
+          {folders.data?.items.map((item) => (
+            <article key={`${item.watch_id}:${item.source_folder}`}>
+              <div>
+                <strong>{item.source_folder}</strong>
+                <span>
+                  {item.watch_id}
+                  {item.reason_code ? ` · ${item.reason_code}` : ""}
+                </span>
+              </div>
+              {item.run_id ? (
+                <HashLink to={`/runs/${encodeURIComponent(item.run_id)}`}>
+                  <Status value={item.status} />
+                </HashLink>
+              ) : (
+                <Status value={item.status} />
+              )}
+            </article>
+          ))}
+          {folders.isSuccess && !folders.data.items.length ? (
+            <div className="empty-inline"><p>暂无入站文件夹。</p></div>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
             <p className="eyebrow">RUNS</p>
             <h2>运行</h2>
           </div>
@@ -116,6 +159,7 @@ export function DashboardPage() {
                 <tr>
                   <th>运行</th>
                   <th>类型</th>
+                  <th>入站文件夹</th>
                   <th>阶段</th>
                   <th>计划</th>
                   <th>状态</th>
@@ -130,6 +174,7 @@ export function DashboardPage() {
                       </HashLink>
                     </td>
                     <td>{workTypeLabel(run.work_type)}</td>
+                    <td>{run.source_folder ?? "Legacy"}</td>
                     <td>{run.phase ?? "—"}</td>
                     <td><ShortHash value={run.plan_hash} /></td>
                     <td><Status value={run.status} /></td>
@@ -159,7 +204,10 @@ export function DashboardPage() {
               <div>
                 <strong>{item.watch_id}</strong>
                 <span>
-                  {workTypeLabel(item.work_type)} · {formatTime(item.discovered_at)}
+                  {workTypeLabel(item.work_type)}
+                  {item.source_folder ? ` · ${item.source_folder}` : " · Legacy"}
+                  {" · "}
+                  {formatTime(item.discovered_at)}
                 </span>
               </div>
               {item.run_id ? (

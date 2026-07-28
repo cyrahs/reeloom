@@ -22,6 +22,7 @@ import { PageError, ShortHash, Status } from "../components/Status";
 import { HashLink } from "../router";
 import {
   applyResultSchema,
+  folderDispositionResultSchema,
   interactionsSchema,
   interactionResultSchema,
   lineageSchema,
@@ -30,6 +31,7 @@ import {
   recoveryResultSchema,
   runSchema,
   type Preview,
+  type Run,
   type RunEvent,
 } from "../schemas";
 import {
@@ -46,16 +48,26 @@ type ActionAttempt = {
   planHash: string;
   key: string;
 };
-type ApplyAttempt = { planHash: string; key: string };
+type ApplyAttempt = {
+  planHash: string;
+  folderDispositionPlanHash: string | null;
+  key: string;
+};
 type RecoveryAttempt = {
   planHash: string;
   approvalId: string;
   key: string;
 };
+type FolderAttempt = {
+  planHash: string;
+  approvalId?: string;
+  key: string;
+};
 type UncertainAttempt =
   | { type: "action"; value: ActionAttempt }
   | { type: "apply"; value: ApplyAttempt }
-  | { type: "recover"; value: RecoveryAttempt };
+  | { type: "recover"; value: RecoveryAttempt }
+  | { type: "folder"; value: FolderAttempt };
 
 export function RunPage({ runId }: { runId: string }) {
   const { api, logout } = useAuth();
@@ -65,6 +77,7 @@ export function RunPage({ runId }: { runId: string }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [streamState, setStreamState] = useState("正在同步");
   const [approveOpen, setApproveOpen] = useState(false);
+  const [folderConfirmOpen, setFolderConfirmOpen] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   const [uncertainAttempt, setUncertainAttempt] =
     useState<UncertainAttempt | null>(null);
@@ -248,7 +261,11 @@ export function RunPage({ runId }: { runId: string }) {
   });
 
   const apply = useMutation({
-    mutationFn: async ({ planHash, key }: ApplyAttempt) => {
+    mutationFn: async ({
+      planHash,
+      folderDispositionPlanHash,
+      key,
+    }: ApplyAttempt) => {
       return api.request(
         `/api/v1/runs/${encodedRunId}/approve-and-apply`,
         applyResultSchema,
@@ -258,7 +275,10 @@ export function RunPage({ runId }: { runId: string }) {
             "If-Match": planHash,
             "Idempotency-Key": key,
           },
-          body: { automatic: false },
+          body: {
+            automatic: false,
+            folder_disposition_plan_hash: folderDispositionPlanHash,
+          },
         },
       );
     },
@@ -274,6 +294,46 @@ export function RunPage({ runId }: { runId: string }) {
           "执行结果不确定；页面只显示服务端 durable settlement，可用原请求键安全重放。",
         );
         await reconcileUncertain({ type: "apply", value: attempt });
+      } else {
+        setUncertainAttempt(null);
+        await invalidateRun();
+      }
+    },
+  });
+
+  const folderDisposition = useMutation({
+    mutationFn: async ({
+      planHash,
+      approvalId,
+      key,
+    }: FolderAttempt) => {
+      const recovering = approvalId !== undefined;
+      return api.request(
+        recovering
+          ? `/api/v1/operations/runs/${encodedRunId}/folder-disposition/recover`
+          : `/api/v1/runs/${encodedRunId}/folder-disposition`,
+        folderDispositionResultSchema,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": key },
+          body: recovering
+            ? { plan_hash: planHash, approval_id: approvalId }
+            : { plan_hash: planHash, automatic: false },
+        },
+      );
+    },
+    onSuccess: async () => {
+      setUncertainAttempt(null);
+      setFolderConfirmOpen(false);
+      await invalidateRun();
+    },
+    onError: async (error, attempt) => {
+      setFolderConfirmOpen(false);
+      if (error instanceof ApiError && error.code === "network_uncertain") {
+        setActionNotice(
+          "文件夹事务结果不确定；已读取 durable state，只允许复用原请求键。",
+        );
+        await reconcileUncertain({ type: "folder", value: attempt });
       } else {
         setUncertainAttempt(null);
         await invalidateRun();
@@ -342,8 +402,10 @@ export function RunPage({ runId }: { runId: string }) {
       action.mutate(uncertainAttempt.value);
     } else if (uncertainAttempt.type === "apply") {
       apply.mutate(uncertainAttempt.value);
-    } else {
+    } else if (uncertainAttempt.type === "recover") {
       recover.mutate(uncertainAttempt.value);
+    } else {
+      folderDisposition.mutate(uncertainAttempt.value);
     }
   };
 
@@ -359,6 +421,9 @@ export function RunPage({ runId }: { runId: string }) {
           </div>
           <h1>{run.data.run_id}</h1>
           <ShortHash value={run.data.plan_hash} />
+          {run.data.source_folder ? (
+            <p className="muted">入站文件夹：{run.data.source_folder}</p>
+          ) : null}
         </div>
         <div className="stream-indicator">
           <span className="pulse online" />
@@ -383,6 +448,31 @@ export function RunPage({ runId }: { runId: string }) {
             <div><dt>Transaction</dt><dd>{run.data.settlement.transaction_id}</dd></div>
             <div><dt>已应用</dt><dd>{run.data.settlement.applied_count}</dd></div>
             <div><dt>已回滚</dt><dd>{run.data.settlement.rolled_back_count}</dd></div>
+          </dl>
+        </section>
+      ) : null}
+
+      {run.data.folder_disposition ? (
+        <section className="settlement" aria-live="polite">
+          <div>
+            <p className="eyebrow">FOLDER DISPOSITION</p>
+            <h2>
+              文件夹收尾：{run.data.folder_disposition.status}
+            </h2>
+          </div>
+          <dl>
+            <div>
+              <dt>动作</dt>
+              <dd>{folderActionLabel(run.data.folder_disposition.action)}</dd>
+            </div>
+            <div>
+              <dt>目标</dt>
+              <dd>{run.data.folder_disposition.target_relative ?? "删除已验证空目录"}</dd>
+            </div>
+            <div>
+              <dt>残留文件</dt>
+              <dd>{run.data.folder_disposition.file_count}</dd>
+            </div>
           </dl>
         </section>
       ) : null}
@@ -513,7 +603,8 @@ export function RunPage({ runId }: { runId: string }) {
                     resyncing ||
                     action.isPending ||
                     apply.isPending ||
-                    recover.isPending
+                    recover.isPending ||
+                    folderDisposition.isPending
                   }
                   onClick={retryUncertain}
                 >
@@ -572,6 +663,40 @@ export function RunPage({ runId }: { runId: string }) {
                     审批并执行此 exact plan
                   </button>
                 ) : null}
+                {run.data.folder_disposition &&
+                (available.has("settle_folder") ||
+                  available.has("dispose_failed_folder")) ? (
+                  <button
+                    className={
+                      run.data.folder_disposition.action === "fail"
+                        ? "danger-button wide"
+                        : "secondary wide"
+                    }
+                    disabled={folderDisposition.isPending || blocked}
+                    onClick={() => setFolderConfirmOpen(true)}
+                  >
+                    {run.data.folder_disposition.action === "fail"
+                      ? "移入 fail"
+                      : "完成文件夹收尾"}
+                  </button>
+                ) : null}
+                {run.data.folder_disposition?.recovery_approval_id &&
+                available.has("recover_folder_disposition") ? (
+                  <button
+                    className="danger-button wide"
+                    disabled={folderDisposition.isPending || blocked}
+                    onClick={() =>
+                      folderDisposition.mutate({
+                        planHash: run.data.folder_disposition!.plan_hash,
+                        approvalId:
+                          run.data.folder_disposition!.recovery_approval_id!,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    恢复文件夹事务
+                  </button>
+                ) : null}
               </>
             )}
             {actionNotice ? (
@@ -585,6 +710,9 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {recover.error instanceof ApiError ? (
               <PageError code={recover.error.code} />
+            ) : null}
+            {folderDisposition.error instanceof ApiError ? (
+              <PageError code={folderDisposition.error.code} />
             ) : null}
           </section>
 
@@ -614,11 +742,27 @@ export function RunPage({ runId }: { runId: string }) {
       {approveOpen && currentPreview && canApprove ? (
         <ApproveDialog
           preview={currentPreview}
+          folderDisposition={run.data.folder_disposition}
           pending={apply.isPending || blocked}
           onCancel={closeApprove}
           onConfirm={() =>
             apply.mutate({
               planHash: currentPreview.plan_hash,
+              folderDispositionPlanHash:
+                run.data.folder_disposition?.plan_hash ?? null,
+              key: idempotencyKey(),
+            })
+          }
+        />
+      ) : null}
+      {folderConfirmOpen && run.data.folder_disposition ? (
+        <FolderDispositionDialog
+          disposition={run.data.folder_disposition}
+          pending={folderDisposition.isPending || blocked}
+          onCancel={() => setFolderConfirmOpen(false)}
+          onConfirm={() =>
+            folderDisposition.mutate({
+              planHash: run.data.folder_disposition!.plan_hash,
               key: idempotencyKey(),
             })
           }
@@ -761,11 +905,13 @@ function InteractionForm({
 
 function ApproveDialog({
   preview,
+  folderDisposition,
   pending,
   onCancel,
   onConfirm,
 }: {
   preview: Preview;
+  folderDisposition: Run["folder_disposition"];
   pending: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -835,6 +981,20 @@ function ApproveDialog({
           <Count label="未映射" value={preview.counts.unmapped} />
           <Count label="保持不变" value={preview.counts.unchanged} />
         </div>
+        {folderDisposition ? (
+          <div className="exact-hash">
+            <span>
+              文件夹收尾 · {folderActionLabel(folderDisposition.action)}
+            </span>
+            <code>{folderDisposition.plan_hash}</code>
+            <small>
+              {folderDisposition.target_relative ??
+                "执行后仅删除已验证为空的入站目录"}
+              {" · "}
+              残留文件 {folderDisposition.file_count}
+            </small>
+          </div>
+        ) : null}
         <label className="risk-check">
           <input
             type="checkbox"
@@ -856,6 +1016,67 @@ function ApproveDialog({
             onClick={onConfirm}
           >
             {pending ? "等待服务端结算…" : "批准并执行"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FolderDispositionDialog({
+  disposition,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  disposition: NonNullable<Run["folder_disposition"]>;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+  return (
+    <div className="modal-backdrop">
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="folder-disposition-title"
+      >
+        <p className="eyebrow">EXACT FOLDER DISPOSITION</p>
+        <h2 id="folder-disposition-title">确认文件夹收尾</h2>
+        <p>
+          服务端会重新验证目录 identity、完整 inventory 与目标不存在，
+          浏览器不会推断移动成功。
+        </p>
+        <div className="exact-hash">
+          <span>{folderActionLabel(disposition.action)}</span>
+          <code>{disposition.plan_hash}</code>
+          <small>
+            {disposition.target_relative ?? "仅移除已验证为空的目录"}
+            {" · "}
+            文件 {disposition.file_count}
+          </small>
+        </div>
+        <label className="risk-check">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+            autoFocus
+          />
+          <span>我已核对 exact hash、目标和文件数量。</span>
+        </label>
+        <div className="button-row end">
+          <button className="ghost" disabled={pending} onClick={onCancel}>
+            取消
+          </button>
+          <button
+            className="danger-button"
+            disabled={!confirmed || pending}
+            onClick={onConfirm}
+          >
+            {pending ? "等待服务端结算…" : "确认执行"}
           </button>
         </div>
       </div>
@@ -892,4 +1113,12 @@ function interactionAction(kind: ActionKind) {
 
 function dispositionLabel(value: "move" | "unmapped" | "unchanged") {
   return { move: "将移动", unmapped: "未映射", unchanged: "保持不变" }[value];
+}
+
+function folderActionLabel(value: "archive" | "fail" | "remove_empty") {
+  return {
+    archive: "移入 archive",
+    fail: "移入 fail",
+    remove_empty: "删除空目录",
+  }[value];
 }

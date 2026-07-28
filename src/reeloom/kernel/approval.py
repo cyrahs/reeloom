@@ -34,6 +34,7 @@ _MAX_RUN_ID_BYTES = 128
 
 class ApprovalScope(StrEnum):
     APPLY = "apply"
+    FOLDER_DISPOSITION = "folder_disposition"
 
 
 def _invalid_approval() -> DomainError:

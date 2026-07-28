@@ -23,6 +23,11 @@ backup 边界。
    与 PostgreSQL lifetime advisory lock。
 5. 用 exact Host 和 Admin Bearer 请求 `/health`，再开放反向代理流量。
 
+每个 watch mount 必须允许 Reeloom 在其根下创建并 fsync `archive`、`fail`
+以及短暂的空目录 tombstone。watch 与这两个 bucket 天然位于同一文件系统；
+不要把 bucket 单独替换成跨设备 symlink。媒体库 route 可使用另一个 mount，
+但单个媒体执行仍须满足既有的 rename 约束。
+
 `REELOOM_TMDB_API_KEY` 由 deployment secret manager 注入，仅构造唯一允许的业务
 网络 adapter；server 不读取 dotenv。模型 provider key 仍通过 admin config
 write-only 写入 filesystem SecretStore。

@@ -11,7 +11,8 @@ recovery.
 
 ## What it does
 
-- Discovers stable media files from explicitly configured watch roots.
+- Treats each stable direct child folder of a configured watch root as one
+  independent intake run.
 - Identifies anime, TV series, and single-feature movies through TMDB.
 - Associates external Chinese subtitles and classifies them as Simplified
   (`chs`), Traditional (`cht`), or unknown Chinese (`chi`).
@@ -20,6 +21,8 @@ recovery.
   deterministic automatic policy, rollback, and crash recovery.
 - Stores control-plane history in PostgreSQL and serves the React UI from the
   same application image.
+- Moves successful residual content to the watch root's managed `archive`
+  bucket and eligible deterministic failures to `fail`.
 
 Typical output:
 
@@ -51,6 +54,8 @@ Reeloom is intentionally fail-closed:
   identity and authorized roots.
 - Approval is bound to the exact run and plan hash and can be claimed only once.
 - Execution never deletes media or overwrites an existing destination.
+- `archive`, `fail`, hidden top-level folders, loose root files, and symlinks
+  are excluded from discovery; any `.env*` entry blocks its intake folder.
 - Sources, roots, symlinks, collisions, and plan integrity are revalidated
   immediately before execution.
 - Journaled rollback and durable recovery do not depend on an LLM.
@@ -63,14 +68,17 @@ See the [threat model](docs/threat-model.md) and
 ## Web workflow
 
 1. Sign in with the deployment-provided Admin Bearer token.
-2. Configure watch roots, archive routes, TMDB-backed media types, and the model
-   provider.
+2. Configure inbound watch roots, media-library routes, TMDB-backed media
+   types, and the model provider.
 3. Keep the first configuration in `plan_only`.
 4. Review discoveries, runs, immutable plans, unmapped files, and interaction
    history.
 5. Revise the plan when needed, then approve the exact plan hash.
 6. Read the durable terminal settlement; do not infer success from a network
    response or SSE disconnect.
+
+Drop each title into its own direct child folder under a watch root. Reeloom
+creates and ignores the watch-local `archive` and `fail` buckets automatically.
 
 The browser stores a successfully validated Admin token in `localStorage`.
 Deploy only behind a trusted origin with the supplied CSP and response headers

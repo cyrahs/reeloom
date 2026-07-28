@@ -230,8 +230,10 @@ def main() -> None:
         archive = Path(root) / "archive"
         for path in (state, incoming, archive):
             path.mkdir()
-        (incoming / "automatic.mkv").write_bytes(b"automatic-video")
-        (incoming / "zz-extra.mkv").write_bytes(b"unmapped-extra")
+        source = incoming / "Journey"
+        source.mkdir()
+        (source / "automatic.mkv").write_bytes(b"automatic-video")
+        (source / "zz-extra.mkv").write_bytes(b"unmapped-extra")
 
         def model_factory(
             config: object,

@@ -11,8 +11,10 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from reeloom.adapters.journal import FilesystemJournalStore
+from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.executor.apply import FilesystemExecutor
+from reeloom.executor.folder_disposition import FolderDispositionExecutor
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.api import ApiDependencies, create_api
 from reeloom.server.agent_repository import (
@@ -29,6 +31,11 @@ from reeloom.server.auth import AuthSettings
 from reeloom.server.background import BackgroundServices
 from reeloom.server.completed_layout import (
     PostgresCompletedLayoutRepository,
+)
+from reeloom.server.folder_disposition import (
+    FolderDispositionCoordinator,
+    FolderDispositionPlanner,
+    PostgresFolderDispositionRepository,
 )
 from reeloom.server.database import PostgresControlPlane
 from reeloom.server.directory_browser import PodDirectoryBrowser
@@ -156,6 +163,9 @@ def build_application(
         journal_root = _state_subdirectory(
             settings.state_root, "journals"
         )
+        folder_journal_root = _state_subdirectory(
+            settings.state_root, "folder-journals"
+        )
         secrets = FilesystemSecretStore(secret_root)
         plans = FilesystemPlanStore(plan_root)
         journals = FilesystemJournalStore(journal_root)
@@ -171,6 +181,27 @@ def build_application(
             approvals=approvals,
             executor=executor,
             completed_layouts=layouts,
+        )
+        folder_repository = PostgresFolderDispositionRepository(
+            database.pool
+        )
+        folder_planner = FolderDispositionPlanner(
+            pool=database.pool,
+            plans=plans,
+            repository=folder_repository,
+        )
+        folder_dispositions = FolderDispositionCoordinator(
+            pool=database.pool,
+            plans=plans,
+            repository=folder_repository,
+            planner=folder_planner,
+            executor=FolderDispositionExecutor(
+                plans=plans,
+                approvals=folder_repository,
+                journals=FilesystemFolderJournalStore(
+                    folder_journal_root
+                ),
+            ),
         )
         apply.reconcile_active()
         interactions_repository = PostgresInteractionRepository(
@@ -312,6 +343,7 @@ def build_application(
             scheduler=scheduler,
             worker=worker,
             apply=apply,
+            folder_dispositions=folder_dispositions,
         )
 
         def health() -> object:
@@ -324,6 +356,7 @@ def build_application(
                 queries=PostgresQueries(database.pool, plans=plans),
                 interactions=interactions,
                 apply=apply,
+                folder_dispositions=folder_dispositions,
                 health=health,
                 config_update=update_config,
                 config_resolve=resolve_config,

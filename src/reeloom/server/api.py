@@ -26,6 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reeloom.executor.apply import ApplyResult
+from reeloom.executor.folder_disposition import FolderDispositionResult
 from reeloom.server.auth import AuthSettings
 from reeloom.server.interactions import (
     InteractionKind,
@@ -39,7 +40,11 @@ from reeloom.server.api_models import (
     ConfigUpdateRequest,
     DirectoryListingResponse,
     DiscoveriesResponse,
+    FolderObservationsResponse,
     EventsResponse,
+    FolderDispositionRecoveryRequest,
+    FolderDispositionRequest,
+    FolderDispositionResultResponse,
     HealthResponse,
     InteractionHistoryResponse,
     InteractionRequest,
@@ -58,10 +63,12 @@ from reeloom.server.api_models import (
     SessionResponse,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.folder_disposition import FolderDispositionCoordinator
 from reeloom.server.web_static import StaticAsset, StaticWebBundle
 from reeloom.executor.errors import (
     ApprovalError,
     ExecutorError,
+    ExecutorErrorCode,
 )
 
 _MAX_BODY_BYTES = 64 * 1024
@@ -82,6 +89,20 @@ _SINGLETON_HEADERS = frozenset(
         "origin",
     }
 )
+
+
+def _folder_disposition_payload(
+    result: FolderDispositionResult,
+) -> dict[str, object]:
+    return {
+        "run_id": result.run_id,
+        "plan_hash": result.plan_hash,
+        "approval_id": result.approval_id,
+        "transaction_id": result.transaction_id,
+        "action": result.action.value,
+        "target_relative": result.target_relative,
+        "status": result.status,
+    }
 
 
 class ApiQueries(Protocol):
@@ -120,6 +141,10 @@ class ApiQueries(Protocol):
         limit: int,
     ) -> tuple[dict[str, object], ...]: ...
 
+    def list_folder_observations(
+        self, *, limit: int
+    ) -> tuple[dict[str, object], ...]: ...
+
     def list_plans(
         self,
         *,
@@ -151,6 +176,7 @@ class ApiDependencies:
     queries: ApiQueries
     interactions: InteractionService | None = None
     apply: ApplyCoordinator | None = None
+    folder_dispositions: FolderDispositionCoordinator | None = None
     health: Callable[[], object] | None = None
     config_update: (
         Callable[[int, dict[str, object]], dict[str, object]] | None
@@ -875,6 +901,24 @@ def create_api(
             )
         }
 
+    @app.get(
+        "/api/v1/folders",
+        response_model=FolderObservationsResponse,
+    )
+    async def list_folder_observations(
+        limit: int = 100,
+    ) -> dict[str, object]:
+        if not 1 <= limit <= _MAX_PAGE_SIZE:
+            raise HTTPException(400, detail={"code": "invalid_page"})
+        return {
+            "items": list(
+                await asyncio.to_thread(
+                    dependencies.queries.list_folder_observations,
+                    limit=limit,
+                )
+            )
+        }
+
     @app.get("/api/v1/admin/config", response_model=ConfigResponse)
     async def get_config() -> dict[str, object]:
         value = await asyncio.to_thread(
@@ -1154,6 +1198,17 @@ def create_api(
                 message=message,
             )
         )
+        if (
+            kind is InteractionKind.REVISION
+            and result.plan_hash is not None
+            and dependencies.folder_dispositions is not None
+        ):
+            await _shield_thread(
+                lambda: dependencies.folder_dispositions.prepare_success(
+                    run_id=run_id,
+                    media_plan_hash=result.plan_hash,
+                )
+            )
         return {
             "interaction_id": result.interaction_id,
             "kind": result.kind.value,
@@ -1204,7 +1259,10 @@ def create_api(
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
 
-        def payload(result: ApplyResult) -> dict[str, object]:
+        def payload(
+            result: ApplyResult,
+            folder_result: FolderDispositionResult | None = None,
+        ) -> dict[str, object]:
             return {
                 "transaction_id": result.transaction_id,
                 "plan_hash": result.plan_hash,
@@ -1212,23 +1270,83 @@ def create_api(
                 "status": result.status.value,
                 "applied_count": result.applied_count,
                 "rolled_back_count": result.rolled_back_count,
+                "folder_disposition": (
+                    None
+                    if folder_result is None
+                    else _folder_disposition_payload(folder_result)
+                ),
             }
 
         def execute() -> dict[str, object]:
-            return payload(
-                dependencies.apply.approve_and_apply(
+            prepared = (
+                None
+                if dependencies.folder_dispositions is None
+                else dependencies.folder_dispositions.prepare_success(
                     run_id=run_id,
-                    plan_hash=plan_hash,
-                    automatic=body.automatic,
+                    media_plan_hash=plan_hash,
                 )
             )
+            if (
+                prepared is None
+                and body.folder_disposition_plan_hash is not None
+            ) or (
+                prepared is not None
+                and body.folder_disposition_plan_hash
+                != prepared.plan_hash
+            ):
+                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            result = dependencies.apply.approve_and_apply(
+                run_id=run_id,
+                plan_hash=plan_hash,
+                automatic=body.automatic,
+            )
+            if (
+                result.status.value == "rolled_back"
+                and result.failure_code
+                is ExecutorErrorCode.DESTINATION_COLLISION
+                and dependencies.folder_dispositions is not None
+            ):
+                dependencies.folder_dispositions.prepare_failure(
+                    run_id=run_id,
+                    reason_code="executor_destination_collision",
+                )
+            folder_result = None
+            if (
+                result.status.value == "completed"
+                and prepared is not None
+                and dependencies.folder_dispositions is not None
+            ):
+                try:
+                    folder_result = (
+                        dependencies.folder_dispositions
+                        .approve_and_execute(
+                            run_id=run_id,
+                            plan_hash=prepared.plan_hash,
+                            automatic=body.automatic,
+                        )
+                    )
+                except (ExecutorError, ApprovalError):
+                    folder_result = None
+            return payload(result, folder_result)
 
         def resolve() -> dict[str, object] | None:
             result = dependencies.apply.resolve(
                 run_id=run_id,
                 plan_hash=plan_hash,
             )
-            return None if result is None else payload(result)
+            if result is None:
+                return None
+            folder_result = None
+            folder_hash = body.folder_disposition_plan_hash
+            if (
+                folder_hash is not None
+                and dependencies.folder_dispositions is not None
+            ):
+                folder_result = dependencies.folder_dispositions.resolve(
+                    run_id=run_id,
+                    plan_hash=folder_hash,
+                )
+            return payload(result, folder_result)
 
         if dependencies.idempotency is None:
             return await _shield_thread(execute)
@@ -1239,7 +1357,109 @@ def create_api(
                 idempotency_key=key,
                 request={
                     "automatic": body.automatic,
+                    "folder_disposition_plan_hash": (
+                        body.folder_disposition_plan_hash
+                    ),
                     "plan_hash": plan_hash,
+                },
+                execute=execute,
+                resolve=resolve,
+            )
+        )
+
+    @app.post(
+        "/api/v1/runs/{run_id}/folder-disposition",
+        response_model=FolderDispositionResultResponse,
+    )
+    async def execute_folder_disposition(
+        run_id: str,
+        body: FolderDispositionRequest,
+        key: str = Depends(_idempotency_key),
+    ) -> dict[str, object]:
+        if dependencies.folder_dispositions is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+        if body.automatic:
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+
+        def execute() -> dict[str, object]:
+            return _folder_disposition_payload(
+                dependencies.folder_dispositions.approve_and_execute(
+                    run_id=run_id,
+                    plan_hash=body.plan_hash,
+                    automatic=False,
+                )
+            )
+
+        def resolve() -> dict[str, object] | None:
+            result = dependencies.folder_dispositions.resolve(
+                run_id=run_id,
+                plan_hash=body.plan_hash,
+            )
+            return (
+                None
+                if result is None
+                else _folder_disposition_payload(result)
+            )
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="folder_disposition",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={
+                    "automatic": False,
+                    "plan_hash": body.plan_hash,
+                },
+                execute=execute,
+                resolve=resolve,
+            )
+        )
+
+    @app.post(
+        "/api/v1/operations/runs/{run_id}/folder-disposition/recover",
+        response_model=FolderDispositionResultResponse,
+    )
+    async def recover_folder_disposition(
+        run_id: str,
+        body: FolderDispositionRecoveryRequest,
+        key: str = Depends(_idempotency_key),
+    ) -> dict[str, object]:
+        if dependencies.folder_dispositions is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def execute() -> dict[str, object]:
+            return _folder_disposition_payload(
+                dependencies.folder_dispositions.recover(
+                    run_id=run_id,
+                    plan_hash=body.plan_hash,
+                    approval_id=body.approval_id,
+                )
+            )
+
+        def resolve() -> dict[str, object] | None:
+            result = dependencies.folder_dispositions.resolve(
+                run_id=run_id,
+                plan_hash=body.plan_hash,
+                approval_id=body.approval_id,
+            )
+            return (
+                None
+                if result is None
+                else _folder_disposition_payload(result)
+            )
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="folder_disposition_recover",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={
+                    "approval_id": body.approval_id,
+                    "plan_hash": body.plan_hash,
                 },
                 execute=execute,
                 resolve=resolve,

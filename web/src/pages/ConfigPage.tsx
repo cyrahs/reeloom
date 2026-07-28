@@ -255,7 +255,8 @@ export function ConfigPage() {
       <form onSubmit={submit}>
         <ConfigSection number="01" title="监听目录">
           <p className="section-help">
-            scanner 不跟随符号链接；路径必须是管理员明确输入的绝对目录。
+            只处理此目录的直接子文件夹；archive、fail 和隐藏目录会被忽略。
+            两个保留目录由 Reeloom 自动管理，scanner 不跟随符号链接。
           </p>
           {form.watches.map((watch, index) => (
             <div className="form-card" key={index}>
@@ -319,7 +320,7 @@ export function ConfigPage() {
                 </Field>
               </div>
               <SecretChoice
-                label="源目录"
+                label="入站目录"
                 mode={watch.rootMode}
                 canRetain={query.data?.watches.some(
                   (item) =>
@@ -331,7 +332,7 @@ export function ConfigPage() {
                 onValue={(value) => updateWatch(index, "rootPath", value)}
                 onBrowse={() =>
                   setDirectoryTarget({
-                    label: "源目录",
+                    label: "入站目录",
                     select: (path) => updateWatch(index, "rootPath", path),
                   })
                 }
@@ -375,8 +376,10 @@ export function ConfigPage() {
           </button>
         </ConfigSection>
 
-        <ConfigSection number="02" title="归档路由">
-          <p className="section-help">每种内容类型只能配置一个归档目标。</p>
+        <ConfigSection number="02" title="媒体库路由">
+          <p className="section-help">
+            每种内容类型只能配置一个最终媒体库；它不同于入站目录内保存残留文件的 archive。
+          </p>
           {form.routes.map((route, index) => (
             <div className="form-card" key={index}>
               <Field label="内容类型">
@@ -398,7 +401,7 @@ export function ConfigPage() {
                 </select>
               </Field>
               <SecretChoice
-                label="归档目录"
+                label="媒体库目录"
                 mode={route.rootMode}
                 canRetain={query.data?.archive_routes.some(
                   (item) => item.work_type === route.work_type,
@@ -408,7 +411,7 @@ export function ConfigPage() {
                 onValue={(value) => updateRoute(index, "rootPath", value)}
                 onBrowse={() =>
                   setDirectoryTarget({
-                    label: "归档目录",
+                    label: "媒体库目录",
                     select: (path) => updateRoute(index, "rootPath", path),
                   })
                 }

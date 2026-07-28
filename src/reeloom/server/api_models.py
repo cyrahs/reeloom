@@ -47,6 +47,7 @@ class RunSummary(_StrictModel):
     created_at: str
     phase: str | None
     plan_hash: str | None
+    source_folder: str | None = None
 
 
 class RunsResponse(_StrictModel):
@@ -60,10 +61,24 @@ class DiscoverySummary(_StrictModel):
     discovered_at: str
     run_id: str | None
     run_status: str | None
+    source_folder: str | None = None
 
 
 class DiscoveriesResponse(_StrictModel):
     items: list[DiscoverySummary]
+
+
+class FolderObservationSummary(_StrictModel):
+    watch_id: str
+    source_folder: str
+    status: Literal["settling", "active", "blocked", "settled"]
+    reason_code: str | None
+    stable_at: str | None
+    run_id: str | None
+
+
+class FolderObservationsResponse(_StrictModel):
+    items: list[FolderObservationSummary]
 
 
 class RunSettlement(_StrictModel):
@@ -75,6 +90,23 @@ class RunSettlement(_StrictModel):
     rolled_back_count: int = Field(ge=0)
     failure_code: str | None
     settled_at: str
+
+
+class FolderDispositionView(_StrictModel):
+    plan_hash: str
+    action: Literal["archive", "fail", "remove_empty"]
+    target_relative: str | None
+    file_count: int = Field(ge=0)
+    reason_code: str
+    status: Literal[
+        "planned",
+        "prepared",
+        "renamed",
+        "completed",
+        "blocked",
+        "recovery_required",
+    ]
+    recovery_approval_id: str | None
 
 
 class RunResponse(_StrictModel):
@@ -98,9 +130,14 @@ class RunResponse(_StrictModel):
             "approve_apply",
             "reapply",
             "recover",
+            "settle_folder",
+            "dispose_failed_folder",
+            "recover_folder_disposition",
         ]
     ]
     settlement: RunSettlement | None
+    source_folder: str | None = None
+    folder_disposition: FolderDispositionView | None = None
 
 
 class PlanLineageItem(_StrictModel):
@@ -303,6 +340,17 @@ class ReapplyResponse(_StrictModel):
 
 class ApproveApplyRequest(_StrictModel):
     automatic: bool
+    folder_disposition_plan_hash: str | None = None
+
+
+class FolderDispositionResultResponse(_StrictModel):
+    run_id: str
+    plan_hash: str
+    approval_id: str
+    transaction_id: str
+    action: Literal["archive", "fail", "remove_empty"]
+    target_relative: str | None
+    status: Literal["completed"]
 
 
 class ApplyResponse(_StrictModel):
@@ -312,6 +360,7 @@ class ApplyResponse(_StrictModel):
     status: Literal["completed", "rolled_back"]
     applied_count: int = Field(ge=0)
     rolled_back_count: int = Field(ge=0)
+    folder_disposition: FolderDispositionResultResponse | None = None
 
 
 class RecoveryRequest(_StrictModel):
@@ -323,3 +372,13 @@ class RecoveryResponse(_StrictModel):
     status: Literal["completed", "rolled_back"]
     applied_count: int = Field(ge=0)
     rolled_back_count: int = Field(ge=0)
+
+
+class FolderDispositionRequest(_StrictModel):
+    plan_hash: str
+    automatic: bool
+
+
+class FolderDispositionRecoveryRequest(_StrictModel):
+    plan_hash: str
+    approval_id: str

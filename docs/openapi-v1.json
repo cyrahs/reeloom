@@ -13,6 +13,16 @@
             "title": "Approval Id",
             "type": "string"
           },
+          "folder_disposition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FolderDispositionResultResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "plan_hash": {
             "title": "Plan Hash",
             "type": "string"
@@ -52,6 +62,17 @@
           "automatic": {
             "title": "Automatic",
             "type": "boolean"
+          },
+          "folder_disposition_plan_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Disposition Plan Hash"
           }
         },
         "required": [
@@ -503,6 +524,17 @@
             ],
             "title": "Run Status"
           },
+          "source_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Folder"
+          },
           "watch_id": {
             "title": "Watch Id",
             "type": "string"
@@ -622,6 +654,256 @@
           "items"
         ],
         "title": "EventsResponse",
+        "type": "object"
+      },
+      "FolderDispositionRecoveryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_hash",
+          "approval_id"
+        ],
+        "title": "FolderDispositionRecoveryRequest",
+        "type": "object"
+      },
+      "FolderDispositionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "automatic": {
+            "title": "Automatic",
+            "type": "boolean"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_hash",
+          "automatic"
+        ],
+        "title": "FolderDispositionRequest",
+        "type": "object"
+      },
+      "FolderDispositionResultResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "archive",
+              "fail",
+              "remove_empty"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "completed",
+            "title": "Status",
+            "type": "string"
+          },
+          "target_relative": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Relative"
+          },
+          "transaction_id": {
+            "title": "Transaction Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "plan_hash",
+          "approval_id",
+          "transaction_id",
+          "action",
+          "target_relative",
+          "status"
+        ],
+        "title": "FolderDispositionResultResponse",
+        "type": "object"
+      },
+      "FolderDispositionView": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "archive",
+              "fail",
+              "remove_empty"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "file_count": {
+            "minimum": 0.0,
+            "title": "File Count",
+            "type": "integer"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "recovery_approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Approval Id"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "prepared",
+              "renamed",
+              "completed",
+              "blocked",
+              "recovery_required"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_relative": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Relative"
+          }
+        },
+        "required": [
+          "plan_hash",
+          "action",
+          "target_relative",
+          "file_count",
+          "reason_code",
+          "status",
+          "recovery_approval_id"
+        ],
+        "title": "FolderDispositionView",
+        "type": "object"
+      },
+      "FolderObservationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "source_folder": {
+            "title": "Source Folder",
+            "type": "string"
+          },
+          "stable_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stable At"
+          },
+          "status": {
+            "enum": [
+              "settling",
+              "active",
+              "blocked",
+              "settled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "watch_id": {
+            "title": "Watch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "watch_id",
+          "source_folder",
+          "status",
+          "reason_code",
+          "stable_at",
+          "run_id"
+        ],
+        "title": "FolderObservationSummary",
+        "type": "object"
+      },
+      "FolderObservationsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FolderObservationSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "FolderObservationsResponse",
         "type": "object"
       },
       "HealthResponse": {
@@ -1270,7 +1552,10 @@
                 "revision",
                 "approve_apply",
                 "reapply",
-                "recover"
+                "recover",
+                "settle_folder",
+                "dispose_failed_folder",
+                "recover_folder_disposition"
               ],
               "type": "string"
             },
@@ -1286,6 +1571,16 @@
             "minimum": 0.0,
             "title": "Failures",
             "type": "integer"
+          },
+          "folder_disposition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FolderDispositionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "model_tokens": {
             "minimum": 0.0,
@@ -1354,6 +1649,17 @@
                 "type": "null"
               }
             ]
+          },
+          "source_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Folder"
           },
           "status": {
             "title": "Status",
@@ -1488,6 +1794,17 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "source_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Folder"
           },
           "status": {
             "title": "Status",
@@ -2209,6 +2526,223 @@
         "summary": "List Discoveries"
       }
     },
+    "/api/v1/folders": {
+      "get": {
+        "operationId": "list_folder_observations_api_v1_folders_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderObservationsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Folder Observations"
+      }
+    },
+    "/api/v1/operations/runs/{run_id}/folder-disposition/recover": {
+      "post": {
+        "operationId": "recover_folder_disposition_api_v1_operations_runs__run_id__folder_disposition_recover_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable key for one logical mutation",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable key for one logical mutation",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderDispositionRecoveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderDispositionResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Recover Folder Disposition"
+      }
+    },
     "/api/v1/operations/runs/{run_id}/recover": {
       "post": {
         "operationId": "recover_api_v1_operations_runs__run_id__recover_post",
@@ -2916,6 +3450,128 @@
           }
         ],
         "summary": "Event Stream"
+      }
+    },
+    "/api/v1/runs/{run_id}/folder-disposition": {
+      "post": {
+        "operationId": "execute_folder_disposition_api_v1_runs__run_id__folder_disposition_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable key for one logical mutation",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable key for one logical mutation",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderDispositionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderDispositionResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Execute Folder Disposition"
       }
     },
     "/api/v1/runs/{run_id}/interactions": {

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import errno
 import os
 import stat
@@ -8,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.executor.atomic_rename import rename_noreplace
 from reeloom.executor.manifest import (
     ExecutionManifest,
     ExecutionMove,
@@ -24,60 +24,7 @@ from reeloom.ports.journals import (
 )
 from reeloom.ports.plans import PlanStore
 
-_RENAME_NOREPLACE = 1
-_RENAME_EXCL = 0x00000004
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
-_RENAMEATX_NP = getattr(_LIBC, "renameatx_np", None)
-if _RENAMEAT2 is not None:
-    _RENAMEAT2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    _RENAMEAT2.restype = ctypes.c_int
-if _RENAMEATX_NP is not None:
-    _RENAMEATX_NP.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    _RENAMEATX_NP.restype = ctypes.c_int
-
-
-def _rename_noreplace(
-    source_parent_fd: int,
-    source_name: str,
-    destination_parent_fd: int,
-    destination_name: str,
-) -> None:
-    """Atomically rename without replacing any existing destination."""
-
-    if _RENAMEAT2 is not None:
-        result = _RENAMEAT2(
-            source_parent_fd,
-            os.fsencode(source_name),
-            destination_parent_fd,
-            os.fsencode(destination_name),
-            _RENAME_NOREPLACE,
-        )
-    elif _RENAMEATX_NP is not None:
-        result = _RENAMEATX_NP(
-            source_parent_fd,
-            os.fsencode(source_name),
-            destination_parent_fd,
-            os.fsencode(destination_name),
-            _RENAME_EXCL,
-        )
-    else:
-        raise OSError(errno.ENOSYS, "exclusive rename unavailable")
-    if result != 0:
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number))
+_rename_noreplace = rename_noreplace
 
 
 class ApplyStatus(StrEnum):
