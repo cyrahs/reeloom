@@ -40,7 +40,6 @@ def test_config_cas_has_one_winner_and_preserves_history(
         expected = 0 if head is None else head.revision
         draft = ConfigDraft(
             watches=(),
-            archive_routes=(),
             provider=ProviderConfig(
                 base_url="https://api.openai.com/v1",
                 model="gpt-5",

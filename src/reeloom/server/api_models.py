@@ -225,11 +225,7 @@ class ConfigWatchResponse(_StrictModel):
     poll_interval_seconds: int
     settle_interval_seconds: int
     root_configured: bool
-
-
-class ConfigRouteResponse(_StrictModel):
-    work_type: Literal["anime", "tv", "movie"]
-    root_configured: bool
+    library_root_configured: bool
 
 
 class ConfigProviderResponse(_StrictModel):
@@ -244,7 +240,6 @@ class ConfigResponse(_StrictModel):
     revision: int = Field(ge=1)
     revision_id: str
     watches: list[ConfigWatchResponse]
-    archive_routes: list[ConfigRouteResponse]
     provider: ConfigProviderResponse
     apply_policy: Literal["plan_only", "manual", "automatic"]
 
@@ -267,11 +262,7 @@ class ConfigWatchRequest(_StrictModel):
     poll_interval_seconds: int
     settle_interval_seconds: int
     root: RootInput
-
-
-class ConfigRouteRequest(_StrictModel):
-    work_type: Literal["anime", "tv", "movie"]
-    root: RootInput
+    library_root: RootInput
 
 
 class _ProviderRequest(_StrictModel):
@@ -300,7 +291,6 @@ class EditProviderRequest(_ProviderRequest):
 
 class ConfigUpdateRequest(_StrictModel):
     watches: list[ConfigWatchRequest]
-    archive_routes: list[ConfigRouteRequest]
     provider: LegacyProviderRequest | EditProviderRequest
     apply_policy: Literal["plan_only", "manual", "automatic"]
 

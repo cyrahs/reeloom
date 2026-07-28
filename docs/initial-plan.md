@@ -102,7 +102,7 @@ SDK。
 | Agent 数量 | MVP 单 Agent | 当前任务有一个清晰目标，多 Agent 暂无收益 |
 | 领域逻辑 | provider-neutral Safety Kernel | 可离线测试，也可替换模型供应商 |
 | 文件访问 | run-scoped capability + opaque ID | 不向模型暴露任意文件系统能力 |
-| 归档分类 | trusted source root → work_type → output root | 延续 aninamer 多 watch-root 思路，Agent 不能借类型选择路径 |
+| 归档分类 | trusted watch → source root + library root | 目标与监听直接绑定；work_type 只选择领域流程，Agent 不能借类型选择路径 |
 | mapping | Agent 提交语义映射，代码校验 | LLM 做判断，代码做 enforcement |
 | 路径 | 只由 plan compiler 构造 | 永不接受模型生成路径 |
 | apply | 独立审批和 Executor | 将副作用与 Agent 推理隔离 |
@@ -492,7 +492,7 @@ control-plane，而是从 PostgreSQL 17 foundation 开始逐阶段构建；验�
 交付：
 
 - PostgreSQL 唯一控制面和 transport-neutral application services；
-- watch root、archive route、轮询、provider profile、secret 和 apply policy
+- watch-bound source/library root、轮询、provider profile、secret 和 apply policy
   的版本化配置 API；
 - 由 Admin 明确配置且受 HTTPS-only transport policy 限制的 OpenAI-compatible provider；
 - watcher/discovery、bounded current observations、幂等 run/job 创建；

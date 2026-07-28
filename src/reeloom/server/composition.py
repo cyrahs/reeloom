@@ -255,7 +255,6 @@ def build_application(
             provider = revision.provider
             if (
                 revision.watches != expected.draft.watches
-                or revision.archive_routes != expected.draft.archive_routes
                 or revision.apply_policy is not expected.draft.apply_policy
                 or provider.base_url
                 != expected.draft.provider.base_url

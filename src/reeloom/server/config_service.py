@@ -59,7 +59,6 @@ class ConfigService:
         secret_ref = self._secrets.put(value.provider.api_key)
         draft = ConfigDraft(
             watches=value.watches,
-            archive_routes=value.archive_routes,
             provider=ProviderConfig(
                 base_url=value.provider.base_url,
                 model=value.provider.model,
@@ -101,7 +100,6 @@ class ConfigService:
             secret_ref = self._secrets.put(replacement_api_key)
             draft = ConfigDraft(
                 watches=draft.watches,
-                archive_routes=draft.archive_routes,
                 provider=ProviderConfig(
                     base_url=draft.provider.base_url,
                     model=draft.provider.model,

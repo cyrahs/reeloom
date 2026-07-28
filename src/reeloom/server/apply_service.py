@@ -329,18 +329,10 @@ class ApplyCoordinator:
                 ),
                 None,
             )
-            route = next(
-                (
-                    item
-                    for item in config.archive_routes
-                    if item.work_type.value == reservation.work_type
-                ),
-                None,
-            )
-            if watch is None or route is None:
+            if watch is None:
                 raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
             source = AuthorizedRoot.create(watch.root)
-            output = AuthorizedRoot.create(route.root)
+            output = AuthorizedRoot.create(watch.library_root)
             content = self._executor.plans.load(plan_hash)
             manifest = ExecutionManifest.from_canonical_bytes(
                 content,

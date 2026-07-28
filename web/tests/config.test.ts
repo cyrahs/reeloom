@@ -10,13 +10,8 @@ test("round-trips existing capabilities through explicit retain modes", () => {
         settle_interval_seconds: 120,
         rootMode: "retain",
         rootPath: "",
-      },
-    ],
-    routes: [
-      {
-        work_type: "anime",
-        rootMode: "retain",
-        rootPath: "",
+        libraryRootMode: "retain",
+        libraryRootPath: "",
       },
     ],
     base_url: "https://api.openai.com/v1",
@@ -28,7 +23,7 @@ test("round-trips existing capabilities through explicit retain modes", () => {
     apply_policy: "manual",
   });
   expect(payload.watches[0]?.root).toEqual({ mode: "retain" });
-  expect(payload.archive_routes[0]?.root).toEqual({ mode: "retain" });
+  expect(payload.watches[0]?.library_root).toEqual({ mode: "retain" });
   expect(payload.provider.credential).toEqual({ mode: "retain" });
   expect(JSON.stringify(payload)).not.toContain("api_key");
 });
@@ -43,13 +38,8 @@ test("includes replacement values only after an explicit replace choice", () => 
         settle_interval_seconds: 180,
         rootMode: "replace",
         rootPath: "/media/incoming",
-      },
-    ],
-    routes: [
-      {
-        work_type: "tv",
-        rootMode: "replace",
-        rootPath: "/media/archive",
+        libraryRootMode: "replace",
+        libraryRootPath: "/media/archive",
       },
     ],
     base_url: "https://provider.example/v1",
@@ -63,6 +53,10 @@ test("includes replacement values only after an explicit replace choice", () => 
   expect(payload.watches[0]?.root).toEqual({
     mode: "replace",
     path: "/media/incoming",
+  });
+  expect(payload.watches[0]?.library_root).toEqual({
+    mode: "replace",
+    path: "/media/archive",
   });
   expect(payload.provider.credential).toEqual({
     mode: "replace",
@@ -81,13 +75,8 @@ test("cannot retain a capability after changing its exact identity", () => {
           settle_interval_seconds: 120,
           rootMode: "retain",
           rootPath: "/media/new-incoming",
-        },
-      ],
-      routes: [
-        {
-          work_type: "tv",
-          rootMode: "retain",
-          rootPath: "/media/new-archive",
+          libraryRootMode: "retain",
+          libraryRootPath: "/media/new-archive",
         },
       ],
       base_url: "https://api.openai.com/v1",
@@ -108,10 +97,8 @@ test("cannot retain a capability after changing its exact identity", () => {
           poll_interval_seconds: 30,
           settle_interval_seconds: 120,
           root_configured: true,
+          library_root_configured: true,
         },
-      ],
-      archive_routes: [
-        { work_type: "anime", root_configured: true },
       ],
       provider: {
         base_url: "https://api.openai.com/v1",
@@ -128,7 +115,7 @@ test("cannot retain a capability after changing its exact identity", () => {
     mode: "replace",
     path: "/media/new-incoming",
   });
-  expect(payload.archive_routes[0]?.root).toEqual({
+  expect(payload.watches[0]?.library_root).toEqual({
     mode: "replace",
     path: "/media/new-archive",
   });

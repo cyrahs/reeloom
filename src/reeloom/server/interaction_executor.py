@@ -410,18 +410,11 @@ class AgentInteractionExecutor:
                 item
                 for item in config.watches
                 if item.watch_id == job.discovery.watch_id
+                and item.work_type is job.registration.work_type
             ),
             None,
         )
-        route = next(
-            (
-                item
-                for item in config.archive_routes
-                if item.work_type is job.registration.work_type
-            ),
-            None,
-        )
-        if persisted is None or watch is None or route is None:
+        if persisted is None or watch is None:
             raise ValueError("exact run scope is unavailable")
         snapshot = build_candidate_snapshot(
             ScannedFile(
@@ -443,7 +436,7 @@ class AgentInteractionExecutor:
                 AuthorizedRoot.create(watch.root),
                 snapshot,
             ),
-            AuthorizedRoot.create(route.root),
+            AuthorizedRoot.create(watch.library_root),
         )
 
     @staticmethod

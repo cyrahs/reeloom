@@ -19,8 +19,8 @@ test("keeps editable config rows mounted while their identity changes", async ()
         poll_interval_seconds: 30,
         settle_interval_seconds: 120,
         root_configured: true,
+        library_root_configured: true,
       }],
-      archive_routes: [{ work_type: "anime", root_configured: true }],
       provider: {
         base_url: "https://api.openai.com/v1",
         model: "gpt-5",
@@ -47,8 +47,8 @@ test("keeps editable config rows mounted while their identity changes", async ()
   expect(watchId).toHaveFocus();
 
   const workTypes = screen.getAllByLabelText("内容类型");
-  await user.selectOptions(workTypes[1]!, "movie");
-  expect(workTypes[1]).toHaveFocus();
+  await user.selectOptions(workTypes[0]!, "movie");
+  expect(workTypes[0]).toHaveFocus();
 });
 
 test("selects a pod directory without requiring manual path entry", async () => {
@@ -64,8 +64,8 @@ test("selects a pod directory without requiring manual path entry", async () => 
         poll_interval_seconds: 30,
         settle_interval_seconds: 120,
         root_configured: true,
+        library_root_configured: true,
       }],
-      archive_routes: [{ work_type: "anime", root_configured: true }],
       provider: {
         base_url: "https://api.openai.com/v1",
         model: "gpt-5",

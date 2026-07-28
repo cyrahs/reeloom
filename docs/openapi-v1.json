@@ -141,13 +141,6 @@
             "title": "Apply Policy",
             "type": "string"
           },
-          "archive_routes": {
-            "items": {
-              "$ref": "#/components/schemas/ConfigRouteResponse"
-            },
-            "title": "Archive Routes",
-            "type": "array"
-          },
           "provider": {
             "$ref": "#/components/schemas/ConfigProviderResponse"
           },
@@ -172,69 +165,10 @@
           "revision",
           "revision_id",
           "watches",
-          "archive_routes",
           "provider",
           "apply_policy"
         ],
         "title": "ConfigResponse",
-        "type": "object"
-      },
-      "ConfigRouteRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "root": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "$ref": "#/components/schemas/RootRetain"
-              },
-              {
-                "$ref": "#/components/schemas/RootReplace"
-              }
-            ],
-            "title": "Root"
-          },
-          "work_type": {
-            "enum": [
-              "anime",
-              "tv",
-              "movie"
-            ],
-            "title": "Work Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "work_type",
-          "root"
-        ],
-        "title": "ConfigRouteRequest",
-        "type": "object"
-      },
-      "ConfigRouteResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "root_configured": {
-            "title": "Root Configured",
-            "type": "boolean"
-          },
-          "work_type": {
-            "enum": [
-              "anime",
-              "tv",
-              "movie"
-            ],
-            "title": "Work Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "work_type",
-          "root_configured"
-        ],
-        "title": "ConfigRouteResponse",
         "type": "object"
       },
       "ConfigUpdateRequest": {
@@ -248,13 +182,6 @@
             ],
             "title": "Apply Policy",
             "type": "string"
-          },
-          "archive_routes": {
-            "items": {
-              "$ref": "#/components/schemas/ConfigRouteRequest"
-            },
-            "title": "Archive Routes",
-            "type": "array"
           },
           "provider": {
             "anyOf": [
@@ -277,7 +204,6 @@
         },
         "required": [
           "watches",
-          "archive_routes",
           "provider",
           "apply_policy"
         ],
@@ -287,6 +213,20 @@
       "ConfigWatchRequest": {
         "additionalProperties": false,
         "properties": {
+          "library_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/RootRetain"
+              },
+              {
+                "$ref": "#/components/schemas/RootReplace"
+              }
+            ],
+            "title": "Library Root"
+          },
           "poll_interval_seconds": {
             "title": "Poll Interval Seconds",
             "type": "integer"
@@ -328,7 +268,8 @@
           "work_type",
           "poll_interval_seconds",
           "settle_interval_seconds",
-          "root"
+          "root",
+          "library_root"
         ],
         "title": "ConfigWatchRequest",
         "type": "object"
@@ -336,6 +277,10 @@
       "ConfigWatchResponse": {
         "additionalProperties": false,
         "properties": {
+          "library_root_configured": {
+            "title": "Library Root Configured",
+            "type": "boolean"
+          },
           "poll_interval_seconds": {
             "title": "Poll Interval Seconds",
             "type": "integer"
@@ -367,7 +312,8 @@
           "work_type",
           "poll_interval_seconds",
           "settle_interval_seconds",
-          "root_configured"
+          "root_configured",
+          "library_root_configured"
         ],
         "title": "ConfigWatchResponse",
         "type": "object"

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.config import (
     ApplyPolicy,
-    ArchiveRoute,
     ConfigDraft,
     ConfigRevision,
     ProviderConfig,
@@ -16,6 +18,11 @@ from reeloom.server.config import (
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.provider import validate_provider_base_url
+from reeloom.server.scheduler import (
+    AgentJobContext,
+    Discovery,
+    RunRegistration,
+)
 
 
 def _draft(tmp_path: Path) -> ConfigDraft:
@@ -28,15 +35,10 @@ def _draft(tmp_path: Path) -> ConfigDraft:
             WatchConfig(
                 watch_id="watch-1",
                 root=watch,
+                library_root=archive,
                 work_type=ServerWorkType.ANIME,
                 poll_interval_seconds=30,
                 settle_interval_seconds=120,
-            ),
-        ),
-        archive_routes=(
-            ArchiveRoute(
-                work_type=ServerWorkType.ANIME,
-                root=archive,
             ),
         ),
         provider=ProviderConfig(
@@ -70,21 +72,169 @@ def test_config_is_canonical_versioned_and_round_trips(
     assert public["revision"] == 1
     assert "secret-abc" not in repr(public)
     assert str(draft.watches[0].root) not in repr(public)
+    assert str(draft.watches[0].library_root) not in repr(public)
+    assert public["watches"][0]["library_root_configured"] is True
 
 
-def test_config_requires_exact_archive_route_and_distinct_roots(
+def test_config_rejects_source_library_overlap(
     tmp_path: Path,
 ) -> None:
     draft = _draft(tmp_path)
+    watch = draft.watches[0]
 
     with pytest.raises(ServerError) as raised:
         ConfigDraft(
-            watches=draft.watches,
-            archive_routes=(),
+            watches=(
+                WatchConfig(
+                    watch_id=watch.watch_id,
+                    root=watch.root,
+                    library_root=watch.root,
+                    work_type=watch.work_type,
+                    poll_interval_seconds=watch.poll_interval_seconds,
+                    settle_interval_seconds=watch.settle_interval_seconds,
+                ),
+            ),
             provider=draft.provider,
             apply_policy=draft.apply_policy,
         )
     assert raised.value.code is ServerErrorCode.INVALID_CONFIG
+
+
+def test_legacy_config_maps_routes_to_each_watch(tmp_path: Path) -> None:
+    watch_a = tmp_path / "watch-a"
+    watch_b = tmp_path / "watch-b"
+    library = tmp_path / "library"
+    for path in (watch_a, watch_b, library):
+        path.mkdir()
+    payload = {
+        "apply_policy": "manual",
+        "archive_routes": [
+            {"root": str(library), "work_type": "anime"},
+        ],
+        "created_at": "2026-07-25T00:00:00+00:00",
+        "provider": {
+            "base_url": "https://models.example.test/v1",
+            "model": "gpt-5",
+            "reasoning_effort": None,
+            "secret_ref": "secret-abc",
+            "verbosity": None,
+        },
+        "revision": 1,
+        "revision_id": "cfg-legacy",
+        "watches": [
+            {
+                "poll_interval_seconds": 30,
+                "root": str(root),
+                "settle_interval_seconds": 120,
+                "watch_id": f"watch-{index}",
+                "work_type": "anime",
+            }
+            for index, root in enumerate((watch_a, watch_b), 1)
+        ],
+    }
+
+    restored = ConfigRevision.from_json(json.dumps(payload))
+
+    assert [watch.library_root for watch in restored.watches] == [
+        library.resolve(),
+        library.resolve(),
+    ]
+    assert '"schema_version":2' in restored.to_json()
+    assert "archive_routes" not in restored.public_payload()
+
+    payload["schema_version"] = 2
+    with pytest.raises(ServerError) as raised:
+        ConfigRevision.from_json(json.dumps(payload))
+    assert raised.value.code is ServerErrorCode.INVALID_CONFIG
+
+
+def test_config_allows_explicit_shared_library_root(
+    tmp_path: Path,
+) -> None:
+    draft = _draft(tmp_path)
+    other = tmp_path / "other-watch"
+    other.mkdir()
+
+    result = ConfigDraft(
+        watches=(
+            draft.watches[0],
+            WatchConfig(
+                watch_id="watch-2",
+                root=other,
+                library_root=draft.watches[0].library_root,
+                work_type=ServerWorkType.MOVIE,
+                poll_interval_seconds=30,
+                settle_interval_seconds=120,
+            ),
+        ),
+        provider=draft.provider,
+        apply_policy=draft.apply_policy,
+    )
+
+    assert result.watches[0].library_root == result.watches[1].library_root
+
+
+def test_worker_resolves_library_root_by_exact_watch(
+    tmp_path: Path,
+) -> None:
+    source_a = tmp_path / "source-a"
+    source_b = tmp_path / "source-b"
+    library_a = tmp_path / "library-a"
+    library_b = tmp_path / "library-b"
+    for path in (source_a, source_b, library_a, library_b):
+        path.mkdir()
+    draft = _draft(tmp_path)
+    revision = ConfigRevision.create(
+        revision_id="cfg-bound",
+        revision=2,
+        created_at=datetime(2026, 7, 25, tzinfo=UTC),
+        draft=ConfigDraft(
+            watches=(
+                WatchConfig(
+                    watch_id="watch-a",
+                    root=source_a,
+                    library_root=library_a,
+                    work_type=ServerWorkType.ANIME,
+                    poll_interval_seconds=30,
+                    settle_interval_seconds=120,
+                ),
+                WatchConfig(
+                    watch_id="watch-b",
+                    root=source_b,
+                    library_root=library_b,
+                    work_type=ServerWorkType.ANIME,
+                    poll_interval_seconds=30,
+                    settle_interval_seconds=120,
+                ),
+            ),
+            provider=draft.provider,
+            apply_policy=draft.apply_policy,
+        ),
+    )
+    job = AgentJobContext(
+        registration=RunRegistration(
+            run_id="run-b",
+            job_id="job-b",
+            discovery_id="discovery-b",
+            config_revision=2,
+            work_type=ServerWorkType.ANIME,
+            source_capability="source-b",
+        ),
+        discovery=Discovery(
+            discovery_id="discovery-b",
+            watch_id="watch-b",
+            config_revision=2,
+            snapshot_id="snapshot-b",
+            work_type=ServerWorkType.ANIME,
+            discovered_at=datetime(2026, 7, 25, tzinfo=UTC),
+        ),
+    )
+
+    watch, work_type = InitialAgentWorker._resolve_scope(job, revision)
+
+    assert watch.watch_id == "watch-b"
+    assert watch.library_root == library_b.resolve()
+    assert work_type is TmdbWorkType.ANIME
 
 
 @pytest.mark.parametrize(

@@ -48,6 +48,7 @@ def _root(value: object) -> Path:
 class WatchConfig:
     watch_id: str
     root: Path
+    library_root: Path
     work_type: ServerWorkType
     poll_interval_seconds: int
     settle_interval_seconds: int
@@ -65,17 +66,7 @@ class WatchConfig:
         ):
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
         object.__setattr__(self, "root", _root(self.root))
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveRoute:
-    work_type: ServerWorkType
-    root: Path
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.work_type, ServerWorkType):
-            raise ServerError(ServerErrorCode.INVALID_CONFIG)
-        object.__setattr__(self, "root", _root(self.root))
+        object.__setattr__(self, "library_root", _root(self.library_root))
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +116,6 @@ class ProviderConfigInput:
 @dataclass(frozen=True, slots=True)
 class ConfigDraft:
     watches: tuple[WatchConfig, ...]
-    archive_routes: tuple[ArchiveRoute, ...]
     provider: ProviderConfig
     apply_policy: ApplyPolicy
 
@@ -134,27 +124,17 @@ class ConfigDraft:
             not isinstance(self.watches, tuple)
             or len(self.watches) > 1_000
             or not all(isinstance(item, WatchConfig) for item in self.watches)
-            or not isinstance(self.archive_routes, tuple)
-            or len(self.archive_routes) > len(ServerWorkType)
-            or not all(
-                isinstance(item, ArchiveRoute)
-                for item in self.archive_routes
-            )
             or not isinstance(self.provider, ProviderConfig)
             or not isinstance(self.apply_policy, ApplyPolicy)
         ):
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
         watch_ids = tuple(item.watch_id for item in self.watches)
         watch_roots = tuple(item.root for item in self.watches)
-        route_types = tuple(item.work_type for item in self.archive_routes)
-        route_roots = tuple(item.root for item in self.archive_routes)
+        library_roots = tuple(item.library_root for item in self.watches)
         if (
             len(set(watch_ids)) != len(watch_ids)
             or len(set(watch_roots)) != len(watch_roots)
-            or len(set(route_types)) != len(route_types)
-            or len(set(route_roots)) != len(route_roots)
-            or set(watch_roots) & set(route_roots)
-            or any(item.work_type not in set(route_types) for item in self.watches)
+            or set(watch_roots) & set(library_roots)
         ):
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
 
@@ -162,7 +142,6 @@ class ConfigDraft:
 @dataclass(frozen=True, slots=True)
 class ConfigDraftInput:
     watches: tuple[WatchConfig, ...]
-    archive_routes: tuple[ArchiveRoute, ...]
     provider: ProviderConfigInput
     apply_policy: ApplyPolicy
 
@@ -173,7 +152,6 @@ class ConfigRevision:
     revision: int
     created_at: datetime
     watches: tuple[WatchConfig, ...]
-    archive_routes: tuple[ArchiveRoute, ...]
     provider: ProviderConfig
     apply_policy: ApplyPolicy
 
@@ -188,7 +166,6 @@ class ConfigRevision:
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
         ConfigDraft(
             watches=self.watches,
-            archive_routes=self.archive_routes,
             provider=self.provider,
             apply_policy=self.apply_policy,
         )
@@ -207,7 +184,6 @@ class ConfigRevision:
             revision=revision,
             created_at=created_at,
             watches=draft.watches,
-            archive_routes=draft.archive_routes,
             provider=draft.provider,
             apply_policy=draft.apply_policy,
         )
@@ -216,13 +192,6 @@ class ConfigRevision:
         return json.dumps(
             {
                 "apply_policy": self.apply_policy.value,
-                "archive_routes": [
-                    {
-                        "root": str(item.root),
-                        "work_type": item.work_type.value,
-                    }
-                    for item in self.archive_routes
-                ],
                 "created_at": self.created_at.isoformat(),
                 "provider": {
                     "base_url": self.provider.base_url,
@@ -233,8 +202,10 @@ class ConfigRevision:
                 },
                 "revision": self.revision,
                 "revision_id": self.revision_id,
+                "schema_version": 2,
                 "watches": [
                     {
+                        "library_root": str(item.library_root),
                         "poll_interval_seconds": item.poll_interval_seconds,
                         "root": str(item.root),
                         "settle_interval_seconds": item.settle_interval_seconds,
@@ -260,15 +231,9 @@ class ConfigRevision:
                     "poll_interval_seconds": item.poll_interval_seconds,
                     "settle_interval_seconds": item.settle_interval_seconds,
                     "root_configured": True,
+                    "library_root_configured": True,
                 }
                 for item in self.watches
-            ],
-            "archive_routes": [
-                {
-                    "work_type": item.work_type.value,
-                    "root_configured": True,
-                }
-                for item in self.archive_routes
             ],
             "provider": {
                 "base_url": self.provider.base_url,
@@ -284,15 +249,7 @@ class ConfigRevision:
     def from_json(cls, value: str) -> ConfigRevision:
         try:
             raw: Any = json.loads(value)
-            if not isinstance(raw, dict) or set(raw) != {
-                "apply_policy",
-                "archive_routes",
-                "created_at",
-                "provider",
-                "revision",
-                "revision_id",
-                "watches",
-            }:
+            if not isinstance(raw, dict):
                 raise ValueError
             provider = raw["provider"]
             if not isinstance(provider, dict) or set(provider) != {
@@ -303,31 +260,32 @@ class ConfigRevision:
                 "verbosity",
             }:
                 raise ValueError
-            watches = tuple(
-                WatchConfig(
-                    watch_id=item["watch_id"],
-                    root=Path(item["root"]),
-                    work_type=ServerWorkType(item["work_type"]),
-                    poll_interval_seconds=item["poll_interval_seconds"],
-                    settle_interval_seconds=item[
-                        "settle_interval_seconds"
-                    ],
+            common = {
+                "apply_policy",
+                "created_at",
+                "provider",
+                "revision",
+                "revision_id",
+                "watches",
+            }
+            if set(raw) == common | {"archive_routes"}:
+                watches = _legacy_watches(
+                    raw["watches"],
+                    raw["archive_routes"],
                 )
-                for item in raw["watches"]
-            )
-            routes = tuple(
-                ArchiveRoute(
-                    work_type=ServerWorkType(item["work_type"]),
-                    root=Path(item["root"]),
-                )
-                for item in raw["archive_routes"]
-            )
+            elif (
+                set(raw) == common | {"schema_version"}
+                and type(raw["schema_version"]) is int
+                and raw["schema_version"] == 2
+            ):
+                watches = _v2_watches(raw["watches"])
+            else:
+                raise ValueError
             return cls(
                 revision_id=raw["revision_id"],
                 revision=raw["revision"],
                 created_at=datetime.fromisoformat(raw["created_at"]),
                 watches=watches,
-                archive_routes=routes,
                 provider=ProviderConfig(
                     base_url=provider["base_url"],
                     model=provider["model"],
@@ -339,3 +297,82 @@ class ConfigRevision:
             )
         except (KeyError, TypeError, ValueError, ServerError):
             raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
+
+
+def _v2_watches(value: object) -> tuple[WatchConfig, ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    fields = {
+        "library_root",
+        "poll_interval_seconds",
+        "root",
+        "settle_interval_seconds",
+        "watch_id",
+        "work_type",
+    }
+    if any(not isinstance(item, dict) or set(item) != fields for item in value):
+        raise ValueError
+    return tuple(
+        WatchConfig(
+            watch_id=item["watch_id"],
+            root=Path(item["root"]),
+            library_root=Path(item["library_root"]),
+            work_type=ServerWorkType(item["work_type"]),
+            poll_interval_seconds=item["poll_interval_seconds"],
+            settle_interval_seconds=item["settle_interval_seconds"],
+        )
+        for item in value
+    )
+
+
+def _legacy_watches(
+    watches_value: object,
+    routes_value: object,
+) -> tuple[WatchConfig, ...]:
+    if not isinstance(watches_value, list) or not isinstance(
+        routes_value, list
+    ):
+        raise ValueError
+    watch_fields = {
+        "poll_interval_seconds",
+        "root",
+        "settle_interval_seconds",
+        "watch_id",
+        "work_type",
+    }
+    route_fields = {"root", "work_type"}
+    if any(
+        not isinstance(item, dict) or set(item) != watch_fields
+        for item in watches_value
+    ) or any(
+        not isinstance(item, dict) or set(item) != route_fields
+        for item in routes_value
+    ):
+        raise ValueError
+    routes = tuple(
+        (
+            ServerWorkType(item["work_type"]),
+            _root(Path(item["root"])),
+        )
+        for item in routes_value
+    )
+    if (
+        len({work_type for work_type, _ in routes}) != len(routes)
+        or len({root for _, root in routes}) != len(routes)
+    ):
+        raise ValueError
+    route_by_type = dict(routes)
+    watches = tuple(
+        WatchConfig(
+            watch_id=item["watch_id"],
+            root=Path(item["root"]),
+            library_root=route_by_type[ServerWorkType(item["work_type"])],
+            work_type=ServerWorkType(item["work_type"]),
+            poll_interval_seconds=item["poll_interval_seconds"],
+            settle_interval_seconds=item["settle_interval_seconds"],
+        )
+        for item in watches_value
+    )
+    if {item.root for item in watches} & {root for _, root in routes}:
+        raise ValueError
+    return watches

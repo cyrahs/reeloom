@@ -229,13 +229,7 @@ const watchSchema = z
     poll_interval_seconds: z.number().int(),
     settle_interval_seconds: z.number().int(),
     root_configured: z.boolean(),
-  })
-  .strict();
-
-const routeSchema = z
-  .object({
-    work_type: workTypeSchema,
-    root_configured: z.boolean(),
+    library_root_configured: z.boolean(),
   })
   .strict();
 
@@ -244,7 +238,6 @@ export const configSchema = z
     revision: z.number().int().positive(),
     revision_id: z.string(),
     watches: z.array(watchSchema),
-    archive_routes: z.array(routeSchema),
     provider: z
       .object({
         base_url: z.string(),

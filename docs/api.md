@@ -50,10 +50,13 @@ source/destination。服务端先固定 PostgreSQL lineage，再在事务外加�
 canonical content-addressed plan。响应不包含 absolute root、source identity、
 digest、canonical bytes、journal 或 rollback。
 
-Config GET 只返回 `root_configured` 与 `api_key_configured`。PUT 兼容 M8 的显式
-string/key 格式，也接受绑定 exact `If-Match` revision 的
-`{mode:"retain"}` 或 `{mode:"replace", ...}`。省略 watch/route 仍表示删除；
-stale revision、缺失 retain target 和格式混用均 fail closed。
+Config 中每个 watch 直接绑定入站 `root` 与最终 `library_root`；`work_type`
+不参与路径选择。GET 只返回 `root_configured`、
+`library_root_configured` 与 `api_key_configured`。PUT 兼容显式 string/key
+格式，也接受绑定 exact `If-Match` revision 的 `{mode:"retain"}` 或
+`{mode:"replace", ...}`。省略 watch 表示删除；stale revision、缺失 retain
+target 和格式混用均 fail closed。旧数据库 revision 中按类型保存的 route
+只在读取历史记录时转换，不属于当前 HTTP wire。
 
 目录选择接口只枚举当前 Reeloom Pod 从 `/` 可见的真实目录，并返回所选目录的
 absolute path 供结构化配置表单使用。它不读取或返回文件，不跟随 symlink，并

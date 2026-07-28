@@ -23,7 +23,6 @@ from reeloom.server.agent_repository import (
     PostgresAgentDefinitionRepository,
 )
 from reeloom.server.config import (
-    ArchiveRoute,
     ConfigRevision,
     ServerWorkType,
     WatchConfig,
@@ -85,10 +84,10 @@ class InitialAgentWorker:
     async def run(self, *, run_id: str) -> str:
         job = self.scheduler.get_job_context(run_id=run_id)
         config = self.configs.get(job.registration.config_revision)
-        watch, archive, work_type = self._resolve_scope(job, config)
+        watch, work_type = self._resolve_scope(job, config)
         snapshot = self._reconstruct_snapshot(job)
         source_root = AuthorizedRoot.create(watch.root)
-        output_root = AuthorizedRoot.create(archive.root)
+        output_root = AuthorizedRoot.create(watch.library_root)
         scan = FilesystemScanResult(source_root, snapshot)
         candidates = SnapshotCandidateSource.from_scanned(snapshot)
         compiler = FilesystemPlanCompiler(scan, output_root)
@@ -154,7 +153,7 @@ class InitialAgentWorker:
     def _resolve_scope(
         job: AgentJobContext,
         config: ConfigRevision,
-    ) -> tuple[WatchConfig, ArchiveRoute, TmdbWorkType]:
+    ) -> tuple[WatchConfig, TmdbWorkType]:
         watch = next(
             (
                 item
@@ -165,22 +164,12 @@ class InitialAgentWorker:
         )
         if watch is None or watch.work_type is not job.registration.work_type:
             raise ValueError("run scope does not match exact config revision")
-        archive = next(
-            (
-                item
-                for item in config.archive_routes
-                if item.work_type is watch.work_type
-            ),
-            None,
-        )
-        if archive is None:
-            raise ValueError("archive route missing from exact config revision")
         work_type = {
             ServerWorkType.ANIME: TmdbWorkType.ANIME,
             ServerWorkType.TV: TmdbWorkType.TV_SERIES,
             ServerWorkType.MOVIE: TmdbWorkType.MOVIE,
         }[watch.work_type]
-        return watch, archive, work_type
+        return watch, work_type
 
     @staticmethod
     def _reconstruct_snapshot(job: AgentJobContext):

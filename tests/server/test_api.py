@@ -96,10 +96,8 @@ class _Queries:
                     "poll_interval_seconds": 30,
                     "settle_interval_seconds": 120,
                     "root_configured": True,
+                    "library_root_configured": True,
                 }
-            ],
-            "archive_routes": [
-                {"work_type": "anime", "root_configured": True}
             ],
             "provider": {
                 "base_url": "https://provider.invalid/v1",
@@ -401,6 +399,17 @@ def test_openapi_uses_named_strict_ui_contracts() -> None:
             continue
         if component.get("type") == "object":
             assert component.get("additionalProperties") is False, name
+    components = schema["components"]["schemas"]
+    assert "archive_routes" not in components["ConfigResponse"]["properties"]
+    assert "archive_routes" not in components["ConfigUpdateRequest"][
+        "properties"
+    ]
+    assert "ConfigRouteRequest" not in components
+    assert "ConfigRouteResponse" not in components
+    assert "library_root" in components["ConfigWatchRequest"]["properties"]
+    assert "library_root_configured" in components[
+        "ConfigWatchResponse"
+    ]["properties"]
 
 
 def test_list_read_models_serialize_query_tuples() -> None:

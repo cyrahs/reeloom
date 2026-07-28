@@ -52,7 +52,6 @@ def test_runtime_projection_and_session_survive_restart() -> None:
                     created_at=datetime.now(UTC),
                     draft=ConfigDraft(
                         watches=(),
-                        archive_routes=(),
                         provider=ProviderConfig(
                             base_url="https://api.openai.com/v1",
                             model="gpt-5",

@@ -75,7 +75,7 @@ guardrail 可以改善行为，但不能替代 schema、policy、hash、审批�
 | 任意网络访问 | 模型请求任意 URL | 只有固定 host/path 的 TMDB business adapter 与显式 OpenAI model adapter 可联网；tool schema 不接受 URL，模型没有 hosted/MCP/shell tool | M3、M7 已覆盖 |
 | 伪造 TMDB capability | 模型直接选择猜测的 TMDB ID | 查询与选择只允许本 run 搜索 observation 已记录的候选 ID | M3 已覆盖 |
 | TMDB 类型混淆 | Movie 100 被当作 TV 100，或 anime 搜索回退到真人剧 | run 显式绑定 work_type；capability 使用 `(work_type, id)`；anime 要求 genre 16 且 details 再验证 | M3 已覆盖 |
-| 归档根越权 | 模型用 search filter 选择另一个类型的 dst | search filter 必须等于 trusted run work_type；未来 root→dst capability 由 bootstrap 绑定，不从模型文本推导 | filter M3；root route M5 |
+| 归档根越权 | 模型尝试借 work type 或文本选择另一个 dst | run revision 直接绑定 watch 的 source/library root；work type 不参与选路，目标不从模型文本推导 | filter M3；watch binding M5 |
 | TMDB 响应注入 | title/overview 包含指令、控制字符或超长文本 | adapter 转换为有限领域字段，控制字符中和，tool observation 再限长 | M3 已覆盖 |
 | 网络资源耗尽 | 慢响应、超大 body、过量结果或缓存增长 | HTTP timeout、streaming body 上限、结果/文本/observation 上限、TTL/LRU cache | M3 已覆盖 |
 | 资源耗尽 | 超大分页或工具/模型重试循环 | scan/page/display/tool/turn/failure budgets | M1-M2 已覆盖；token/time M4 |

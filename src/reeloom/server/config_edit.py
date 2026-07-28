@@ -5,7 +5,6 @@ from pathlib import Path
 
 from reeloom.server.config import (
     ApplyPolicy,
-    ArchiveRoute,
     ConfigDraft,
     ConfigRevision,
     ProviderConfig,
@@ -51,17 +50,14 @@ def parse_config_edit(
     try:
         if set(value) != {
             "apply_policy",
-            "archive_routes",
             "provider",
             "watches",
         }:
             raise ValueError
         raw_watches = value["watches"]
-        raw_routes = value["archive_routes"]
         raw_provider = value["provider"]
         if (
             not isinstance(raw_watches, list)
-            or not isinstance(raw_routes, list)
             or not isinstance(raw_provider, dict)
         ):
             raise ValueError
@@ -85,14 +81,10 @@ def parse_config_edit(
                 item.watch_id: item for item in current.watches
             }
         )
-        old_routes = (
-            {} if current is None else {
-                item.work_type: item for item in current.archive_routes
-            }
-        )
         watches: list[WatchConfig] = []
         for item in raw_watches:
             if not isinstance(item, dict) or set(item) != {
+                "library_root",
                 "poll_interval_seconds",
                 "root",
                 "settle_interval_seconds",
@@ -100,7 +92,9 @@ def parse_config_edit(
                 "work_type",
             }:
                 raise ValueError
-            if not isinstance(item["root"], root_type):
+            if not isinstance(item["root"], root_type) or not isinstance(
+                item["library_root"], root_type
+            ):
                 raise ValueError
             work_type = ServerWorkType(item["work_type"])
             watch_id = item["watch_id"]
@@ -119,33 +113,20 @@ def parse_config_edit(
                 WatchConfig(
                     watch_id=watch_id,
                     root=_root(item["root"], retained=retained),
+                    library_root=_root(
+                        item["library_root"],
+                        retained=(
+                            previous.library_root
+                            if previous is not None
+                            and previous.work_type is work_type
+                            else None
+                        ),
+                    ),
                     work_type=work_type,
                     poll_interval_seconds=item["poll_interval_seconds"],
                     settle_interval_seconds=item[
                         "settle_interval_seconds"
                     ],
-                )
-            )
-        routes: list[ArchiveRoute] = []
-        for item in raw_routes:
-            if not isinstance(item, dict) or set(item) != {
-                "root",
-                "work_type",
-            }:
-                raise ValueError
-            if not isinstance(item["root"], root_type):
-                raise ValueError
-            work_type = ServerWorkType(item["work_type"])
-            previous = old_routes.get(work_type)
-            routes.append(
-                ArchiveRoute(
-                    work_type=work_type,
-                    root=_root(
-                        item["root"],
-                        retained=(
-                            None if previous is None else previous.root
-                        ),
-                    ),
                 )
             )
         replacement_api_key: bytes | None
@@ -181,7 +162,6 @@ def parse_config_edit(
                 raise ValueError
         draft = ConfigDraft(
             watches=tuple(watches),
-            archive_routes=tuple(routes),
             provider=ProviderConfig(
                 base_url=raw_provider["base_url"],
                 model=raw_provider["model"],

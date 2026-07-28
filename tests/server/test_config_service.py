@@ -8,7 +8,6 @@ import pytest
 
 from reeloom.server.config import (
     ApplyPolicy,
-    ArchiveRoute,
     ConfigDraftInput,
     ProviderConfigInput,
     ServerWorkType,
@@ -62,15 +61,10 @@ def test_config_service_persists_secret_before_config(
                 WatchConfig(
                     watch_id="watch-1",
                     root=watch,
+                    library_root=archive,
                     work_type=ServerWorkType.ANIME,
                     poll_interval_seconds=10,
                     settle_interval_seconds=60,
-                ),
-            ),
-            archive_routes=(
-                ArchiveRoute(
-                    work_type=ServerWorkType.ANIME,
-                    root=archive,
                 ),
             ),
             provider=ProviderConfigInput(
@@ -98,7 +92,6 @@ def test_config_cas_failure_leaves_only_unreferenced_secret(
     )
     value = ConfigDraftInput(
         watches=(),
-        archive_routes=(),
         provider=ProviderConfigInput(
             base_url="https://models.example.test/v1",
             model="gpt-5",

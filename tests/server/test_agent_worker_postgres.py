@@ -28,7 +28,6 @@ from reeloom.server.agent_repository import (
 from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.config import (
     ApplyPolicy,
-    ArchiveRoute,
     ConfigDraftInput,
     ProviderConfigInput,
     ServerWorkType,
@@ -218,15 +217,10 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
                     WatchConfig(
                         watch_id=f"watch-{uuid.uuid4().hex}",
                         root=incoming,
+                        library_root=archive,
                         work_type=ServerWorkType.ANIME,
                         poll_interval_seconds=1,
                         settle_interval_seconds=1,
-                    ),
-                ),
-                archive_routes=(
-                    ArchiveRoute(
-                        work_type=ServerWorkType.ANIME,
-                        root=archive,
                     ),
                 ),
                 provider=ProviderConfigInput(

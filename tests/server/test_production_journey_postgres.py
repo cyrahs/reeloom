@@ -302,15 +302,10 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                             {
                                 "watch_id": watch_id,
                                 "root": str(incoming),
+                                "library_root": str(archive),
                                 "work_type": "anime",
                                 "poll_interval_seconds": 1,
                                 "settle_interval_seconds": 1,
-                            }
-                        ],
-                        "archive_routes": [
-                            {
-                                "work_type": "anime",
-                                "root": str(archive),
                             }
                         ],
                         "provider": {
@@ -343,15 +338,10 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                             {
                                 "watch_id": watch_id,
                                 "root": {"mode": "retain"},
+                                "library_root": {"mode": "retain"},
                                 "work_type": "anime",
                                 "poll_interval_seconds": 1,
                                 "settle_interval_seconds": 1,
-                            }
-                        ],
-                        "archive_routes": [
-                            {
-                                "work_type": "anime",
-                                "root": {"mode": "retain"},
                             }
                         ],
                         "provider": {
@@ -726,19 +716,12 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                             {
                                 "watch_id": watch_id,
                                 "root": str(incoming),
+                                "library_root": str(archive),
                                 "work_type": (
                                     "movie" if movie else "anime"
                                 ),
                                 "poll_interval_seconds": 1,
                                 "settle_interval_seconds": 1,
-                            }
-                        ],
-                        "archive_routes": [
-                            {
-                                "work_type": (
-                                    "movie" if movie else "anime"
-                                ),
-                                "root": str(archive),
                             }
                         ],
                         "provider": {

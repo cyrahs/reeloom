@@ -51,7 +51,6 @@ def _append_config(
         created_at=datetime.now(UTC),
         draft=ConfigDraft(
             watches=(),
-            archive_routes=(),
             provider=ProviderConfig(
                 base_url="https://api.openai.com/v1",
                 model="gpt-5",

@@ -59,7 +59,7 @@ Reeloom is intentionally fail-closed:
 - Sources, roots, symlinks, collisions, and plan integrity are revalidated
   immediately before execution.
 - Journaled rollback and durable recovery do not depend on an LLM.
-- Watch and archive paths used by one transaction must be on the same
+- Inbound and media-library paths used by one transaction must be on the same
   filesystem.
 
 See the [threat model](docs/threat-model.md) and
@@ -68,8 +68,8 @@ See the [threat model](docs/threat-model.md) and
 ## Web workflow
 
 1. Sign in with the deployment-provided Admin Bearer token.
-2. Configure inbound watch roots, media-library routes, TMDB-backed media
-   types, and the model provider.
+2. Configure each inbound watch together with its media-library root,
+   TMDB-backed media type, and the model provider.
 3. Keep the first configuration in `plan_only`.
 4. Review discoveries, runs, immutable plans, unmapped files, and interaction
    history.

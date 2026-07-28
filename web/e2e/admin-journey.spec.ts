@@ -68,7 +68,6 @@ test("admin can enter the same-origin dashboard and untrusted text stays text", 
         revision: 1,
         revision_id: "config-1",
         watches: [],
-        archive_routes: [],
         provider: {
           base_url: "https://api.openai.com/v1",
           model: "gpt-5",

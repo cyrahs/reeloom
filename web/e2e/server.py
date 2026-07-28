@@ -148,13 +148,11 @@ async def _seed_movie(
                     {
                         "watch_id": "e2e-movie-watch",
                         "root": str(incoming),
+                        "library_root": str(archive),
                         "work_type": "movie",
                         "poll_interval_seconds": 1,
                         "settle_interval_seconds": 1,
                     }
-                ],
-                "archive_routes": [
-                    {"work_type": "movie", "root": str(archive)}
                 ],
                 "provider": {
                     "base_url": "https://api.openai.com/v1",
@@ -194,7 +192,6 @@ async def _seed_movie(
             },
             json={
                 "watches": [],
-                "archive_routes": [],
                 "provider": {
                     "base_url": public["provider"]["base_url"],
                     "model": public["provider"]["model"],

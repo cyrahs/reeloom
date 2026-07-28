@@ -24,15 +24,11 @@ type WatchForm = {
   settle_interval_seconds: number;
   rootMode: RootMode;
   rootPath: string;
-};
-type RouteForm = {
-  work_type: WorkType;
-  rootMode: RootMode;
-  rootPath: string;
+  libraryRootMode: RootMode;
+  libraryRootPath: string;
 };
 type FormState = {
   watches: WatchForm[];
-  routes: RouteForm[];
   base_url: string;
   model: string;
   reasoning_effort: string;
@@ -61,13 +57,8 @@ const emptyState = (): FormState => ({
       settle_interval_seconds: 120,
       rootMode: "replace",
       rootPath: "",
-    },
-  ],
-  routes: [
-    {
-      work_type: "anime",
-      rootMode: "replace",
-      rootPath: "",
+      libraryRootMode: "replace",
+      libraryRootPath: "",
     },
   ],
   base_url: "https://api.openai.com/v1",
@@ -88,11 +79,8 @@ function fromConfig(config: Config): FormState {
       settle_interval_seconds: item.settle_interval_seconds,
       rootMode: "retain",
       rootPath: "",
-    })),
-    routes: config.archive_routes.map((item) => ({
-      work_type: item.work_type,
-      rootMode: "retain",
-      rootPath: "",
+      libraryRootMode: "retain",
+      libraryRootPath: "",
     })),
     base_url: config.provider.base_url,
     model: config.provider.model,
@@ -253,10 +241,11 @@ export function ConfigPage() {
       ) : null}
 
       <form onSubmit={submit}>
-        <ConfigSection number="01" title="监听目录">
+        <ConfigSection number="01" title="监听与媒体库">
           <p className="section-help">
             只处理此目录的直接子文件夹；archive、fail 和隐藏目录会被忽略。
-            两个保留目录由 Reeloom 自动管理，scanner 不跟随符号链接。
+            每个监听独立绑定最终媒体库。archive 和 fail 由 Reeloom
+            在入站目录内管理，不等同于媒体库目录。
           </p>
           {form.watches.map((watch, index) => (
             <div className="form-card" key={index}>
@@ -338,6 +327,29 @@ export function ConfigPage() {
                 }
                 placeholder="/media/incoming/anime"
               />
+              <SecretChoice
+                label="媒体库目录"
+                mode={watch.libraryRootMode}
+                canRetain={query.data?.watches.some(
+                  (item) =>
+                    item.watch_id === watch.watch_id &&
+                    item.work_type === watch.work_type &&
+                    item.library_root_configured,
+                ) ?? false}
+                value={watch.libraryRootPath}
+                onMode={(mode) => updateWatch(index, "libraryRootMode", mode)}
+                onValue={(value) =>
+                  updateWatch(index, "libraryRootPath", value)
+                }
+                onBrowse={() =>
+                  setDirectoryTarget({
+                    label: "媒体库目录",
+                    select: (path) =>
+                      updateWatch(index, "libraryRootPath", path),
+                  })
+                }
+                placeholder="/media/library/anime"
+              />
               <button
                 type="button"
                 className="text-button danger-text"
@@ -367,6 +379,8 @@ export function ConfigPage() {
                     settle_interval_seconds: 120,
                     rootMode: "replace",
                     rootPath: "",
+                    libraryRootMode: "replace",
+                    libraryRootPath: "",
                   },
                 ],
               }))
@@ -376,92 +390,7 @@ export function ConfigPage() {
           </button>
         </ConfigSection>
 
-        <ConfigSection number="02" title="媒体库路由">
-          <p className="section-help">
-            每种内容类型只能配置一个最终媒体库；它不同于入站目录内保存残留文件的 archive。
-          </p>
-          {form.routes.map((route, index) => (
-            <div className="form-card" key={index}>
-              <Field label="内容类型">
-                <select
-                  value={route.work_type}
-                  onChange={(event) =>
-                    updateRoute(
-                      index,
-                      "work_type",
-                      event.target.value as WorkType,
-                    )
-                  }
-                >
-                  {workTypes.map((value) => (
-                    <option value={value} key={value}>
-                      {workTypeLabel(value)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <SecretChoice
-                label="媒体库目录"
-                mode={route.rootMode}
-                canRetain={query.data?.archive_routes.some(
-                  (item) => item.work_type === route.work_type,
-                ) ?? false}
-                value={route.rootPath}
-                onMode={(mode) => updateRoute(index, "rootMode", mode)}
-                onValue={(value) => updateRoute(index, "rootPath", value)}
-                onBrowse={() =>
-                  setDirectoryTarget({
-                    label: "媒体库目录",
-                    select: (path) => updateRoute(index, "rootPath", path),
-                  })
-                }
-                placeholder="/media/library/anime"
-              />
-              <button
-                type="button"
-                className="text-button danger-text"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    routes: current.routes.filter((_, item) => item !== index),
-                  }))
-                }
-              >
-                移除此路由
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="secondary"
-            disabled={workTypes.every((value) =>
-              form.routes.some((item) => item.work_type === value),
-            )}
-            onClick={() =>
-              setForm((current) => ({
-                ...current,
-                routes: [
-                  ...current.routes,
-                  {
-                    work_type:
-                      workTypes.find(
-                        (value) =>
-                          !current.routes.some(
-                            (item) => item.work_type === value,
-                          ),
-                      ) ?? "anime",
-                    rootMode: "replace",
-                    rootPath: "",
-                  },
-                ],
-              }))
-            }
-          >
-            添加路由
-          </button>
-        </ConfigSection>
-
-        <ConfigSection number="03" title="模型 Provider">
+        <ConfigSection number="02" title="模型 Provider">
           <div className="form-grid">
             <Field label="Base URL">
               <input
@@ -529,7 +458,7 @@ export function ConfigPage() {
           </button>
         </ConfigSection>
 
-        <ConfigSection number="04" title="执行策略">
+        <ConfigSection number="03" title="执行策略">
           <div className="policy-grid">
             {[
               ["plan_only", "仅计划", "永不执行文件移动。"],
@@ -594,19 +523,6 @@ export function ConfigPage() {
       ),
     }));
   }
-
-  function updateRoute<K extends keyof RouteForm>(
-    index: number,
-    key: K,
-    value: RouteForm[K],
-  ) {
-    setForm((current) => ({
-      ...current,
-      routes: current.routes.map((item, itemIndex) =>
-        itemIndex === index ? { ...item, [key]: value } : item,
-      ),
-    }));
-  }
 }
 
 export function toPayload(state: FormState, current?: Config) {
@@ -632,17 +548,15 @@ export function toPayload(state: FormState, current?: Config) {
               configured.root_configured,
           ),
       ),
-    })),
-    archive_routes: state.routes.map((item) => ({
-      work_type: item.work_type,
-      root: root(
-        item.rootMode,
-        item.rootPath,
+      library_root: root(
+        item.libraryRootMode,
+        item.libraryRootPath,
         current === undefined ||
-          current.archive_routes.some(
+          current.watches.some(
             (configured) =>
+              configured.watch_id === item.watch_id &&
               configured.work_type === item.work_type &&
-              configured.root_configured,
+              configured.library_root_configured,
           ),
       ),
     })),
