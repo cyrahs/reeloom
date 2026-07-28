@@ -494,7 +494,7 @@ control-plane，而是从 PostgreSQL 17 foundation 开始逐阶段构建；验�
 - PostgreSQL 唯一控制面和 transport-neutral application services；
 - watch root、archive route、轮询、provider profile、secret 和 apply policy
   的版本化配置 API；
-- 受部署级 origin policy 限制的 OpenAI-compatible provider；
+- 由 Admin 明确配置且受 HTTPS-only transport policy 限制的 OpenAI-compatible provider；
 - watcher/discovery、bounded current observations、幂等 run/job 创建；
 - run/plan/approval/apply HTTP API 与脱敏 SSE；
 - 在原 run/Agent session 上只读 question，并以 immutable plan revision

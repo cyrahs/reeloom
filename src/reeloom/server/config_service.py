@@ -11,7 +11,7 @@ from reeloom.server.config import (
     ConfigRevision,
     ProviderConfig,
 )
-from reeloom.server.provider import ProviderOriginPolicy
+from reeloom.server.provider import validate_provider_base_url
 
 
 class ConfigRepository(Protocol):
@@ -37,13 +37,11 @@ class ConfigService:
         *,
         configs: ConfigRepository,
         secrets: SecretWriter,
-        origins: ProviderOriginPolicy,
         clock: Callable[[], datetime] = _now,
         id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
     ) -> None:
         self._configs = configs
         self._secrets = secrets
-        self._origins = origins
         self._clock = clock
         self._id_factory = id_factory
 
@@ -57,7 +55,7 @@ class ConfigService:
             from reeloom.server.errors import ServerError, ServerErrorCode
 
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
-        self._origins.validate_base_url(value.provider.base_url)
+        validate_provider_base_url(value.provider.base_url)
         secret_ref = self._secrets.put(value.provider.api_key)
         draft = ConfigDraft(
             watches=value.watches,
@@ -98,7 +96,7 @@ class ConfigService:
             from reeloom.server.errors import ServerError, ServerErrorCode
 
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
-        self._origins.validate_base_url(draft.provider.base_url)
+        validate_provider_base_url(draft.provider.base_url)
         if replacement_api_key is not None:
             secret_ref = self._secrets.put(replacement_api_key)
             draft = ConfigDraft(

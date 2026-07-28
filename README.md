@@ -118,7 +118,7 @@ Production requirements:
   `reeloom` database.
 - Exactly one Reeloom process and one worker.
 - A persistent state root for secrets, plans, and executor journals.
-- Explicit media mounts and provider-origin allowlisting.
+- Explicit media mounts and HTTPS-only provider Base URLs.
 - Exact Host and UI Origin allowlists.
 - A 16–4096 character base64url Admin token.
 - A reverse proxy that preserves Authorization and SSE reconnect headers,

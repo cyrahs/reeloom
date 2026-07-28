@@ -37,7 +37,6 @@ from reeloom.server.config import (
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.config_service import ConfigService
 from reeloom.server.database import PostgresControlPlane
-from reeloom.server.provider import ProviderOriginPolicy
 from reeloom.server.runtime_store import PostgresEventStore
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
@@ -212,9 +211,6 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
         revision = ConfigService(
             configs=configs,
             secrets=secrets,
-            origins=ProviderOriginPolicy.create(
-                ("https://api.openai.com",)
-            ),
         ).compare_and_append(
             expected_revision=expected,
             value=ConfigDraftInput(

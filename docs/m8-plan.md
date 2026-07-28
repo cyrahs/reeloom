@@ -86,9 +86,9 @@ M0-M7 的安全不变量继续成立，并增加：
    run 的授权。
 3. API key 永远 write-only，不进入 PostgreSQL、HTTP read response、event、
    session、trace、日志或错误。
-4. 自定义 provider 必须匹配 deployment origin allowlist；禁止 redirect、
-   environment proxy 和 DNS rebinding。它只承载 SDK model 请求，不成为 Agent
-   HTTP tool。
+4. Admin 可配置任意 HTTPS provider origin，并由此明确授权向该 origin 发送
+   API key 与模型输入；transport 禁止 redirect、environment proxy 和 DNS
+   rebinding。它只承载 SDK model 请求，不成为 Agent HTTP tool。
 5. question 文本和 assistant reply 不能改变 run phase、mapping、plan 或 approval。
 6. revision/reapply 必须由原 Agent 在同一 session fresh 调用 `submit_mapping`；
    人工反馈不能直接产生 path、move 或已验证领域对象。
@@ -352,7 +352,7 @@ requirement / failing contract
 - `config_revisions/config_heads` 与 CAS；
 - archive route、watch root、provider、apply policy 的 application services；
 - filesystem write-only SecretStore；
-- deployment origin allowlist 和 controlled provider adapter；
+- HTTPS-only Base URL policy 和 controlled provider adapter；
 - transport-neutral provider probe capability。
 
 完成条件：

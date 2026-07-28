@@ -30,7 +30,9 @@ write-only 写入 filesystem SecretStore。
 部署只注入 `REELOOM_ADMIN_TOKEN`；该值必须是 16–4096 字符的 base64url
 字符串（`A-Z a-z 0-9 _ -`）。所有受保护 API 统一要求该 Admin Bearer。
 反向代理必须保留 Host，禁止改写 Origin，并关闭响应缓存和代理缓冲 SSE。所有
-provider origin 必须显式列入 `REELOOM_PROVIDER_ORIGINS`。
+provider Base URL 由 Admin 配置，可使用任意 HTTPS origin；保存该配置即授权
+Reeloom 将 API key、模型输入和候选上下文发送到该 origin。URL 不得包含凭据、
+query 或 fragment，provider transport 仍固定解析结果并禁用 redirect 与环境代理。
 
 反向代理必须允许 `/api/v1/runs/*/events/stream` 长连接并传递
 `Authorization`、`Last-Event-ID` 与 disconnect；不得把 Bearer 写入 access log。

@@ -44,35 +44,9 @@ def _origin(value: str, *, allow_path: bool) -> str:
     return f"https://{host}:{port}"
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderOriginPolicy:
-    allowed_origins: frozenset[str]
-
-    @classmethod
-    def create(
-        cls,
-        origins: tuple[str, ...],
-    ) -> ProviderOriginPolicy:
-        if (
-            not isinstance(origins, tuple)
-            or not origins
-            or len(origins) > 32
-        ):
-            raise ServerError(ServerErrorCode.INVALID_SETTINGS)
-        normalized = frozenset(
-            _origin(value, allow_path=False) for value in origins
-        )
-        if len(normalized) != len(origins):
-            raise ServerError(ServerErrorCode.INVALID_SETTINGS)
-        return cls(normalized)
-
-    def validate_base_url(self, value: str) -> str:
-        normalized = _origin(value, allow_path=True)
-        if normalized not in self.allowed_origins:
-            raise ServerError(
-                ServerErrorCode.PROVIDER_ORIGIN_REJECTED
-            )
-        return value
+def validate_provider_base_url(value: str) -> str:
+    _origin(value, allow_path=True)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,10 +203,8 @@ class ControlledProviderProbe:
     def __init__(
         self,
         *,
-        origins: ProviderOriginPolicy,
         timeout_seconds: float = 10.0,
     ) -> None:
-        self._origins = origins
         self._timeout = timeout_seconds
 
     async def probe(
@@ -241,7 +213,7 @@ class ControlledProviderProbe:
         config: ProviderConfig,
         api_key: bytes,
     ) -> ProviderProbeResult:
-        self._origins.validate_base_url(config.base_url)
+        validate_provider_base_url(config.base_url)
         if (
             not isinstance(api_key, bytes)
             or not 0 < len(api_key) <= 4_096
@@ -293,12 +265,11 @@ class ControlledModelLease:
     def __init__(
         self,
         *,
-        origins: ProviderOriginPolicy,
         config: ProviderConfig,
         api_key: bytes,
         timeout_seconds: float = 60.0,
     ) -> None:
-        origins.validate_base_url(config.base_url)
+        validate_provider_base_url(config.base_url)
         if (
             not isinstance(api_key, bytes)
             or not 0 < len(api_key) <= 4_096

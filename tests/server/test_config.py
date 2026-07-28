@@ -15,7 +15,7 @@ from reeloom.server.config import (
     WatchConfig,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.provider import ProviderOriginPolicy
+from reeloom.server.provider import validate_provider_base_url
 
 
 def _draft(tmp_path: Path) -> ConfigDraft:
@@ -93,20 +93,28 @@ def test_config_requires_exact_archive_route_and_distinct_roots(
         "http://models.example.test/v1",
         "https://user@models.example.test/v1",
         "https://models.example.test/v1?key=secret",
-        "https://other.example.test/v1",
+        "https://models.example.test/v1#fragment",
     ],
 )
-def test_provider_origin_must_match_deployment_allowlist(
+def test_provider_base_url_rejects_unsafe_urls(
     url: str,
 ) -> None:
-    policy = ProviderOriginPolicy.create(
-        ("https://models.example.test",)
-    )
-
     with pytest.raises(ServerError) as raised:
-        policy.validate_base_url(url)
+        validate_provider_base_url(url)
 
     assert raised.value.code is ServerErrorCode.PROVIDER_ORIGIN_REJECTED
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.openai.com/v1",
+        "https://models.example.test/v1",
+        "https://models.example.test:8443/openai/v1",
+    ],
+)
+def test_provider_base_url_allows_any_https_origin(url: str) -> None:
+    assert validate_provider_base_url(url) == url
 
 
 def test_provider_transport_pins_dns_and_preserves_host() -> None:

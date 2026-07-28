@@ -56,7 +56,6 @@ from reeloom.server.config_service import ConfigService
 from reeloom.server.provider import (
     ControlledModelLease,
     ControlledProviderProbe,
-    ProviderOriginPolicy,
 )
 from reeloom.server.session import PostgresSessionRepository
 from reeloom.server.tmdb_provider import TmdbHttpLease
@@ -182,13 +181,9 @@ def build_application(
         scheduler = PostgresSchedulerRepository(database.pool)
         scheduler.reconcile_boot(current_boot_id=boot_id)
         config_repository = PostgresConfigRepository(database.pool)
-        origin_policy = ProviderOriginPolicy.create(
-            settings.provider_origins
-        )
         config_service = ConfigService(
             configs=config_repository,
             secrets=secrets,
-            origins=origin_policy,
         )
 
         def parse_config(
@@ -253,14 +248,11 @@ def build_application(
                 return None
             return revision.public_payload()
 
-        controlled_probe = ControlledProviderProbe(
-            origins=origin_policy
-        )
+        controlled_probe = ControlledProviderProbe()
         effective_model_factory = (
             model_factory
             if model_factory is not None
             else lambda config, secret: ControlledModelLease(
-                origins=origin_policy,
                 config=config.provider,
                 api_key=secret,
             )

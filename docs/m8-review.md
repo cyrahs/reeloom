@@ -29,7 +29,7 @@ filesystem safety boundary 保持不变。
 - API idempotency 对 config/apply/recover 使用 typed durable resolver。effect 已
   完成但 response/finalize 不确定时，不重放 effect；从 config revision、
   approval settlement 或 exact journal recovery 重建结果。
-- provider transport 固定 allowlisted origin/DNS/TLS Host，禁用 redirect/proxy，
+- provider transport 固定 Admin 配置的 HTTPS origin/DNS/TLS Host，禁用 redirect/proxy，
   并限制整响应字节数和整请求 deadline。API 的同步 PostgreSQL reads 全部移出
   async event loop；HTTP cancellation 不会取消 shield 内的 mutation worker，
   durable idempotency 状态由 worker 继续结算。

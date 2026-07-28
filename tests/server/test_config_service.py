@@ -16,7 +16,6 @@ from reeloom.server.config import (
 )
 from reeloom.server.config_service import ConfigService
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.provider import ProviderOriginPolicy
 
 
 @dataclass
@@ -52,9 +51,6 @@ def test_config_service_persists_secret_before_config(
     service = ConfigService(
         configs=configs,
         secrets=secrets,
-        origins=ProviderOriginPolicy.create(
-            ("https://models.example.test",)
-        ),
         clock=lambda: datetime(2026, 7, 25, tzinfo=UTC),
         id_factory=lambda: "cfg-1",
     )
@@ -99,9 +95,6 @@ def test_config_cas_failure_leaves_only_unreferenced_secret(
     service = ConfigService(
         configs=configs,
         secrets=secrets,
-        origins=ProviderOriginPolicy.create(
-            ("https://models.example.test",)
-        ),
     )
     value = ConfigDraftInput(
         watches=(),
