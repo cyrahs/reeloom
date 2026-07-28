@@ -9,6 +9,7 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 
 - `GET /api/v1/session`
 - `GET/PUT /api/v1/admin/config`
+- `GET /api/v1/admin/directories`
 - `POST /api/v1/admin/config/provider-probe`
 - `GET /api/v1/discoveries`
 - `GET /api/v1/runs`
@@ -25,8 +26,9 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 - `POST /api/v1/operations/runs/{run_id}/recover`
 
 SSE 使用 durable PostgreSQL `event_id` 作为 `id`，通过 `Last-Event-ID` 恢复。
-cursor ahead/invalid fail closed。浏览器投影只包含 allowlisted typed fields，不返回
-absolute path、prompt、Secret、DSN、canonical plan 或 tool observation。
+cursor ahead/invalid fail closed。除 Admin-only 目录选择接口外，浏览器投影只包含
+allowlisted typed fields，不返回 absolute path、prompt、Secret、DSN、canonical
+plan 或 tool observation。
 
 `GET /api/v1/runs/{run_id}` 在 approval 已 claim、但 settlement 尚未持久化时返回
 `recovery_approval_id`；此时普通 apply fail closed，Admin 必须调用 exact
@@ -49,6 +51,10 @@ Config GET 只返回 `root_configured` 与 `api_key_configured`。PUT 兼容 M8 
 string/key 格式，也接受绑定 exact `If-Match` revision 的
 `{mode:"retain"}` 或 `{mode:"replace", ...}`。省略 watch/route 仍表示删除；
 stale revision、缺失 retain target 和格式混用均 fail closed。
+
+目录选择接口只枚举当前 Reeloom Pod 从 `/` 可见的真实目录，并返回所选目录的
+absolute path 供结构化配置表单使用。它不读取或返回文件，不跟随 symlink，并
+隐藏和拒绝所有 `.env*` 路径；其他 Pod 的文件系统不在其可见范围内。
 
 Admin interaction history 只返回 M9 起显式保存的 request message 与 final reply；
 旧记录标记 `content_available=false`。prompt、SDK transcript、tool call 和

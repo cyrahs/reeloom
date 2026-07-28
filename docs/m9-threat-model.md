@@ -17,6 +17,7 @@ filename display 和浏览器 mutation intent。
 | SSE | cursor loss、duplicate event、connection amplification | one stream per run page、Last-Event-ID、bounded backoff、cursor-ahead resync |
 | Plan store → preview | tamper、wrong plan kind、absolute path leak | lineage pinning、canonical/hash verification、typed projector、allowlisted fields |
 | Config editing | hidden root/secret loss、capability substitution | exact revision `retain` or explicit Admin `replace`, no returned path/secret |
+| Pod directory browser | path escape、symlink traversal、file or dotenv disclosure | Admin-only endpoint、rooted at current Pod `/`、relative canonical navigation、no-follow directory descriptors、directory names only、`.env*` exclusion |
 
 ## Residual risks
 
@@ -27,3 +28,5 @@ filename display 和浏览器 mutation intent。
   outside the application trust boundary.
 - Explicit interaction text is now an Admin-readable PostgreSQL record and is
   retained with the run backup set.
+- The Admin directory browser intentionally reveals directory names and the
+  selected absolute path visible inside the Reeloom Pod, but never file content.

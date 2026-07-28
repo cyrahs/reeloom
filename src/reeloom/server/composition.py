@@ -31,6 +31,7 @@ from reeloom.server.completed_layout import (
     PostgresCompletedLayoutRepository,
 )
 from reeloom.server.database import PostgresControlPlane
+from reeloom.server.directory_browser import PodDirectoryBrowser
 from reeloom.server.instance_lock import ProcessLock
 from reeloom.server.interaction_repository import (
     PostgresInteractionRepository,
@@ -327,6 +328,7 @@ def build_application(
                 config_update=update_config,
                 config_resolve=resolve_config,
                 provider_probe=probe_provider,
+                directory_list=PodDirectoryBrowser().list,
                 idempotency=idempotency,
                 sse_max_empty_polls=None,
                 sse_poll_seconds=0.5,

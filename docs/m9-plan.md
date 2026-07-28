@@ -68,7 +68,7 @@ filesystem，也不根据浏览器本地状态推断 effect 已成功。movie do
 
 - movie mapping、movie naming 或 movie Agent；
 - 多角色 UI、Cookie session、OAuth 或 Cloudflare integration；
-- 文件浏览器、shell、任意 URL/path tool、Markdown/HTML renderer；
+- 文件内容浏览器、shell、任意 URL/path Agent tool、Markdown/HTML renderer；
 - 多进程、多 worker、多主机或新的 filesystem effect；
 - interaction 删除或独立 retention policy。
 

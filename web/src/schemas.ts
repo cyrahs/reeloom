@@ -216,6 +216,22 @@ export const configSchema = z
   })
   .strict();
 
+export const directoryListingSchema = z
+  .object({
+    path: z.string().max(4096),
+    absolute_path: z.string().min(1).max(4096),
+    parent: z.string().max(4096).nullable(),
+    directories: z.array(
+      z
+        .object({
+          name: z.string().min(1).max(255),
+          path: z.string().min(1).max(4096),
+        })
+        .strict(),
+    ).max(1000),
+  })
+  .strict();
+
 export const interactionResultSchema = z
   .object({
     interaction_id: z.string(),

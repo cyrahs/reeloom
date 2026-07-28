@@ -37,6 +37,7 @@ from reeloom.server.api_models import (
     ApproveApplyRequest,
     ConfigResponse,
     ConfigUpdateRequest,
+    DirectoryListingResponse,
     DiscoveriesResponse,
     EventsResponse,
     HealthResponse,
@@ -159,6 +160,9 @@ class ApiDependencies:
         | None
     ) = None
     provider_probe: Callable[[], Awaitable[object]] | None = None
+    directory_list: (
+        Callable[[str], dict[str, object]] | None
+    ) = None
     idempotency: object | None = None
     sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
     sse_poll_seconds: float = _SSE_POLL_SECONDS
@@ -774,6 +778,7 @@ def create_api(
             statuses = {
                 ServerErrorCode.CONFIG_CONFLICT: 409,
                 ServerErrorCode.CONFIG_NOT_FOUND: 404,
+                ServerErrorCode.DIRECTORY_NOT_FOUND: 404,
                 ServerErrorCode.DISCOVERY_NOT_FOUND: 404,
                 ServerErrorCode.JOB_NOT_FOUND: 404,
                 ServerErrorCode.INTERACTION_NOT_FOUND: 404,
@@ -878,6 +883,19 @@ def create_api(
         if value is None:
             raise HTTPException(404, detail={"code": "config_not_found"})
         return value
+
+    @app.get(
+        "/api/v1/admin/directories",
+        response_model=DirectoryListingResponse,
+    )
+    async def list_directories(path: str = "") -> dict[str, object]:
+        if len(path.encode("utf-8")) > 4_096:
+            raise HTTPException(
+                400, detail={"code": "invalid_directory_path"}
+            )
+        if dependencies.directory_list is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+        return await asyncio.to_thread(dependencies.directory_list, path)
 
     @app.put(
         "/api/v1/admin/config",

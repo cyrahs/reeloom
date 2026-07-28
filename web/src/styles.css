@@ -649,6 +649,17 @@ button:disabled {
   font-weight: 700;
 }
 
+.path-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.path-input-row .secondary {
+  min-width: 76px;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -1092,6 +1103,47 @@ button:disabled {
   border-radius: 20px;
   background: var(--paper);
   box-shadow: 0 30px 90px rgb(0 0 0 / 32%);
+}
+
+.directory-picker-heading {
+  display: flex;
+  gap: 20px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.directory-current {
+  margin: 18px 0;
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+  border-radius: 10px;
+  background: #e9ebe5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+}
+
+.directory-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.directory-list > button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 12px;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  text-align: left;
+  background: #f4f5f0;
+  border: 1px solid var(--line);
+}
+
+.directory-list > button:hover {
+  background: #e9eee8;
 }
 
 .exact-hash {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -206,9 +207,16 @@ class _Queries:
         )
 
 
-def _app(*, static_root: Path | None = None) -> object:
+def _app(
+    *,
+    static_root: Path | None = None,
+    directory_list: Callable[[str], dict[str, object]] | None = None,
+) -> object:
     app = create_api(
-        ApiDependencies(queries=_Queries()),
+        ApiDependencies(
+            queries=_Queries(),
+            directory_list=directory_list,
+        ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
             allowed_hosts=("reeloom.test",),
@@ -217,6 +225,41 @@ def _app(*, static_root: Path | None = None) -> object:
         static_root=static_root,
     )
     return app
+
+
+def test_admin_can_list_bounded_pod_directories() -> None:
+    def directory_list(path: str) -> dict[str, object]:
+        assert path == "mnt"
+        return {
+            "path": "mnt",
+            "absolute_path": "/mnt",
+            "parent": "",
+            "directories": [{"name": "media", "path": "mnt/media"}],
+        }
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(directory_list=directory_list)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            unauthorized = await client.get(
+                "/api/v1/admin/directories?path=mnt"
+            )
+            authorized = await client.get(
+                "/api/v1/admin/directories?path=mnt",
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                },
+            )
+            return unauthorized, authorized
+
+    unauthorized, authorized = asyncio.run(scenario())
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.json()["absolute_path"] == "/mnt"
 
 
 def test_sse_connections_do_not_consume_regular_request_slots() -> None:

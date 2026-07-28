@@ -28,6 +28,18 @@ class HealthResponse(_StrictModel):
     schema_version: int = Field(ge=1)
 
 
+class DirectoryItem(_StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    path: str = Field(min_length=1, max_length=4_096)
+
+
+class DirectoryListingResponse(_StrictModel):
+    path: str = Field(max_length=4_096)
+    absolute_path: str = Field(min_length=1, max_length=4_096)
+    parent: str | None = Field(max_length=4_096)
+    directories: list[DirectoryItem] = Field(max_length=1_000)
+
+
 class RunSummary(_StrictModel):
     run_id: str
     status: str

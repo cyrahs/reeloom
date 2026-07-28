@@ -386,6 +386,73 @@
         "title": "CredentialRetain",
         "type": "object"
       },
+      "DirectoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "title": "DirectoryItem",
+        "type": "object"
+      },
+      "DirectoryListingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "absolute_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Absolute Path",
+            "type": "string"
+          },
+          "directories": {
+            "items": {
+              "$ref": "#/components/schemas/DirectoryItem"
+            },
+            "maxItems": 1000,
+            "title": "Directories",
+            "type": "array"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "path": {
+            "maxLength": 4096,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "absolute_path",
+          "parent",
+          "directories"
+        ],
+        "title": "DirectoryListingResponse",
+        "type": "object"
+      },
       "DiscoveriesResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1934,6 +2001,101 @@
           }
         ],
         "summary": "Provider Probe"
+      }
+    },
+    "/api/v1/admin/directories": {
+      "get": {
+        "operationId": "list_directories_api_v1_admin_directories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectoryListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Directories"
       }
     },
     "/api/v1/discoveries": {

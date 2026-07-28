@@ -1,11 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
-import { ApiError, idempotencyKey } from "../api";
+import { ApiError, idempotencyKey, type ApiClient } from "../api";
 import { useAuth } from "../auth";
 import { PageError } from "../components/Status";
-import { configSchema, type Config } from "../schemas";
+import {
+  configSchema,
+  directoryListingSchema,
+  type Config,
+} from "../schemas";
 import {
   workTypeLabel,
   workTypes,
@@ -42,6 +46,10 @@ type ConfigAttempt = {
   current?: Config;
   revision: number;
   key: string;
+};
+type DirectoryTarget = {
+  label: string;
+  select: (path: string) => void;
 };
 
 const emptyState = (): FormState => ({
@@ -112,6 +120,8 @@ export function ConfigPage() {
   const [uncertainAttempt, setUncertainAttempt] =
     useState<ConfigAttempt | null>(null);
   const [resyncing, setResyncing] = useState(false);
+  const [directoryTarget, setDirectoryTarget] =
+    useState<DirectoryTarget | null>(null);
 
   useEffect(() => {
     if (query.data && loadedRevision !== query.data.revision) {
@@ -319,6 +329,12 @@ export function ConfigPage() {
                 value={watch.rootPath}
                 onMode={(mode) => updateWatch(index, "rootMode", mode)}
                 onValue={(value) => updateWatch(index, "rootPath", value)}
+                onBrowse={() =>
+                  setDirectoryTarget({
+                    label: "源目录",
+                    select: (path) => updateWatch(index, "rootPath", path),
+                  })
+                }
                 placeholder="/media/incoming/anime"
               />
               <button
@@ -390,6 +406,12 @@ export function ConfigPage() {
                 value={route.rootPath}
                 onMode={(mode) => updateRoute(index, "rootMode", mode)}
                 onValue={(value) => updateRoute(index, "rootPath", value)}
+                onBrowse={() =>
+                  setDirectoryTarget({
+                    label: "归档目录",
+                    select: (path) => updateRoute(index, "rootPath", path),
+                  })
+                }
                 placeholder="/media/library/anime"
               />
               <button
@@ -543,6 +565,17 @@ export function ConfigPage() {
           </button>
         </div>
       </form>
+      {directoryTarget ? (
+        <DirectoryPicker
+          api={api}
+          label={directoryTarget.label}
+          onClose={() => setDirectoryTarget(null)}
+          onSelect={(path) => {
+            directoryTarget.select(path);
+            setDirectoryTarget(null);
+          }}
+        />
+      ) : null}
     </main>
   );
 
@@ -666,6 +699,7 @@ function SecretChoice({
   value,
   onMode,
   onValue,
+  onBrowse,
   placeholder,
   secret = false,
 }: {
@@ -675,6 +709,7 @@ function SecretChoice({
   value: string;
   onMode: (mode: RootMode) => void;
   onValue: (value: string) => void;
+  onBrowse?: () => void;
   placeholder: string;
   secret?: boolean;
 }) {
@@ -703,17 +738,128 @@ function SecretChoice({
         <p className="field-note">新项目必须提供明确值。</p>
       )}
       {effectiveMode === "replace" ? (
-        <input
-          type={secret ? "password" : "text"}
-          autoComplete="off"
-          value={value}
-          onChange={(event) => onValue(event.target.value)}
-          placeholder={placeholder}
-          required
-        />
+        <div className="path-input-row">
+          <input
+            type={secret ? "password" : "text"}
+            autoComplete="off"
+            value={value}
+            onChange={(event) => onValue(event.target.value)}
+            placeholder={placeholder}
+            required
+          />
+          {onBrowse ? (
+            <button
+              type="button"
+              className="secondary"
+              onClick={onBrowse}
+              aria-label={`浏览${label}`}
+            >
+              浏览
+            </button>
+          ) : null}
+        </div>
       ) : (
         <p className="retained-value">已配置 · 内容不会回传浏览器</p>
       )}
     </fieldset>
+  );
+}
+
+function DirectoryPicker({
+  api,
+  label,
+  onClose,
+  onSelect,
+}: {
+  api: ApiClient;
+  label: string;
+  onClose: () => void;
+  onSelect: (path: string) => void;
+}) {
+  const [path, setPath] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const query = useQuery({
+    queryKey: ["directories", path],
+    queryFn: () => {
+      const search = new URLSearchParams({ path });
+      return api.request(
+        `/api/v1/admin/directories?${search.toString()}`,
+        directoryListingSchema,
+      );
+    },
+    retry: false,
+  });
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop">
+      <div
+        ref={dialogRef}
+        className="modal directory-picker"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="directory-picker-title"
+      >
+        <div className="directory-picker-heading">
+          <div>
+            <p className="eyebrow">POD DIRECTORIES</p>
+            <h2 id="directory-picker-title">选择{label}</h2>
+          </div>
+          <button type="button" className="ghost" onClick={onClose} autoFocus>
+            关闭
+          </button>
+        </div>
+        <p className="directory-current">
+          {query.data?.absolute_path ?? "正在读取目录…"}
+        </p>
+        <div className="button-row">
+          <button
+            type="button"
+            className="secondary"
+            disabled={query.isFetching || query.data?.parent === null}
+            onClick={() => setPath(query.data?.parent ?? "")}
+          >
+            上一级
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!query.data || query.isFetching}
+            onClick={() => query.data && onSelect(query.data.absolute_path)}
+          >
+            选择当前目录
+          </button>
+        </div>
+        {query.error instanceof ApiError ? (
+          <PageError code={query.error.code} />
+        ) : null}
+        <div className="directory-list" aria-label="子目录">
+          {query.data?.directories.map((directory) => (
+            <button
+              type="button"
+              key={directory.path}
+              onClick={() => setPath(directory.path)}
+            >
+              <span aria-hidden="true">▸</span>
+              <span>{directory.name}</span>
+            </button>
+          ))}
+          {query.data?.directories.length === 0 ? (
+            <p className="muted">当前目录没有可浏览的子目录。</p>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
