@@ -248,7 +248,7 @@ export function ConfigPage() {
             scanner 不跟随符号链接；路径必须是管理员明确输入的绝对目录。
           </p>
           {form.watches.map((watch, index) => (
-            <div className="form-card" key={`${watch.watch_id}-${index}`}>
+            <div className="form-card" key={index}>
               <div className="form-grid">
                 <Field label="Watch ID">
                   <input
@@ -362,7 +362,7 @@ export function ConfigPage() {
         <ConfigSection number="02" title="归档路由">
           <p className="section-help">每种内容类型只能配置一个归档目标。</p>
           {form.routes.map((route, index) => (
-            <div className="form-card" key={`${route.work_type}-${index}`}>
+            <div className="form-card" key={index}>
               <Field label="内容类型">
                 <select
                   value={route.work_type}
