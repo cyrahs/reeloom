@@ -233,6 +233,16 @@ const watchSchema = z
   })
   .strict();
 
+const agentBudgetSchema = z
+  .object({
+    max_model_turns: z.number().int().min(1).max(1024),
+    max_tool_calls: z.number().int().min(1).max(4096),
+    max_failures: z.number().int().min(1).max(100),
+    max_total_tokens: z.number().int().min(1).max(10_000_000),
+    max_elapsed_seconds: z.number().positive().max(3600),
+  })
+  .strict();
+
 export const configSchema = z
   .object({
     revision: z.number().int().positive(),
@@ -248,6 +258,7 @@ export const configSchema = z
       })
       .strict(),
     apply_policy: z.enum(["plan_only", "manual", "automatic"]),
+    agent_budget: agentBudgetSchema,
   })
   .strict();
 

@@ -82,6 +82,38 @@ def test_config_edit_retains_exact_revision_roots_and_secret(
     )
     assert edit.draft.provider.secret_ref == "secret-existing"
     assert edit.replacement_api_key is None
+    assert edit.draft.agent_budget.max_elapsed_seconds == 600
+
+
+def test_config_edit_accepts_explicit_agent_budget(tmp_path: Path) -> None:
+    current = _current(tmp_path)
+    value = {
+        "watches": [],
+        "provider": {
+            "base_url": "https://models.example.test/v1",
+            "model": "gpt-5",
+            "reasoning_effort": None,
+            "verbosity": None,
+            "credential": {"mode": "retain"},
+        },
+        "apply_policy": "plan_only",
+        "agent_budget": {
+            "max_model_turns": 32,
+            "max_tool_calls": 48,
+            "max_failures": 2,
+            "max_total_tokens": 250_000,
+            "max_elapsed_seconds": 900,
+        },
+    }
+
+    edit = parse_config_edit(value, current=current)
+
+    assert edit.draft.agent_budget.max_model_turns == 32
+    assert edit.draft.agent_budget.max_elapsed_seconds == 900
+    value["agent_budget"]["unexpected"] = True
+    with pytest.raises(ServerError) as raised:
+        parse_config_edit(value, current=current)
+    assert raised.value.code is ServerErrorCode.INVALID_CONFIG
 
 
 @pytest.mark.parametrize(

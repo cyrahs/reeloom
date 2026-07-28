@@ -7,9 +7,11 @@ from reeloom.server.config import (
     ApplyPolicy,
     ConfigDraft,
     ConfigRevision,
+    DEFAULT_AGENT_BUDGET,
     ProviderConfig,
     ServerWorkType,
     WatchConfig,
+    agent_budget_from_payload,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
 
@@ -48,12 +50,22 @@ def parse_config_edit(
     current: ConfigRevision | None,
 ) -> ConfigEdit:
     try:
-        if set(value) != {
+        fields = {
             "apply_policy",
             "provider",
             "watches",
-        }:
+        }
+        if set(value) not in (fields, fields | {"agent_budget"}):
             raise ValueError
+        agent_budget = (
+            agent_budget_from_payload(value["agent_budget"])
+            if "agent_budget" in value
+            else (
+                current.agent_budget
+                if current is not None
+                else DEFAULT_AGENT_BUDGET
+            )
+        )
         raw_watches = value["watches"]
         raw_provider = value["provider"]
         if (
@@ -170,6 +182,7 @@ def parse_config_edit(
                 secret_ref=secret_ref,
             ),
             apply_policy=ApplyPolicy(value["apply_policy"]),
+            agent_budget=agent_budget,
         )
         if (
             replacement_api_key is not None

@@ -53,6 +53,7 @@ filesystem，也不根据浏览器本地状态推断 effect 已成功。movie do
 
 - 登录、health、dashboard、run detail、event timeline、plan preview；
 - 初始配置和安全编辑、provider probe；
+- 新 run 的 turn、tool、failure、token 和 elapsed-time 预算；
 - question、revision、reapply；
 - exact approve/apply 与 recovery；
 - stable idempotency key、stale head 和 uncertain outcome 的 fail-closed UX。

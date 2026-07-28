@@ -4,6 +4,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from reeloom.server.config import (
+    MAX_FAILURES,
+    MAX_MODEL_TURNS,
+    MAX_TOOL_CALLS,
+    MAX_TOTAL_TOKENS,
+)
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -236,12 +243,24 @@ class ConfigProviderResponse(_StrictModel):
     api_key_configured: bool
 
 
+class ConfigAgentBudget(_StrictModel):
+    max_model_turns: int = Field(ge=1, le=MAX_MODEL_TURNS)
+    max_tool_calls: int = Field(ge=1, le=MAX_TOOL_CALLS)
+    max_failures: int = Field(ge=1, le=MAX_FAILURES)
+    max_total_tokens: int = Field(
+        ge=1,
+        le=MAX_TOTAL_TOKENS,
+    )
+    max_elapsed_seconds: float = Field(ge=1, le=3_600)
+
+
 class ConfigResponse(_StrictModel):
     revision: int = Field(ge=1)
     revision_id: str
     watches: list[ConfigWatchResponse]
     provider: ConfigProviderResponse
     apply_policy: Literal["plan_only", "manual", "automatic"]
+    agent_budget: ConfigAgentBudget
 
 
 class RootRetain(_StrictModel):
@@ -293,6 +312,7 @@ class ConfigUpdateRequest(_StrictModel):
     watches: list[ConfigWatchRequest]
     provider: LegacyProviderRequest | EditProviderRequest
     apply_policy: Literal["plan_only", "manual", "automatic"]
+    agent_budget: ConfigAgentBudget | None = None
 
 
 class ProviderProbeRequest(_StrictModel):

@@ -79,6 +79,7 @@ def test_config_service_persists_secret_before_config(
     assert secrets.values == [b"key-value"]
     assert result.provider.secret_ref == "secret-1"
     assert result.revision == 1
+    assert result.agent_budget.max_elapsed_seconds == 600
 
 
 def test_config_cas_failure_leaves_only_unreferenced_secret(

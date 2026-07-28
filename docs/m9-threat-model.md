@@ -16,7 +16,7 @@ filename display 和浏览器 mutation intent。
 | UI → mutation | stale head、double submit、uncertain response | exact If-Match、stable idempotency key、disabled duplicate submit、durable refetch |
 | SSE | cursor loss、duplicate event、connection amplification | one stream per run page、Last-Event-ID、bounded backoff、cursor-ahead resync |
 | Plan store → preview | tamper、wrong plan kind、absolute path leak | lineage pinning、canonical/hash verification、typed projector、allowlisted fields |
-| Config editing | hidden root/secret loss、capability substitution | exact revision `retain` or explicit Admin `replace`, no returned path/secret |
+| Config editing | root/secret loss、capability substitution、无界 Agent 成本 | Admin-readable paths、write-only secret、exact revision retain/replace、bounded run budget |
 | Pod directory browser | path escape、symlink traversal、file or dotenv disclosure | Admin-only endpoint、rooted at current Pod `/`、relative canonical navigation、no-follow directory descriptors、directory names only、`.env*` exclusion |
 
 ## Residual risks

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.runtime.budget import RunBudget
 from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.config import (
     ApplyPolicy,
@@ -75,6 +76,35 @@ def test_config_is_canonical_versioned_and_round_trips(
     assert public["watches"][0]["library_root"] == str(
         draft.watches[0].library_root
     )
+    assert public["agent_budget"]["max_elapsed_seconds"] == 600
+
+
+def test_config_budget_is_strict_and_round_trips(tmp_path: Path) -> None:
+    draft = _draft(tmp_path)
+    revision = ConfigRevision.create(
+        revision_id="cfg-budget",
+        revision=2,
+        created_at=datetime(2026, 7, 25, tzinfo=UTC),
+        draft=ConfigDraft(
+            watches=draft.watches,
+            provider=draft.provider,
+            apply_policy=draft.apply_policy,
+            agent_budget=RunBudget(
+                max_model_turns=32,
+                max_tool_calls=48,
+                max_failures=2,
+                max_total_tokens=250_000,
+                max_elapsed_seconds=900,
+            ),
+        ),
+    )
+
+    assert ConfigRevision.from_json(revision.to_json()) == revision
+    payload = json.loads(revision.to_json())
+    payload["agent_budget"]["unexpected"] = True
+    with pytest.raises(ServerError) as raised:
+        ConfigRevision.from_json(json.dumps(payload))
+    assert raised.value.code is ServerErrorCode.INVALID_CONFIG
 
 
 def test_config_rejects_source_library_overlap(
@@ -140,7 +170,8 @@ def test_legacy_config_maps_routes_to_each_watch(tmp_path: Path) -> None:
         library.resolve(),
         library.resolve(),
     ]
-    assert '"schema_version":2' in restored.to_json()
+    assert '"schema_version":3' in restored.to_json()
+    assert restored.agent_budget.max_elapsed_seconds == 600
     assert "archive_routes" not in restored.public_payload()
 
     payload["schema_version"] = 2

@@ -21,6 +21,13 @@ test("round-trips existing capabilities through explicit retain modes", () => {
     credentialMode: "retain",
     apiKey: "",
     apply_policy: "manual",
+    agent_budget: {
+      max_model_turns: 64,
+      max_tool_calls: 64,
+      max_failures: 3,
+      max_total_tokens: 100_000,
+      max_elapsed_seconds: 600,
+    },
   });
   expect(payload.watches[0]?.root).toEqual({ mode: "retain" });
   expect(payload.watches[0]?.library_root).toEqual({ mode: "retain" });
@@ -49,6 +56,13 @@ test("includes replacement values only after an explicit replace choice", () => 
     credentialMode: "replace",
     apiKey: "new-key",
     apply_policy: "plan_only",
+    agent_budget: {
+      max_model_turns: 32,
+      max_tool_calls: 48,
+      max_failures: 2,
+      max_total_tokens: 200_000,
+      max_elapsed_seconds: 900,
+    },
   });
   expect(payload.watches[0]?.root).toEqual({
     mode: "replace",
@@ -61,6 +75,13 @@ test("includes replacement values only after an explicit replace choice", () => 
   expect(payload.provider.credential).toEqual({
     mode: "replace",
     api_key: "new-key",
+  });
+  expect(payload.agent_budget).toEqual({
+    max_model_turns: 32,
+    max_tool_calls: 48,
+    max_failures: 2,
+    max_total_tokens: 200_000,
+    max_elapsed_seconds: 900,
   });
 });
 
@@ -86,6 +107,13 @@ test("cannot retain a capability after changing its exact identity", () => {
       credentialMode: "retain",
       apiKey: "",
       apply_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
     },
     {
       revision: 4,
@@ -108,6 +136,13 @@ test("cannot retain a capability after changing its exact identity", () => {
         api_key_configured: true,
       },
       apply_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
     },
   );
 

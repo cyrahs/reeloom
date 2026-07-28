@@ -67,6 +67,7 @@ class ConfigService:
                 secret_ref=secret_ref,
             ),
             apply_policy=value.apply_policy,
+            agent_budget=value.agent_budget,
         )
         return self.compare_and_append_draft(
             expected_revision=expected_revision,
@@ -108,6 +109,7 @@ class ConfigService:
                     secret_ref=secret_ref,
                 ),
                 apply_policy=draft.apply_policy,
+                agent_budget=draft.agent_budget,
             )
         revision = ConfigRevision.create(
             revision_id=self._id_factory(),

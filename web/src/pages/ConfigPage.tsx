@@ -36,6 +36,13 @@ type FormState = {
   credentialMode: RootMode;
   apiKey: string;
   apply_policy: "plan_only" | "manual" | "automatic";
+  agent_budget: {
+    max_model_turns: number;
+    max_tool_calls: number;
+    max_failures: number;
+    max_total_tokens: number;
+    max_elapsed_seconds: number;
+  };
 };
 type ConfigAttempt = {
   state: FormState;
@@ -68,6 +75,13 @@ const emptyState = (): FormState => ({
   credentialMode: "replace",
   apiKey: "",
   apply_policy: "plan_only",
+  agent_budget: {
+    max_model_turns: 64,
+    max_tool_calls: 64,
+    max_failures: 3,
+    max_total_tokens: 100_000,
+    max_elapsed_seconds: 600,
+  },
 });
 
 function fromConfig(config: Config): FormState {
@@ -89,6 +103,7 @@ function fromConfig(config: Config): FormState {
     credentialMode: "retain",
     apiKey: "",
     apply_policy: config.apply_policy,
+    agent_budget: config.agent_budget,
   };
 }
 
@@ -443,7 +458,61 @@ export function ConfigPage() {
           ) : null}
         </ConfigSection>
 
-        <ConfigSection number="03" title="执行策略">
+        <ConfigSection number="03" title="Agent 预算">
+          <p className="section-help">
+            每个新 run 固定使用保存时的预算；修改配置不会改变已创建的任务。
+            任一预算耗尽都会安全停止，不会据此推断文件移动成功。
+          </p>
+          <div className="form-grid">
+            <BudgetField
+              label="总时间上限（秒）"
+              value={form.agent_budget.max_elapsed_seconds}
+              min={1}
+              max={3600}
+              onChange={(max_elapsed_seconds) =>
+                updateBudget({ max_elapsed_seconds })
+              }
+            />
+            <BudgetField
+              label="Token 总上限"
+              value={form.agent_budget.max_total_tokens}
+              min={1}
+              max={10_000_000}
+              onChange={(max_total_tokens) =>
+                updateBudget({ max_total_tokens })
+              }
+            />
+            <BudgetField
+              label="模型轮次上限"
+              value={form.agent_budget.max_model_turns}
+              min={1}
+              max={1024}
+              onChange={(max_model_turns) =>
+                updateBudget({ max_model_turns })
+              }
+            />
+            <BudgetField
+              label="工具调用上限"
+              value={form.agent_budget.max_tool_calls}
+              min={1}
+              max={4096}
+              onChange={(max_tool_calls) =>
+                updateBudget({ max_tool_calls })
+              }
+            />
+            <BudgetField
+              label="失败次数上限"
+              value={form.agent_budget.max_failures}
+              min={1}
+              max={100}
+              onChange={(max_failures) =>
+                updateBudget({ max_failures })
+              }
+            />
+          </div>
+        </ConfigSection>
+
+        <ConfigSection number="04" title="执行策略">
           <div className="policy-grid">
             {[
               ["plan_only", "仅计划", "永不执行文件移动。"],
@@ -516,6 +585,15 @@ export function ConfigPage() {
         item.work_type === watch.work_type,
     );
   }
+
+  function updateBudget(
+    value: Partial<FormState["agent_budget"]>,
+  ) {
+    setForm((current) => ({
+      ...current,
+      agent_budget: { ...current.agent_budget, ...value },
+    }));
+  }
 }
 
 export function toPayload(state: FormState, current?: Config) {
@@ -525,6 +603,7 @@ export function toPayload(state: FormState, current?: Config) {
       : { mode: "replace" as const, path };
   return {
     apply_policy: state.apply_policy,
+    agent_budget: state.agent_budget,
     watches: state.watches.map((item) => ({
       watch_id: item.watch_id,
       work_type: item.work_type,
@@ -563,6 +642,34 @@ export function toPayload(state: FormState, current?: Config) {
           : { mode: "replace" as const, api_key: state.apiKey },
     },
   };
+}
+
+function BudgetField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Field label={label}>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        required
+      />
+    </Field>
+  );
 }
 
 function ConfigSection({

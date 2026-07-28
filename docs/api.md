@@ -59,6 +59,22 @@ watch 表示删除；stale revision、缺失 retain target 和格式混用均 fa
 旧数据库 revision 中按类型保存的 route 只在读取历史记录时转换，不属于当前
 HTTP wire。
 
+Config 还包含严格的 `agent_budget`：
+
+```json
+{
+  "max_model_turns": 64,
+  "max_tool_calls": 64,
+  "max_failures": 3,
+  "max_total_tokens": 100000,
+  "max_elapsed_seconds": 600
+}
+```
+
+预算绑定创建 run 时的 exact config revision；后续配置修改不会增加已有 run
+或 interaction 的剩余预算。时间上限范围为 1–3600 秒，其余字段也有 OpenAPI
+声明的有界上限。旧 config revision 缺少该字段时使用上述默认值。
+
 目录选择接口只枚举当前 Reeloom Pod 从 `/` 可见的真实目录，并返回所选目录的
 absolute path 供结构化配置表单使用。它不读取或返回文件，不跟随 symlink，并
 隐藏和拒绝所有 `.env*` 路径；其他 Pod 的文件系统不在其可见范围内。

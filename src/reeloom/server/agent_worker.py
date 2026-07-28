@@ -17,7 +17,6 @@ from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.plans import PlanStore
 from reeloom.ports.tmdb import TmdbProvider
-from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.state import Phase
 from reeloom.server.agent_repository import (
     PostgresAgentDefinitionRepository,
@@ -79,7 +78,6 @@ class InitialAgentWorker:
     model_factory: ModelLeaseFactory
     tmdb_factory: TmdbLeaseFactory
     pool: ConnectionPool
-    budget: RunBudget = RunBudget()
 
     async def run(self, *, run_id: str) -> str:
         job = self.scheduler.get_job_context(run_id=run_id)
@@ -128,7 +126,7 @@ class InitialAgentWorker:
                 subtitle_provider=subtitle_provider,
                 plan_compiler=compiler,
                 plan_store=self.plans,
-                budget=self.budget,
+                budget=config.agent_budget,
                 event_store=event_store,
                 agent_session=session,
             )

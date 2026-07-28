@@ -29,6 +29,13 @@ test("keeps internal watch identity hidden and displays configured paths", async
         api_key_configured: true,
       },
       apply_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
     }));
 
   render(
@@ -43,6 +50,8 @@ test("keeps internal watch identity hidden and displays configured paths", async
   await screen.findByText("/media/incoming/anime");
   expect(screen.getByText("/media/library/anime")).toBeVisible();
   expect(screen.queryByLabelText("Watch ID")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("总时间上限（秒）")).toHaveValue(600);
+  expect(screen.getByLabelText("Token 总上限")).toHaveValue(100_000);
 
   const workTypes = screen.getAllByLabelText("内容类型");
   await user.selectOptions(workTypes[0]!, "movie");
@@ -74,6 +83,13 @@ test("selects a pod directory without requiring manual path entry", async () => 
         api_key_configured: true,
       },
       apply_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
     }))
     .mockResolvedValueOnce(jsonResponse({
       path: "srv/media",
@@ -122,6 +138,13 @@ test("shows provider probe result inside the provider section", async () => {
         api_key_configured: true,
       },
       apply_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
     }))
     .mockResolvedValueOnce(jsonResponse({
       available: true,

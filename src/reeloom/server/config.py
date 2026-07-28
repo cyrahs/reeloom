@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.runtime.budget import RunBudget
+from reeloom.runtime.errors import RuntimeDomainError
 from reeloom.server.errors import ServerError, ServerErrorCode
 
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -17,6 +19,11 @@ _REASONING = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
 _VERBOSITY = frozenset({"low", "medium", "high"})
+MAX_MODEL_TURNS = 1_024
+MAX_TOOL_CALLS = 4_096
+MAX_FAILURES = 100
+MAX_TOTAL_TOKENS = 10_000_000
+DEFAULT_AGENT_BUDGET = RunBudget()
 
 
 class ServerWorkType(StrEnum):
@@ -118,6 +125,7 @@ class ConfigDraft:
     watches: tuple[WatchConfig, ...]
     provider: ProviderConfig
     apply_policy: ApplyPolicy
+    agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
 
     def __post_init__(self) -> None:
         if (
@@ -126,6 +134,12 @@ class ConfigDraft:
             or not all(isinstance(item, WatchConfig) for item in self.watches)
             or not isinstance(self.provider, ProviderConfig)
             or not isinstance(self.apply_policy, ApplyPolicy)
+            or not isinstance(self.agent_budget, RunBudget)
+            or self.agent_budget.max_model_turns > MAX_MODEL_TURNS
+            or self.agent_budget.max_tool_calls > MAX_TOOL_CALLS
+            or self.agent_budget.max_failures > MAX_FAILURES
+            or self.agent_budget.max_total_tokens > MAX_TOTAL_TOKENS
+            or self.agent_budget.max_elapsed_seconds < 1
         ):
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
         watch_ids = tuple(item.watch_id for item in self.watches)
@@ -144,6 +158,7 @@ class ConfigDraftInput:
     watches: tuple[WatchConfig, ...]
     provider: ProviderConfigInput
     apply_policy: ApplyPolicy
+    agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +169,7 @@ class ConfigRevision:
     watches: tuple[WatchConfig, ...]
     provider: ProviderConfig
     apply_policy: ApplyPolicy
+    agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
 
     def __post_init__(self) -> None:
         if (
@@ -168,6 +184,7 @@ class ConfigRevision:
             watches=self.watches,
             provider=self.provider,
             apply_policy=self.apply_policy,
+            agent_budget=self.agent_budget,
         )
 
     @classmethod
@@ -186,6 +203,7 @@ class ConfigRevision:
             watches=draft.watches,
             provider=draft.provider,
             apply_policy=draft.apply_policy,
+            agent_budget=draft.agent_budget,
         )
 
     def to_json(self) -> str:
@@ -202,7 +220,8 @@ class ConfigRevision:
                 },
                 "revision": self.revision,
                 "revision_id": self.revision_id,
-                "schema_version": 2,
+                "schema_version": 3,
+                "agent_budget": _budget_payload(self.agent_budget),
                 "watches": [
                     {
                         "library_root": str(item.library_root),
@@ -243,6 +262,7 @@ class ConfigRevision:
                 "api_key_configured": True,
             },
             "apply_policy": self.apply_policy.value,
+            "agent_budget": _budget_payload(self.agent_budget),
         }
 
     @classmethod
@@ -268,6 +288,7 @@ class ConfigRevision:
                 "revision_id",
                 "watches",
             }
+            budget = DEFAULT_AGENT_BUDGET
             if set(raw) == common | {"archive_routes"}:
                 watches = _legacy_watches(
                     raw["watches"],
@@ -279,6 +300,14 @@ class ConfigRevision:
                 and raw["schema_version"] == 2
             ):
                 watches = _v2_watches(raw["watches"])
+            elif (
+                set(raw)
+                == common | {"schema_version", "agent_budget"}
+                and type(raw["schema_version"]) is int
+                and raw["schema_version"] == 3
+            ):
+                watches = _v2_watches(raw["watches"])
+                budget = agent_budget_from_payload(raw["agent_budget"])
             else:
                 raise ValueError
             return cls(
@@ -294,9 +323,50 @@ class ConfigRevision:
                     secret_ref=provider["secret_ref"],
                 ),
                 apply_policy=ApplyPolicy(raw["apply_policy"]),
+                agent_budget=budget,
             )
         except (KeyError, TypeError, ValueError, ServerError):
             raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
+
+
+def _budget_payload(budget: RunBudget) -> dict[str, int | float]:
+    return {
+        "max_model_turns": budget.max_model_turns,
+        "max_tool_calls": budget.max_tool_calls,
+        "max_failures": budget.max_failures,
+        "max_total_tokens": budget.max_total_tokens,
+        "max_elapsed_seconds": budget.max_elapsed_seconds,
+    }
+
+
+def agent_budget_from_payload(value: object) -> RunBudget:
+    fields = {
+        "max_model_turns",
+        "max_tool_calls",
+        "max_failures",
+        "max_total_tokens",
+        "max_elapsed_seconds",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError
+    try:
+        budget = RunBudget(
+            max_model_turns=value["max_model_turns"],
+            max_tool_calls=value["max_tool_calls"],
+            max_failures=value["max_failures"],
+            max_total_tokens=value["max_total_tokens"],
+            max_elapsed_seconds=value["max_elapsed_seconds"],
+        )
+    except RuntimeDomainError:
+        raise ValueError from None
+    if (
+        budget.max_model_turns > MAX_MODEL_TURNS
+        or budget.max_tool_calls > MAX_TOOL_CALLS
+        or budget.max_failures > MAX_FAILURES
+        or budget.max_total_tokens > MAX_TOTAL_TOKENS
+    ):
+        raise ValueError
+    return budget
 
 
 def _v2_watches(value: object) -> tuple[WatchConfig, ...]:

@@ -953,6 +953,8 @@ def create_api(
         if dependencies.config_update is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         value = body.model_dump()
+        if value["agent_budget"] is None:
+            del value["agent_budget"]
 
         def execute() -> dict[str, object]:
             return dependencies.config_update(expected_revision, value)

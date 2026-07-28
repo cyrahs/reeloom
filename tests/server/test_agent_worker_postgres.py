@@ -22,6 +22,7 @@ from reeloom.kernel.tmdb import (
     TmdbWorkType,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.runtime.budget import RunBudget
 from reeloom.server.agent_repository import (
     PostgresAgentDefinitionRepository,
 )
@@ -229,6 +230,9 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
                     api_key=b"not-a-real-secret",
                 ),
                 apply_policy=ApplyPolicy.MANUAL,
+                agent_budget=RunBudget(
+                    max_elapsed_seconds=321,
+                ),
             ),
         )
         scheduler = PostgresSchedulerRepository(control.pool)
@@ -302,6 +306,7 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
         ).state
         assert state is not None
         assert state.plan_hash == plan_hash
+        assert state.budget.max_elapsed_seconds == 321
         with control.pool.connection() as connection:
             row = connection.execute(
                 """

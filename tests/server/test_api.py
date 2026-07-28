@@ -107,6 +107,13 @@ class _Queries:
                 "api_key_configured": True,
             },
             "apply_policy": "manual",
+            "agent_budget": {
+                "max_model_turns": 64,
+                "max_tool_calls": 64,
+                "max_failures": 3,
+                "max_total_tokens": 100_000,
+                "max_elapsed_seconds": 600,
+            },
         }
 
     def get_plan(

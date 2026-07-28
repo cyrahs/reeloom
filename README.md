@@ -69,7 +69,8 @@ See the [threat model](docs/threat-model.md) and
 
 1. Sign in with the deployment-provided Admin Bearer token.
 2. Configure each inbound watch together with its media-library root,
-   TMDB-backed media type, and the model provider.
+   TMDB-backed media type, model provider, and bounded Agent budget. New
+   configurations default to a 600-second run limit.
 3. Keep the first configuration in `plan_only`.
 4. Review discoveries, runs, immutable plans, unmapped files, and interaction
    history.

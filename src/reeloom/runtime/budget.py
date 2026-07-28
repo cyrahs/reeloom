@@ -13,7 +13,7 @@ class RunBudget:
     max_tool_calls: int = 64
     max_failures: int = 3
     max_total_tokens: int = 100_000
-    max_elapsed_seconds: float = 60.0
+    max_elapsed_seconds: float = 600.0
 
     def __post_init__(self) -> None:
         for field_name in (

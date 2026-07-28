@@ -81,6 +81,50 @@
         "title": "ApproveApplyRequest",
         "type": "object"
       },
+      "ConfigAgentBudget": {
+        "additionalProperties": false,
+        "properties": {
+          "max_elapsed_seconds": {
+            "maximum": 3600.0,
+            "minimum": 1.0,
+            "title": "Max Elapsed Seconds",
+            "type": "number"
+          },
+          "max_failures": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Failures",
+            "type": "integer"
+          },
+          "max_model_turns": {
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Max Model Turns",
+            "type": "integer"
+          },
+          "max_tool_calls": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Max Tool Calls",
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Max Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_model_turns",
+          "max_tool_calls",
+          "max_failures",
+          "max_total_tokens",
+          "max_elapsed_seconds"
+        ],
+        "title": "ConfigAgentBudget",
+        "type": "object"
+      },
       "ConfigProviderResponse": {
         "additionalProperties": false,
         "properties": {
@@ -132,6 +176,9 @@
       "ConfigResponse": {
         "additionalProperties": false,
         "properties": {
+          "agent_budget": {
+            "$ref": "#/components/schemas/ConfigAgentBudget"
+          },
           "apply_policy": {
             "enum": [
               "plan_only",
@@ -166,7 +213,8 @@
           "revision_id",
           "watches",
           "provider",
-          "apply_policy"
+          "apply_policy",
+          "agent_budget"
         ],
         "title": "ConfigResponse",
         "type": "object"
@@ -174,6 +222,16 @@
       "ConfigUpdateRequest": {
         "additionalProperties": false,
         "properties": {
+          "agent_budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfigAgentBudget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "apply_policy": {
             "enum": [
               "plan_only",
