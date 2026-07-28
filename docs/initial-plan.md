@@ -182,7 +182,8 @@ APPLYING → ROLLED_BACK
 | `search_tmdb` | IDENTIFY | query、work_type | 类型化候选；filter 必须匹配 run；只能访问 TMDB adapter |
 | `get_tmdb_series` | IDENTIFY/MAP | work_type、tmdb_id、language | 仅 series 类型；白名单字段和大小受限的文本 |
 | `get_tmdb_season` | MAP | work_type、tmdb_id、season、language | 仅已选 series；集号、标题、限长 overview |
-| `get_existing_inventory` | MAP | selected tmdb_id | 已占用 season/episode 集合 |
+| `search_dir` | MAP | selected identity 或 literal name、cursor、limit | 只缓存并过滤媒体库根的直接子目录，返回 run-scoped opaque ID |
+| `list_dir` | MAP | directory_id、cursor、limit | 每次只列一层目录和视频，最大深度 3；不返回路径或文件 identity |
 | `detect_subtitle_variant` | MAP | subtitle_id | `chs`、`cht` 或 `chi`；限字节采样 |
 | `select_series` | IDENTIFY | tmdb_id | 领域事件；ID 必须来自当前候选 |
 | `submit_mapping` | MAP | strict mapping object | valid result 或结构化 validation issues |
@@ -193,6 +194,7 @@ APPLYING → ROLLED_BACK
 - schema 禁止额外字段。
 - 每次调用经过 phase、capability、预算和参数策略。
 - 文件名、overview 和字幕样本作为不可信数据，不作为指令。
+- 历史媒体库观察仅用于库存冲突与审查提示，不决定或放宽 canonical 目标。
 - validation observation 只包含错误码和最小必要上下文。
 - 第一版不提供 shell、网页搜索、任意 HTTP、任意读文件或任意写文件。
 - `apply`、`move_file` 和 `delete_file` 不是 Agent 工具。

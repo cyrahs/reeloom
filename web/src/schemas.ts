@@ -127,6 +127,38 @@ export const runSchema = z
       })
       .strict()
       .nullable(),
+    archive_report: z
+      .object({
+        status: z.enum(["checked", "incomplete"]),
+        work_type: workTypeSchema,
+        tmdb_id: z.number().int().positive(),
+        searches: z.array(
+          z
+            .object({
+              mode: z.enum(["selected_tmdb_id", "name"]),
+              match_count: z.number().int().min(0).max(50),
+              complete: z.boolean(),
+            })
+            .strict(),
+        ).max(100),
+        entries: z.array(
+          z
+            .object({
+              entry_id: z.number().int().positive(),
+              parent_entry_id: z.number().int().positive().nullable(),
+              kind: z.enum(["directory", "video"]),
+              name: z.string().min(1).max(255),
+              depth: z.number().int().min(1).max(4),
+              listed: z.boolean(),
+            })
+            .strict(),
+        ).max(200),
+        possible_existing_archive: z.boolean(),
+        advisory_only: z.literal(true),
+        observed_at: z.string(),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 

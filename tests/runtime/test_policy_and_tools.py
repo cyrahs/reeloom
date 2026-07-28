@@ -73,7 +73,9 @@ def test_phase_policy_is_deny_by_default() -> None:
         Phase.IDENTIFY_SERIES,
     )
     assert policy.is_allowed("get_tmdb_season", Phase.MAP_EPISODES)
-    assert policy.is_allowed(
+    assert policy.is_allowed("search_dir", Phase.MAP_EPISODES)
+    assert policy.is_allowed("list_dir", Phase.MAP_MOVIE)
+    assert not policy.is_allowed(
         "get_existing_inventory",
         Phase.MAP_EPISODES,
     )

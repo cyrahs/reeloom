@@ -116,6 +116,32 @@ class FolderDispositionView(_StrictModel):
     recovery_approval_id: str | None
 
 
+class ArchiveReportSearch(_StrictModel):
+    mode: Literal["selected_tmdb_id", "name"]
+    match_count: int = Field(ge=0, le=50)
+    complete: bool
+
+
+class ArchiveReportEntry(_StrictModel):
+    entry_id: int = Field(ge=1)
+    parent_entry_id: int | None = Field(ge=1)
+    kind: Literal["directory", "video"]
+    name: str = Field(min_length=1, max_length=255)
+    depth: int = Field(ge=1, le=4)
+    listed: bool
+
+
+class ArchiveReport(_StrictModel):
+    status: Literal["checked", "incomplete"]
+    work_type: Literal["anime", "tv", "movie"]
+    tmdb_id: int = Field(ge=1, le=9_999_999_999)
+    searches: list[ArchiveReportSearch] = Field(max_length=100)
+    entries: list[ArchiveReportEntry] = Field(max_length=200)
+    possible_existing_archive: bool
+    advisory_only: Literal[True]
+    observed_at: str
+
+
 class RunResponse(_StrictModel):
     run_id: str
     status: str
@@ -146,6 +172,7 @@ class RunResponse(_StrictModel):
     settlement: RunSettlement | None
     source_folder: str | None = None
     folder_disposition: FolderDispositionView | None = None
+    archive_report: ArchiveReport | None
 
 
 class PlanLineageItem(_StrictModel):

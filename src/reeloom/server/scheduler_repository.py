@@ -1149,6 +1149,50 @@ class PostgresSchedulerRepository:
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
 
+    def legacy_active_folder_runs(
+        self,
+        *,
+        schema_versions: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Find unplanned folder runs whose retired Agent call cannot resume."""
+
+        try:
+            with self._pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT r.run_id
+                    FROM runs AS r
+                    JOIN jobs AS job ON job.run_id = r.run_id
+                    JOIN discoveries AS discovery
+                      ON discovery.discovery_id = r.discovery_id
+                    JOIN agent_definitions AS definition
+                      ON definition.definition_hash =
+                         r.agent_definition_hash
+                    LEFT JOIN run_states AS state ON state.run_id = r.run_id
+                    LEFT JOIN plan_heads AS head ON head.run_id = r.run_id
+                    WHERE discovery.folder_generation_id IS NOT NULL
+                      AND job.status = 'pending'
+                      AND (
+                          r.status IN ('registered', 'running')
+                          OR (
+                              r.status = 'failed'
+                              AND state.projection_payload->>'failure_code'
+                                  = 'retired_tool_call'
+                          )
+                      )
+                      AND head.run_id IS NULL
+                      AND definition.payload->>'schema_version'
+                          = ANY(%s)
+                    ORDER BY r.run_id
+                    """,
+                    (list(schema_versions),),
+                ).fetchall()
+            return tuple(str(row[0]) for row in rows)
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
     def get_job_context(self, *, run_id: str) -> AgentJobContext:
         try:
             with self._pool.connection() as connection:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from agents import MaxTurnsExceeded
 from psycopg_pool import ConnectionPool
 
 from reeloom.adapters.filesystem import (
@@ -10,14 +11,22 @@ from reeloom.adapters.filesystem import (
     FilesystemScanResult,
     FilesystemSubtitleSampleProvider,
 )
-from reeloom.agents.organizer import create_organizer_context
-from reeloom.agents.organizer import run_episode_organizer
+from reeloom.agents.organizer import (
+    create_organizer_context,
+    run_episode_organizer,
+)
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.ports.archive_directory import ArchiveDirectoryError
 from reeloom.ports.plans import PlanStore
 from reeloom.ports.tmdb import TmdbProvider
-from reeloom.runtime.state import Phase
+from reeloom.runtime.errors import BudgetExceeded
+from reeloom.runtime.events import ApprovalRequested, RunStopped
+from reeloom.runtime.state import Phase, RunStatus, StopReason
+from reeloom.server.archive_directory import (
+    FilesystemArchiveDirectoryBrowser,
+)
 from reeloom.server.agent_repository import (
     PostgresAgentDefinitionRepository,
 )
@@ -27,7 +36,6 @@ from reeloom.server.config import (
     WatchConfig,
 )
 from reeloom.server.config_repository import PostgresConfigRepository
-from reeloom.server.inventory import ArchiveInventoryProvider
 from reeloom.server.organizer_definition import organizer_definition
 from reeloom.server.provider import ModelLease
 from reeloom.server.runtime_store import PostgresEventStore
@@ -91,23 +99,37 @@ class InitialAgentWorker:
         compiler = FilesystemPlanCompiler(scan, output_root)
         subtitle_provider = FilesystemSubtitleSampleProvider(scan)
         session_id = run_id
+        event_store = PostgresEventStore(
+            self.pool,
+            run_id=run_id,
+            plans=self.plans,
+        )
+        state = event_store.state
+        if (
+            state is not None
+            and state.phase is Phase.BUILD_PLAN
+            and state.rename_plan is not None
+            and state.plan_hash is not None
+        ):
+            state = event_store.append(
+                ApprovalRequested(plan_hash=state.plan_hash)
+            )
+        if (
+            state is not None
+            and state.phase is Phase.AWAITING_APPROVAL
+            and state.plan_hash is not None
+        ):
+            if state.status is not RunStatus.STOPPED:
+                event_store.append(
+                    RunStopped(reason=StopReason.AWAITING_APPROVAL)
+                )
+            return state.plan_hash
         definition = organizer_definition(work_type)
         self.definitions.register_and_bind(
             run_id=run_id,
             definition=definition,
             session_id=session_id,
         )
-        event_store = PostgresEventStore(
-            self.pool,
-            run_id=run_id,
-            plans=self.plans,
-        )
-        if (
-            event_store.state is not None
-            and event_store.state.phase is Phase.AWAITING_APPROVAL
-            and event_store.state.plan_hash is not None
-        ):
-            return event_store.state.plan_hash
         session = RepositoryAgentSession(
             repository=self.sessions,
             run_id=run_id,
@@ -122,7 +144,10 @@ class InitialAgentWorker:
                 candidate_source=candidates,
                 work_type=work_type,
                 tmdb_provider=tmdb.provider,
-                inventory=ArchiveInventoryProvider(output_root),
+                archive_browser=FilesystemArchiveDirectoryBrowser(
+                    run_id=run_id,
+                    root=output_root,
+                ),
                 subtitle_provider=subtitle_provider,
                 plan_compiler=compiler,
                 plan_store=self.plans,
@@ -130,13 +155,24 @@ class InitialAgentWorker:
                 event_store=event_store,
                 agent_session=session,
             )
-            result = await run_episode_organizer(
-                context=context,
-                model=model.model,
-                model_settings=model.model_settings,
-                prompt=_INITIAL_PROMPT,
-                instructions=definition.instructions,
-            )
+            try:
+                result = await run_episode_organizer(
+                    context=context,
+                    model=model.model,
+                    model_settings=model.model_settings,
+                    prompt=_INITIAL_PROMPT,
+                    instructions=definition.instructions,
+                )
+            except (MaxTurnsExceeded, BudgetExceeded) as error:
+                if (
+                    event_store.state is not None
+                    and event_store.state.retryable_directory_failure
+                ):
+                    raise ArchiveDirectoryError(
+                        "directory_io_unavailable",
+                        retryable=True,
+                    ) from error
+                raise
             if (
                 result.state.phase is not Phase.AWAITING_APPROVAL
                 or result.state.plan_hash is None

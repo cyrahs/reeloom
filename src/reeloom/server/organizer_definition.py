@@ -8,9 +8,29 @@ from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.server.agent_definition import AgentDefinitionRevision
 
 ORGANIZER_NAME = "EpisodeOrganizerAgent"
-ORGANIZER_SCHEMA_VERSION = "episode-organizer-v1"
+LEGACY_ORGANIZER_SCHEMA_VERSION = "episode-organizer-v1"
+ORGANIZER_SCHEMA_VERSION = "episode-organizer-v2"
 MOVIE_ORGANIZER_NAME = "MovieOrganizerAgent"
-MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v1"
+LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v1"
+MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v2"
+LEGACY_EPISODE_ORGANIZER_TOOL_NAMES = (
+    "list_candidates",
+    "search_tmdb",
+    "get_tmdb_series",
+    "get_tmdb_season",
+    "select_series",
+    "get_existing_inventory",
+    "detect_subtitle_variant",
+    "submit_mapping",
+)
+LEGACY_MOVIE_ORGANIZER_TOOL_NAMES = (
+    "list_candidates",
+    "search_tmdb",
+    "get_tmdb_movie",
+    "select_movie",
+    "detect_subtitle_variant",
+    "submit_mapping",
+)
 
 
 def organizer_definition(

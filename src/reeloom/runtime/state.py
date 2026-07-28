@@ -5,6 +5,11 @@ from datetime import datetime
 from enum import StrEnum
 
 from reeloom.kernel.candidates import CandidateId
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryCapability,
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
@@ -115,6 +120,14 @@ class RunState:
     selected_work_type: TmdbWorkType | None = None
     episode_catalog_counts: tuple[tuple[int, int], ...] = ()
     inventory_episodes: tuple[tuple[int, int], ...] | None = None
+    archive_directory_capabilities: tuple[
+        ArchiveDirectoryCapability, ...
+    ] = ()
+    archive_searches: tuple[ArchiveSearchRecord, ...] = ()
+    archive_directory_listings: tuple[
+        ArchiveDirectoryListing, ...
+    ] = ()
+    retryable_directory_failure: bool = False
     subtitle_variants: tuple[
         tuple[CandidateId, SubtitleVariant],
         ...,

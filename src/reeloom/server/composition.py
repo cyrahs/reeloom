@@ -55,6 +55,13 @@ from reeloom.server.run_deletion import PostgresRunDeletionService
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
+from reeloom.server.runtime_store import PostgresEventStore
+from reeloom.runtime.events import RunFailed
+from reeloom.runtime.state import RunStatus
+from reeloom.server.organizer_definition import (
+    LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
+    LEGACY_ORGANIZER_SCHEMA_VERSION,
+)
 from reeloom.server.secrets import FilesystemSecretStore
 from reeloom.server.config import (
     ConfigRevision,
@@ -132,6 +139,31 @@ class ServerApplication:
                     f"additional cleanup failure: {type(error).__name__}"
                 )
             raise errors[0]
+
+
+def _retire_legacy_folder_runs(
+    *,
+    database: PostgresControlPlane,
+    plans: FilesystemPlanStore,
+    scheduler: PostgresSchedulerRepository,
+) -> None:
+    for run_id in scheduler.legacy_active_folder_runs(
+        schema_versions=(
+            LEGACY_ORGANIZER_SCHEMA_VERSION,
+            LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
+        )
+    ):
+        event_store = PostgresEventStore(
+            database.pool,
+            run_id=run_id,
+            plans=plans,
+        )
+        if (
+            event_store.state is not None
+            and event_store.state.status is not RunStatus.FAILED
+        ):
+            event_store.append(RunFailed(code="retired_tool_call"))
+        scheduler.restart_folder_generation(run_id=run_id)
 
 
 def build_application(
@@ -214,6 +246,11 @@ def build_application(
         run_deletions = PostgresRunDeletionService(database.pool)
         scheduler = PostgresSchedulerRepository(database.pool)
         scheduler.reconcile_boot(current_boot_id=boot_id)
+        _retire_legacy_folder_runs(
+            database=database,
+            plans=plans,
+            scheduler=scheduler,
+        )
         config_repository = PostgresConfigRepository(database.pool)
         config_service = ConfigService(
             configs=config_repository,

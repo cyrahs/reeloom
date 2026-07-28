@@ -8,6 +8,8 @@ from reeloom.runtime.errors import RuntimeErrorCode
 from reeloom.runtime.events import (
     ApplyFailed,
     ApplyStarted,
+    ArchiveDirectoryListed,
+    ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
@@ -40,10 +42,12 @@ _ALLOWED_TOOLS = frozenset(
     {
         "detect_subtitle_variant",
         "get_existing_inventory",
+        "list_dir",
         "get_tmdb_season",
         "get_tmdb_series",
         "list_candidates",
         "search_tmdb",
+        "search_dir",
         "select_series",
         "submit_mapping",
     }
@@ -151,6 +155,18 @@ def _attributes(event: RuntimeEvent) -> dict[str, TraceValue]:
         return {
             "occupied_count": len(event.occupied),
             "tmdb_id": event.tmdb_id,
+        }
+    if isinstance(event, ArchiveSearchObserved):
+        return {
+            "complete": event.search.complete,
+            "match_count": len(event.search.directory_ids),
+            "work_type": event.search.work_type.value,
+        }
+    if isinstance(event, ArchiveDirectoryListed):
+        return {
+            "complete": event.listing.complete,
+            "directory_count": len(event.listing.child_ids),
+            "video_count": len(event.listing.videos),
         }
     if isinstance(event, SubtitleVariantDetected):
         return {"variant": event.variant.value}

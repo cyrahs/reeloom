@@ -167,9 +167,14 @@ def _mapping_model(episode: int) -> ScriptedModel:
                 call_id=f"season-{episode}",
             ),
             ToolCallStep(
-                name="get_existing_inventory",
-                arguments={"tmdb_id": 700},
-                call_id=f"inventory-{episode}",
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": 0,
+                    "limit": 50,
+                },
+                call_id=f"archive-search-{episode}",
             ),
             ToolCallStep(
                 name="submit_mapping",
@@ -212,6 +217,16 @@ def _movie_mapping_model() -> ScriptedModel:
                 name="select_movie",
                 arguments={"tmdb_id": 700},
                 call_id="select-movie",
+            ),
+            ToolCallStep(
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": 0,
+                    "limit": 50,
+                },
+                call_id="archive-search-movie",
             ),
             ToolCallStep(
                 name="submit_mapping",

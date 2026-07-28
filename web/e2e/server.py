@@ -117,6 +117,16 @@ def _movie_model() -> ScriptedModel:
                 call_id="select-movie",
             ),
             ToolCallStep(
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": None,
+                    "limit": 50,
+                },
+                call_id="archive-search-movie",
+            ),
+            ToolCallStep(
                 name="submit_mapping",
                 arguments={"video_id": "video:1", "subtitle_ids": []},
                 call_id="mapping-movie",

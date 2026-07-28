@@ -10,7 +10,6 @@ from reeloom.adapters.filesystem import (
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.agents.organizer import OrganizerContext, create_organizer_context
 from reeloom.kernel.candidates import CandidateId, CandidateKind
-from reeloom.kernel.inventory import ExistingInventory
 from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
@@ -22,6 +21,9 @@ from reeloom.kernel.tmdb import (
     TmdbWorkType,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.server.archive_directory import (
+    FilesystemArchiveDirectoryBrowser,
+)
 from reeloom.ports.subtitles import SubtitleSample
 from reeloom.runtime.budget import RunBudget
 from reeloom.tools.candidates import SnapshotCandidateSource
@@ -180,9 +182,9 @@ def build_eval_scenario(
         candidate_source=source,
         work_type=work_type,
         tmdb_provider=_BaselineTmdb(),
-        inventory=ExistingInventory(
-            work_type=work_type,
-            tmdb_id=200,
+        archive_browser=FilesystemArchiveDirectoryBrowser(
+            run_id=run_id,
+            root=AuthorizedRoot.create(output_path),
         ),
         subtitle_provider=_BaselineSubtitleProvider(source),
         plan_compiler=FilesystemPlanCompiler(

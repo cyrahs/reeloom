@@ -23,6 +23,7 @@ from reeloom.kernel.tmdb import (
 )
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.budget import RunBudget
+from reeloom.server.agent_definition import AgentDefinitionRevision
 from reeloom.server.agent_repository import (
     PostgresAgentDefinitionRepository,
 )
@@ -38,6 +39,11 @@ from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.config_service import ConfigService
 from reeloom.server.database import PostgresControlPlane
 from reeloom.server.runtime_store import PostgresEventStore
+from reeloom.server.organizer_definition import (
+    LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
+    LEGACY_ORGANIZER_SCHEMA_VERSION,
+    ORGANIZER_NAME,
+)
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
@@ -164,9 +170,14 @@ def _model() -> ScriptedModel:
                 call_id="season",
             ),
             ToolCallStep(
-                name="get_existing_inventory",
-                arguments={"tmdb_id": 200},
-                call_id="inventory",
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": 0,
+                    "limit": 50,
+                },
+                call_id="archive-search",
             ),
             ToolCallStep(
                 name="submit_mapping",
@@ -324,5 +335,36 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
         assert str(row[1]) == registration.run_id
         assert int(row[2]) > 0
         assert EPISODE_ORGANIZER_INSTRUCTIONS in str(row[3])
+
+        legacy = AgentDefinitionRevision.create(
+            name=ORGANIZER_NAME,
+            instructions="Historical v1 organizer.",
+            tools=LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
+            schema_version=LEGACY_ORGANIZER_SCHEMA_VERSION,
+        )
+        with control.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    INSERT INTO agent_definitions
+                        (definition_hash, payload)
+                    VALUES (%s, %s::jsonb)
+                    ON CONFLICT (definition_hash) DO NOTHING
+                    """,
+                    (legacy.definition_hash, legacy.to_json()),
+                )
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET agent_definition_hash = %s
+                    WHERE run_id = %s
+                    """,
+                    (legacy.definition_hash, registration.run_id),
+                )
+
+        assert (
+            asyncio.run(worker.run(run_id=registration.run_id))
+            == plan_hash
+        )
     finally:
         control.close()

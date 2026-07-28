@@ -10,6 +10,11 @@ from reeloom.kernel.candidates import (
     CandidateId,
     CandidateSnapshot,
 )
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryCapability,
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.mapping import (
     EpisodeCatalog,
@@ -31,6 +36,8 @@ from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import (
     ApplyFailed,
     ApplyStarted,
+    ArchiveDirectoryListed,
+    ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
@@ -96,6 +103,60 @@ def _bool(value: object) -> bool:
     if type(value) is not bool:
         _invalid()
     return value
+
+
+def _archive_capability_payload(
+    value: ArchiveDirectoryCapability,
+) -> dict[str, object]:
+    return {
+        "ctime_ns": value.ctime_ns,
+        "depth": value.depth,
+        "device": value.device,
+        "directory_id": value.directory_id,
+        "inode": value.inode,
+        "mtime_ns": value.mtime_ns,
+        "name": value.name,
+        "parent_id": value.parent_id,
+        "relative_path": value.relative_path.as_posix(),
+        "run_id": value.run_id,
+    }
+
+
+def _archive_capability(value: object) -> ArchiveDirectoryCapability:
+    p = _fields(
+        value,
+        {
+            "ctime_ns",
+            "depth",
+            "device",
+            "directory_id",
+            "inode",
+            "mtime_ns",
+            "name",
+            "parent_id",
+            "relative_path",
+            "run_id",
+        },
+        field="archive_directory_capability",
+    )
+    parent = p["parent_id"]
+    if parent is not None and not isinstance(parent, str):
+        _invalid()
+    try:
+        return ArchiveDirectoryCapability(
+            run_id=_str(p["run_id"]),
+            directory_id=_str(p["directory_id"]),
+            parent_id=parent,
+            relative_path=PurePosixPath(_str(p["relative_path"])),
+            name=_str(p["name"]),
+            depth=_int(p["depth"]),
+            device=_int(p["device"]),
+            inode=_int(p["inode"]),
+            mtime_ns=_int(p["mtime_ns"]),
+            ctime_ns=_int(p["ctime_ns"]),
+        )
+    except ValueError:
+        _invalid()
 
 
 def _list(value: object) -> list[object]:
@@ -432,6 +493,41 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "tmdb_id": event.tmdb_id,
             "work_type": event.work_type.value,
         }
+    if isinstance(event, ArchiveSearchObserved):
+        search = event.search
+        return "archive_search_observed", {
+            "call_id": search.call_id,
+            "capabilities": [
+                _archive_capability_payload(item)
+                for item in event.capabilities
+            ],
+            "complete": search.complete,
+            "cursor": search.cursor,
+            "directory_ids": list(search.directory_ids),
+            "mode": search.mode,
+            "next_cursor": search.next_cursor,
+            "observed_at": _timestamp(search.observed_at),
+            "query": search.query,
+            "tmdb_id": search.tmdb_id,
+            "work_type": search.work_type.value,
+        }
+    if isinstance(event, ArchiveDirectoryListed):
+        listing = event.listing
+        return "archive_directory_listed", {
+            "call_id": listing.call_id,
+            "capabilities": [
+                _archive_capability_payload(item)
+                for item in event.capabilities
+            ],
+            "child_ids": list(listing.child_ids),
+            "complete": listing.complete,
+            "cursor": listing.cursor,
+            "directory_id": listing.directory_id,
+            "next_cursor": listing.next_cursor,
+            "observed_at": _timestamp(listing.observed_at),
+            "occupied": [list(item) for item in listing.occupied],
+            "videos": list(listing.videos),
+        }
     if isinstance(event, SubtitleVariantDetected):
         return "subtitle_variant_detected", {
             "call_id": event.call_id,
@@ -648,6 +744,104 @@ def _event_from_payload(
             _int(p["tmdb_id"]),
             _work_type(p["work_type"]),
             occupied,
+        )
+    if event_type == "archive_search_observed":
+        p = _fields(
+            value,
+            {
+                "call_id",
+                "capabilities",
+                "complete",
+                "cursor",
+                "directory_ids",
+                "mode",
+                "next_cursor",
+                "observed_at",
+                "query",
+                "tmdb_id",
+                "work_type",
+            },
+            field=event_type,
+        )
+        ids = tuple(_str(item) for item in _list(p["directory_ids"]))
+        capabilities = tuple(
+            _archive_capability(item)
+            for item in _list(p["capabilities"])
+        )
+        try:
+            search = ArchiveSearchRecord(
+                call_id=_str(p["call_id"]),
+                mode=_str(p["mode"]),  # type: ignore[arg-type]
+                query=_str(p["query"]),
+                tmdb_id=_int(p["tmdb_id"]),
+                work_type=_work_type(p["work_type"]),
+                directory_ids=ids,
+                cursor=_int(p["cursor"]),
+                next_cursor=(
+                    None
+                    if p["next_cursor"] is None
+                    else _int(p["next_cursor"])
+                ),
+                complete=_bool(p["complete"]),
+                observed_at=_parse_timestamp(p["observed_at"]),
+            )
+        except ValueError:
+            _invalid()
+        return ArchiveSearchObserved(search, capabilities)
+    if event_type == "archive_directory_listed":
+        p = _fields(
+            value,
+            {
+                "call_id",
+                "capabilities",
+                "child_ids",
+                "complete",
+                "cursor",
+                "directory_id",
+                "next_cursor",
+                "observed_at",
+                "occupied",
+                "videos",
+            },
+            field=event_type,
+        )
+        raw_occupied = _list(p["occupied"])
+        occupied = tuple(
+            (_int(pair[0]), _int(pair[1]))
+            for item in raw_occupied
+            for pair in [_list(item)]
+            if len(pair) == 2
+        )
+        if len(occupied) != len(raw_occupied):
+            _invalid()
+        try:
+            listing = ArchiveDirectoryListing(
+                call_id=_str(p["call_id"]),
+                directory_id=_str(p["directory_id"]),
+                child_ids=tuple(
+                    _str(item) for item in _list(p["child_ids"])
+                ),
+                videos=tuple(
+                    _str(item) for item in _list(p["videos"])
+                ),
+                occupied=occupied,
+                cursor=_int(p["cursor"]),
+                next_cursor=(
+                    None
+                    if p["next_cursor"] is None
+                    else _int(p["next_cursor"])
+                ),
+                complete=_bool(p["complete"]),
+                observed_at=_parse_timestamp(p["observed_at"]),
+            )
+        except ValueError:
+            _invalid()
+        return ArchiveDirectoryListed(
+            listing,
+            tuple(
+                _archive_capability(item)
+                for item in _list(p["capabilities"])
+            ),
         )
     if event_type == "subtitle_variant_detected":
         p = _fields(

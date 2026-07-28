@@ -5,14 +5,15 @@ from typing import Protocol
 
 from psycopg_pool import ConnectionPool
 
-from reeloom.server.config import ConfigRevision
-from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.executor.manifest import ExecutionManifest
 from reeloom.kernel.amendment import verify_amendment_bytes
+from reeloom.kernel.initial_plan import verify_initial_plan_bytes
 from reeloom.kernel.movie_amendment import (
     verify_movie_amendment_bytes,
 )
-from reeloom.kernel.initial_plan import verify_initial_plan_bytes
+from reeloom.server.archive_report import archive_report_from_projection
+from reeloom.server.config import ConfigRevision
+from reeloom.server.errors import ServerError, ServerErrorCode
 
 
 class PlanContentStore(Protocol):
@@ -64,6 +65,27 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
             "occupied_count": (
                 len(occupied) if isinstance(occupied, list) else 0
             )
+        }
+    if event_type == "archive_search_observed":
+        directories = payload.get("directory_ids")
+        return {
+            "match_count": (
+                len(directories) if isinstance(directories, list) else 0
+            ),
+            "complete": payload.get("complete"),
+            "work_type": payload.get("work_type"),
+        }
+    if event_type == "archive_directory_listed":
+        children = payload.get("child_ids")
+        videos = payload.get("videos")
+        return {
+            "directory_count": (
+                len(children) if isinstance(children, list) else 0
+            ),
+            "video_count": (
+                len(videos) if isinstance(videos, list) else 0
+            ),
+            "complete": payload.get("complete"),
         }
     if event_type == "subtitle_variant_detected":
         return {"variant": payload.get("variant")}
@@ -224,7 +246,21 @@ class PostgresQueries:
                                          d.discovery_id
                                      AND observed.status = 'settled'
                                )
-                           ) AS deletion_ready
+                           ) AS deletion_ready,
+                           s.projection_payload,
+                           (
+                               SELECT interaction.result->'archive_report'
+                               FROM interactions AS interaction
+                               WHERE interaction.run_id = r.run_id
+                                 AND interaction.status = 'completed'
+                                 AND interaction.result
+                                     ? 'archive_report'
+                                 AND interaction.result->'archive_report'
+                                     IS NOT NULL
+                               ORDER BY interaction.finished_at DESC,
+                                        interaction.interaction_id DESC
+                               LIMIT 1
+                           )
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -408,6 +444,11 @@ class PostgresQueries:
                         None if row[29] is None else str(row[29])
                     ),
                 }
+            ),
+            "archive_report": (
+                row[32]
+                if isinstance(row[32], dict)
+                else archive_report_from_projection(row[31])
             ),
         }
 

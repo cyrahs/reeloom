@@ -71,11 +71,12 @@ def test_terminal_run_can_be_hidden_without_deleting_history() -> None:
                     """
                     INSERT INTO discoveries
                         (discovery_id, watch_id, config_revision,
-                         snapshot_id, snapshot_payload, work_type)
+                         snapshot_id, snapshot_payload, work_type,
+                         discovered_at)
                     VALUES (
                         %s, %s, %s, %s,
                         '{"files":[],"snapshot_id":"empty"}'::jsonb,
-                        'anime'
+                        'anime', clock_timestamp()
                     )
                     """,
                     (

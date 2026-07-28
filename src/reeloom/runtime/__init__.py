@@ -3,6 +3,8 @@
 from reeloom.runtime.events import (
     ApplyFailed,
     ApplyStarted,
+    ArchiveDirectoryListed,
+    ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
@@ -42,6 +44,8 @@ __all__ = [
     "EventStore",
     "ApplyFailed",
     "ApplyStarted",
+    "ArchiveDirectoryListed",
+    "ArchiveSearchObserved",
     "ApprovalRequested",
     "ApprovalResumeService",
     "CandidateSnapshotCreated",

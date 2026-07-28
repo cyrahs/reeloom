@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import PurePosixPath
 
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryCapability,
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.movie import MovieMappingDraft
@@ -39,7 +45,8 @@ from reeloom.runtime.state import (
 )
 
 LEGACY_STATE_PROJECTION_SCHEMA = "runtime-state-v1"
-STATE_PROJECTION_SCHEMA = "runtime-state-v2"
+V2_STATE_PROJECTION_SCHEMA = "runtime-state-v2"
+STATE_PROJECTION_SCHEMA = "runtime-state-v3"
 _LEGACY_FIELDS = frozenset(
     {
         "applied_count",
@@ -79,15 +86,22 @@ _LEGACY_FIELDS = frozenset(
         "work_type",
     }
 )
-_FIELDS = _LEGACY_FIELDS | {
+_V2_FIELDS = _LEGACY_FIELDS | {
     "movie_mapping_draft",
     "selected_movie",
 }
+_V3_FIELDS = _V2_FIELDS | {
+    "archive_directory_capabilities",
+    "archive_directory_listings",
+    "archive_searches",
+}
+_FIELDS = _V3_FIELDS | {"retryable_directory_failure"}
 
 
 def is_supported_projection_schema(value: object) -> bool:
     return value in {
         LEGACY_STATE_PROJECTION_SCHEMA,
+        V2_STATE_PROJECTION_SCHEMA,
         STATE_PROJECTION_SCHEMA,
     }
 
@@ -133,6 +147,19 @@ def encode_state(state: RunState) -> dict[str, object]:
             if state.inventory_episodes is None
             else [list(item) for item in state.inventory_episodes]
         ),
+        "archive_directory_capabilities": [
+            _archive_capability_payload(item)
+            for item in state.archive_directory_capabilities
+        ],
+        "archive_searches": [
+            _archive_search_payload(item)
+            for item in state.archive_searches
+        ],
+        "archive_directory_listings": [
+            _archive_listing_payload(item)
+            for item in state.archive_directory_listings
+        ],
+        "retryable_directory_failure": state.retryable_directory_failure,
         "mapping_draft": (
             None
             if state.mapping_draft is None
@@ -238,6 +265,18 @@ def _optional_text(value: object) -> str | None:
     return value
 
 
+def _text(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError
+    return value
+
+
+def _bool(value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError
+    return value
+
+
 def _tuple_pairs(value: object) -> tuple[tuple[str, str], ...]:
     if not isinstance(value, list):
         raise ValueError
@@ -266,6 +305,178 @@ def _int_pairs(value: object) -> tuple[tuple[int, int], ...]:
     if len(pairs) != len(value):
         raise ValueError
     return pairs
+
+
+def _archive_capability_payload(
+    value: ArchiveDirectoryCapability,
+) -> dict[str, object]:
+    return {
+        "ctime_ns": value.ctime_ns,
+        "depth": value.depth,
+        "device": value.device,
+        "directory_id": value.directory_id,
+        "inode": value.inode,
+        "mtime_ns": value.mtime_ns,
+        "name": value.name,
+        "parent_id": value.parent_id,
+        "relative_path": value.relative_path.as_posix(),
+        "run_id": value.run_id,
+    }
+
+
+def _archive_capability(value: object) -> ArchiveDirectoryCapability:
+    raw = check_fields(
+        value,
+        frozenset(
+            {
+                "ctime_ns",
+                "depth",
+                "device",
+                "directory_id",
+                "inode",
+                "mtime_ns",
+                "name",
+                "parent_id",
+                "relative_path",
+                "run_id",
+            }
+        ),
+        field="archive_directory_capability",
+    )
+    return ArchiveDirectoryCapability(
+        run_id=_text(raw["run_id"]),
+        directory_id=_text(raw["directory_id"]),
+        parent_id=_optional_text(raw["parent_id"]),
+        relative_path=PurePosixPath(_text(raw["relative_path"])),
+        name=_text(raw["name"]),
+        depth=_int(raw["depth"]),
+        device=_int(raw["device"]),
+        inode=_int(raw["inode"]),
+        mtime_ns=_int(raw["mtime_ns"]),
+        ctime_ns=_int(raw["ctime_ns"]),
+    )
+
+
+def _archive_search_payload(
+    value: ArchiveSearchRecord,
+) -> dict[str, object]:
+    return {
+        "call_id": value.call_id,
+        "complete": value.complete,
+        "cursor": value.cursor,
+        "directory_ids": list(value.directory_ids),
+        "mode": value.mode,
+        "next_cursor": value.next_cursor,
+        "observed_at": _timestamp(value.observed_at),
+        "query": value.query,
+        "tmdb_id": value.tmdb_id,
+        "work_type": value.work_type.value,
+    }
+
+
+def _archive_search(value: object) -> ArchiveSearchRecord:
+    raw = check_fields(
+        value,
+        frozenset(
+            {
+                "call_id",
+                "complete",
+                "cursor",
+                "directory_ids",
+                "mode",
+                "next_cursor",
+                "observed_at",
+                "query",
+                "tmdb_id",
+                "work_type",
+            }
+        ),
+        field="archive_search",
+    )
+    directory_ids = raw["directory_ids"]
+    if (
+        not isinstance(directory_ids, list)
+        or any(not isinstance(item, str) for item in directory_ids)
+        or type(raw["complete"]) is not bool
+    ):
+        raise ValueError
+    return ArchiveSearchRecord(
+        call_id=_text(raw["call_id"]),
+        mode=_text(raw["mode"]),  # type: ignore[arg-type]
+        query=_text(raw["query"]),
+        tmdb_id=_int(raw["tmdb_id"]),
+        work_type=TmdbWorkType(raw["work_type"]),
+        directory_ids=tuple(directory_ids),
+        cursor=_int(raw["cursor"]),
+        next_cursor=(
+            None
+            if raw["next_cursor"] is None
+            else _int(raw["next_cursor"])
+        ),
+        complete=raw["complete"],
+        observed_at=_parse_timestamp(raw["observed_at"]),
+    )
+
+
+def _archive_listing_payload(
+    value: ArchiveDirectoryListing,
+) -> dict[str, object]:
+    return {
+        "call_id": value.call_id,
+        "child_ids": list(value.child_ids),
+        "complete": value.complete,
+        "cursor": value.cursor,
+        "directory_id": value.directory_id,
+        "next_cursor": value.next_cursor,
+        "observed_at": _timestamp(value.observed_at),
+        "occupied": [list(item) for item in value.occupied],
+        "videos": list(value.videos),
+    }
+
+
+def _archive_listing(value: object) -> ArchiveDirectoryListing:
+    raw = check_fields(
+        value,
+        frozenset(
+            {
+                "call_id",
+                "child_ids",
+                "complete",
+                "cursor",
+                "directory_id",
+                "next_cursor",
+                "observed_at",
+                "occupied",
+                "videos",
+            }
+        ),
+        field="archive_directory_listing",
+    )
+    child_ids = raw["child_ids"]
+    videos = raw["videos"]
+    if (
+        not isinstance(child_ids, list)
+        or any(not isinstance(item, str) for item in child_ids)
+        or not isinstance(videos, list)
+        or any(not isinstance(item, str) for item in videos)
+        or type(raw["complete"]) is not bool
+    ):
+        raise ValueError
+    return ArchiveDirectoryListing(
+        call_id=_text(raw["call_id"]),
+        directory_id=_text(raw["directory_id"]),
+        child_ids=tuple(child_ids),
+        videos=tuple(videos),
+        occupied=_int_pairs(raw["occupied"]),
+        cursor=_int(raw["cursor"]),
+        next_cursor=(
+            None
+            if raw["next_cursor"] is None
+            else _int(raw["next_cursor"])
+        ),
+        complete=raw["complete"],
+        observed_at=_parse_timestamp(raw["observed_at"]),
+    )
 
 
 def decode_state(
@@ -311,7 +522,7 @@ def decode_state(
         raise ValueError
     inventory = payload["inventory_episodes"]
     return RunState(
-        run_id=str(payload["run_id"]),
+        run_id=_text(payload["run_id"]),
         phase=Phase(payload["phase"]),
         status=RunStatus(payload["status"]),
         event_count=_int(payload["event_count"]),
@@ -363,6 +574,21 @@ def decode_state(
         inventory_episodes=(
             None if inventory is None else _int_pairs(inventory)
         ),
+        archive_directory_capabilities=tuple(
+            _archive_capability(item)
+            for item in payload["archive_directory_capabilities"]
+        ),
+        archive_searches=tuple(
+            _archive_search(item)
+            for item in payload["archive_searches"]
+        ),
+        archive_directory_listings=tuple(
+            _archive_listing(item)
+            for item in payload["archive_directory_listings"]
+        ),
+        retryable_directory_failure=_bool(
+            payload["retryable_directory_failure"]
+        ),
         subtitle_variants=variants,
         mapping_draft=(
             None
@@ -377,7 +603,7 @@ def decode_state(
         rename_plan=(
             None
             if rename_plan_hash is None
-            else load_plan(str(rename_plan_hash))
+            else load_plan(_text(rename_plan_hash))
         ),
         plan_hash=_optional_text(payload["plan_hash"]),
         approval_id=_optional_text(payload["approval_id"]),
@@ -407,11 +633,26 @@ def _normalized_payload(value: object) -> dict[str, object]:
     keys = frozenset(raw)
     if keys == _FIELDS:
         return dict(check_fields(raw, _FIELDS, field="run_state"))
+    if keys == _V3_FIELDS:
+        payload = dict(check_fields(raw, _V3_FIELDS, field="run_state"))
+        payload["retryable_directory_failure"] = False
+        return payload
+    if keys == _V2_FIELDS:
+        payload = dict(check_fields(raw, _V2_FIELDS, field="run_state"))
+        payload["archive_directory_capabilities"] = []
+        payload["archive_searches"] = []
+        payload["archive_directory_listings"] = []
+        payload["retryable_directory_failure"] = False
+        return payload
     if keys == _LEGACY_FIELDS:
         payload = dict(
             check_fields(raw, _LEGACY_FIELDS, field="run_state")
         )
         payload["movie_mapping_draft"] = None
         payload["selected_movie"] = None
+        payload["archive_directory_capabilities"] = []
+        payload["archive_searches"] = []
+        payload["archive_directory_listings"] = []
+        payload["retryable_directory_failure"] = False
         return payload
     return dict(check_fields(raw, _FIELDS, field="run_state"))

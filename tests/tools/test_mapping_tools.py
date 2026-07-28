@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -11,7 +13,7 @@ from reeloom.kernel.candidates import (
     CandidateKind,
     CandidateSnapshot,
 )
-from reeloom.kernel.inventory import ExistingInventory
+from reeloom.kernel.archive_directory import ArchiveDirectoryCapability
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
@@ -33,7 +35,8 @@ from reeloom.runtime.tool_runtime import ToolRuntime
 from reeloom.tools.candidates import SnapshotCandidateSource
 from reeloom.tools.mapping import (
     detect_subtitle_variant,
-    get_existing_inventory,
+    list_dir,
+    search_dir,
     submit_mapping,
 )
 
@@ -132,38 +135,101 @@ def _payload(*, episode: int, with_subtitle: bool = False) -> object:
     }
 
 
-async def _observe_inventory(
+class _ArchiveBrowser:
+    def __init__(
+        self,
+        occupied: tuple[tuple[int, int], ...] = (),
+        *,
+        match_count: int | None = None,
+    ) -> None:
+        count = match_count if match_count is not None else bool(occupied)
+        self.capabilities = tuple(
+            ArchiveDirectoryCapability(
+                run_id="run-1",
+                directory_id=f"dir-{index}",
+                parent_id=None,
+                relative_path=PurePosixPath(f"Legacy {index}"),
+                name=f"Legacy {index}",
+                depth=1,
+                device=1,
+                inode=index,
+                mtime_ns=1,
+                ctime_ns=1,
+            )
+            for index in range(1, int(count) + 1)
+        )
+        self.occupied = occupied
+        self.last_search_name: object = None
+
+    def restore(
+        self,
+        capabilities: tuple[ArchiveDirectoryCapability, ...],
+    ) -> None:
+        del capabilities
+
+    async def search(self, **kwargs: object):
+        self.last_search_name = kwargs["name"]
+        cursor = int(kwargs["cursor"])
+        limit = int(kwargs["limit"])
+        page = self.capabilities[cursor : cursor + limit]
+        end = cursor + len(page)
+        next_cursor = (
+            end if end < len(self.capabilities) else None
+        )
+        return page, next_cursor, next_cursor is None, (
+            f"tmdb-{kwargs['tmdb_id']}"
+        )
+
+    async def list(self, **kwargs: object):
+        videos = tuple(
+            f"Legacy S{season:02d}E{episode:02d}.mkv"
+            for season, episode in self.occupied
+        )
+        cursor = int(kwargs["cursor"])
+        limit = int(kwargs["limit"])
+        page = videos[cursor : cursor + limit]
+        end = cursor + len(page)
+        next_cursor = end if end < len(videos) else None
+        return (), page, next_cursor, next_cursor is None
+
+
+async def _observe_archive(
     runtime: ToolRuntime,
-    inventory: ExistingInventory,
+    occupied: tuple[tuple[int, int], ...] = (),
 ) -> None:
-    result = await get_existing_inventory(
+    browser = _ArchiveBrowser(occupied)
+    result = await search_dir(
         runtime,
-        inventory,
-        call_id="inventory",
-        tmdb_id=100,
+        browser,
+        call_id="archive-search",
+        mode="selected_tmdb_id",
+        name=None,
+        cursor=0,
+        limit=50,
     )
     assert json.loads(result)["ok"] is True
-
-
-def _empty_inventory() -> ExistingInventory:
-    return ExistingInventory(
-        work_type=TmdbWorkType.ANIME,
-        tmdb_id=100,
-    )
+    if occupied:
+        listed = await list_dir(
+            runtime,
+            browser,
+            call_id="archive-list",
+            directory_id=browser.capabilities[0].directory_id,
+            cursor=0,
+            limit=100,
+        )
+        assert json.loads(listed)["ok"] is True
 
 
 def test_mapping_feedback_loop_rejects_then_accepts_correction() -> None:
     candidates = _candidates()
     runtime, source = _runtime(candidates)
-    inventory = _empty_inventory()
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime))
 
     rejected = json.loads(
         asyncio.run(
             submit_mapping(
                 runtime,
                 source,
-                inventory,
                 call_id="mapping-1",
                 payload=_payload(episode=3),
             )
@@ -174,7 +240,6 @@ def test_mapping_feedback_loop_rejects_then_accepts_correction() -> None:
             submit_mapping(
                 runtime,
                 source,
-                inventory,
                 call_id="mapping-2",
                 payload=_payload(episode=2),
             )
@@ -190,38 +255,40 @@ def test_mapping_feedback_loop_rejects_then_accepts_correction() -> None:
     assert runtime.state.validation_issues == ()
 
 
-def test_inventory_capability_must_be_explicit() -> None:
+def test_archive_search_capability_must_be_explicit() -> None:
     runtime, _ = _runtime(_candidates())
 
     result = json.loads(
         asyncio.run(
-            get_existing_inventory(
+            search_dir(
                 runtime,
                 None,
-                call_id="inventory",
-                tmdb_id=100,
+                call_id="archive-search",
+                mode="selected_tmdb_id",
+                name=None,
+                cursor=0,
+                limit=50,
             )
         )
     )
 
     assert result["error"]["code"] == "capability_not_available"
-    assert runtime.state.inventory_episodes is None
+    assert runtime.state.archive_searches == ()
 
 
-def test_maximum_inventory_fits_bounded_observation() -> None:
+def test_maximum_search_fits_bounded_observation() -> None:
     runtime, _ = _runtime(_candidates())
-    inventory = ExistingInventory.from_episodes(
-        work_type=TmdbWorkType.ANIME,
-        tmdb_id=100,
-        occupied=tuple((0, episode) for episode in range(1, 2_001)),
-    )
+    browser = _ArchiveBrowser(match_count=50)
 
     raw = asyncio.run(
-        get_existing_inventory(
+        search_dir(
             runtime,
-            inventory,
-            call_id="inventory",
-            tmdb_id=100,
+            browser,
+            call_id="archive-search",
+            mode="selected_tmdb_id",
+            name=None,
+            cursor=0,
+            limit=50,
         )
     )
 
@@ -229,10 +296,145 @@ def test_maximum_inventory_fits_bounded_observation() -> None:
     assert len(raw.encode()) <= 64 * 1024
 
 
+def test_name_search_is_normalized_and_path_syntax_is_rejected() -> None:
+    runtime, _ = _runtime(_candidates())
+    browser = _ArchiveBrowser()
+
+    accepted = json.loads(
+        asyncio.run(
+            search_dir(
+                runtime,
+                browser,
+                call_id="archive-name",
+                mode="name",
+                name="  Ｔｅｓｔ  ",
+                cursor=None,
+                limit=50,
+            )
+        )
+    )
+    rejected = json.loads(
+        asyncio.run(
+            search_dir(
+                runtime,
+                browser,
+                call_id="archive-path",
+                mode="name",
+                name="../library",
+                cursor=None,
+                limit=50,
+            )
+        )
+    )
+
+    assert accepted["ok"] is True
+    assert browser.last_search_name == "Test"
+    assert rejected["error"]["code"] == "invalid_tool_arguments"
+
+
+def test_directory_cursors_must_follow_the_previous_page() -> None:
+    runtime, _ = _runtime(_candidates())
+    browser = _ArchiveBrowser(
+        ((1, 1), (1, 2)),
+        match_count=2,
+    )
+
+    skipped_search = json.loads(
+        asyncio.run(
+            search_dir(
+                runtime,
+                browser,
+                call_id="search-skip",
+                mode="selected_tmdb_id",
+                name=None,
+                cursor=1,
+                limit=1,
+            )
+        )
+    )
+    first_search = json.loads(
+        asyncio.run(
+            search_dir(
+                runtime,
+                browser,
+                call_id="search-1",
+                mode="selected_tmdb_id",
+                name=None,
+                cursor=0,
+                limit=1,
+            )
+        )
+    )
+    second_search = json.loads(
+        asyncio.run(
+            search_dir(
+                runtime,
+                browser,
+                call_id="search-2",
+                mode="selected_tmdb_id",
+                name=None,
+                cursor=first_search["next_cursor"],
+                limit=1,
+            )
+        )
+    )
+    directory_id = first_search["matches"][0]["directory_id"]
+    skipped_list = json.loads(
+        asyncio.run(
+            list_dir(
+                runtime,
+                browser,
+                call_id="list-skip",
+                directory_id=directory_id,
+                cursor=1,
+                limit=1,
+            )
+        )
+    )
+    first_list = json.loads(
+        asyncio.run(
+            list_dir(
+                runtime,
+                browser,
+                call_id="list-1",
+                directory_id=directory_id,
+                cursor=0,
+                limit=1,
+            )
+        )
+    )
+    second_list = json.loads(
+        asyncio.run(
+            list_dir(
+                runtime,
+                browser,
+                call_id="list-2",
+                directory_id=directory_id,
+                cursor=first_list["next_cursor"],
+                limit=1,
+            )
+        )
+    )
+
+    assert skipped_search["error"]["code"] == "invalid_tool_arguments"
+    assert first_search["next_cursor"] == 1
+    assert second_search["complete"] is True
+    assert skipped_list["error"]["code"] == "invalid_tool_arguments"
+    assert first_list["next_cursor"] == 1
+    assert second_list["complete"] is True
+    assert [item.cursor for item in runtime.state.archive_searches] == [
+        0,
+        1,
+    ]
+    assert [
+        item.cursor
+        for item in runtime.state.archive_directory_listings
+    ] == [0, 1]
+
+
 def test_mapping_rejects_a_foreign_candidate_snapshot() -> None:
     runtime, _ = _runtime(_candidates())
-    inventory = _empty_inventory()
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime))
     foreign = SnapshotCandidateSource(
         CandidateSnapshot.create(
             (
@@ -250,7 +452,6 @@ def test_mapping_rejects_a_foreign_candidate_snapshot() -> None:
             submit_mapping(
                 runtime,
                 foreign,
-                inventory,
                 call_id="mapping",
                 payload={
                     "videos": [
@@ -274,8 +475,7 @@ def test_mapping_rejects_a_foreign_candidate_snapshot() -> None:
 def test_reducer_rejects_mapping_from_a_foreign_catalog() -> None:
     candidates = _candidates()
     runtime, source = _runtime(candidates)
-    inventory = _empty_inventory()
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime))
     foreign_mapping = MappingDraft.from_dict(
         {
             "videos": [
@@ -308,8 +508,7 @@ def test_reducer_rejects_mapping_from_a_foreign_catalog() -> None:
 
 def test_reducer_rejects_mapping_from_foreign_candidate_ids() -> None:
     runtime, source = _runtime(_candidates())
-    inventory = _empty_inventory()
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime))
     foreign_candidates = CandidateSnapshot.create(
         (
             Candidate(
@@ -378,19 +577,13 @@ def test_domain_observation_is_bound_once_to_exact_call_id() -> None:
 def test_mapping_rejects_existing_inventory_conflict() -> None:
     candidates = _candidates()
     runtime, source = _runtime(candidates)
-    inventory = ExistingInventory.from_episodes(
-        work_type=TmdbWorkType.ANIME,
-        tmdb_id=100,
-        occupied=((1, 1),),
-    )
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime, ((1, 1),)))
 
     result = json.loads(
         asyncio.run(
             submit_mapping(
                 runtime,
                 source,
-                inventory,
                 call_id="mapping-1",
                 payload=_payload(episode=1),
             )
@@ -427,15 +620,13 @@ def test_mapping_accepts_multi_episode_specials_range() -> None:
         call_id="catalog-specials",
         tool_name="get_tmdb_season",
     )
-    inventory = _empty_inventory()
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime))
 
     result = json.loads(
         asyncio.run(
             submit_mapping(
                 runtime,
                 source,
-                inventory,
                 call_id="mapping-specials",
                 payload={
                     "videos": [
@@ -502,14 +693,12 @@ def test_subtitle_detection_rejects_id_outside_snapshot() -> None:
 def test_subtitle_variant_must_be_detected_before_mapping() -> None:
     candidates = _candidates(with_subtitle=True)
     runtime, source = _runtime(candidates)
-    inventory = _empty_inventory()
-    asyncio.run(_observe_inventory(runtime, inventory))
+    asyncio.run(_observe_archive(runtime))
     missing = json.loads(
         asyncio.run(
             submit_mapping(
                 runtime,
                 source,
-                inventory,
                 call_id="mapping-1",
                 payload=_payload(episode=1, with_subtitle=True),
             )
@@ -531,7 +720,6 @@ def test_subtitle_variant_must_be_detected_before_mapping() -> None:
             submit_mapping(
                 runtime,
                 source,
-                inventory,
                 call_id="mapping-2",
                 payload=_payload(episode=1, with_subtitle=True),
             )

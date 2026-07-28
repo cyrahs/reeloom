@@ -18,7 +18,8 @@ from reeloom.tools.tmdb import (
 )
 from reeloom.tools.mapping import (
     detect_subtitle_variant,
-    get_existing_inventory,
+    list_dir,
+    search_dir,
     submit_mapping,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "search_tmdb",
     "select_series",
     "detect_subtitle_variant",
-    "get_existing_inventory",
+    "list_dir",
+    "search_dir",
     "submit_mapping",
 ]

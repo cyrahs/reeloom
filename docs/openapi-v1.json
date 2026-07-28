@@ -81,6 +81,161 @@
         "title": "ApproveApplyRequest",
         "type": "object"
       },
+      "ArchiveReport": {
+        "additionalProperties": false,
+        "properties": {
+          "advisory_only": {
+            "const": true,
+            "title": "Advisory Only",
+            "type": "boolean"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ArchiveReportEntry"
+            },
+            "maxItems": 200,
+            "title": "Entries",
+            "type": "array"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "possible_existing_archive": {
+            "title": "Possible Existing Archive",
+            "type": "boolean"
+          },
+          "searches": {
+            "items": {
+              "$ref": "#/components/schemas/ArchiveReportSearch"
+            },
+            "maxItems": 100,
+            "title": "Searches",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "checked",
+              "incomplete"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tmdb_id": {
+            "maximum": 9999999999.0,
+            "minimum": 1.0,
+            "title": "Tmdb Id",
+            "type": "integer"
+          },
+          "work_type": {
+            "enum": [
+              "anime",
+              "tv",
+              "movie"
+            ],
+            "title": "Work Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "work_type",
+          "tmdb_id",
+          "searches",
+          "entries",
+          "possible_existing_archive",
+          "advisory_only",
+          "observed_at"
+        ],
+        "title": "ArchiveReport",
+        "type": "object"
+      },
+      "ArchiveReportEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Depth",
+            "type": "integer"
+          },
+          "entry_id": {
+            "minimum": 1.0,
+            "title": "Entry Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "directory",
+              "video"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "listed": {
+            "title": "Listed",
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_entry_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Entry Id"
+          }
+        },
+        "required": [
+          "entry_id",
+          "parent_entry_id",
+          "kind",
+          "name",
+          "depth",
+          "listed"
+        ],
+        "title": "ArchiveReportEntry",
+        "type": "object"
+      },
+      "ArchiveReportSearch": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "match_count": {
+            "maximum": 50.0,
+            "minimum": 0.0,
+            "title": "Match Count",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "selected_tmdb_id",
+              "name"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "match_count",
+          "complete"
+        ],
+        "title": "ArchiveReportSearch",
+        "type": "object"
+      },
       "ConfigAgentBudget": {
         "additionalProperties": false,
         "properties": {
@@ -1568,6 +1723,16 @@
             "title": "Apply Policy",
             "type": "string"
           },
+          "archive_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchiveReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "available_actions": {
             "items": {
               "enum": [
@@ -1719,7 +1884,8 @@
           "recovery_approval_id",
           "apply_policy",
           "available_actions",
-          "settlement"
+          "settlement",
+          "archive_report"
         ],
         "title": "RunResponse",
         "type": "object"

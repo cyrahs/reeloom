@@ -4,7 +4,10 @@ import pytest
 
 from reeloom.kernel.candidates import Candidate, CandidateSnapshot
 from reeloom.kernel.errors import DomainError, ErrorCode
-from reeloom.kernel.inventory import ExistingInventory
+from reeloom.kernel.inventory import (
+    ExistingInventory,
+    parse_episode_filename,
+)
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.tmdb import TmdbWorkType
 
@@ -64,3 +67,14 @@ def test_inventory_accepts_an_unoccupied_episode() -> None:
     )
 
     inventory.validate(_mapping(episode=3))
+
+
+def test_episode_filename_parser_is_bounded_and_deterministic() -> None:
+    assert parse_episode_filename("Show S01E02-E04.mkv") == (
+        (1, 2),
+        (1, 3),
+        (1, 4),
+    )
+    assert parse_episode_filename("Show S01E04-E02.mkv") == ()
+    assert parse_episode_filename("Show S01E01-E99999.mkv") == ()
+    assert parse_episode_filename("Show S01E00.mkv") == ()

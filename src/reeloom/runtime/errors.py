@@ -28,6 +28,7 @@ class RuntimeErrorCode(StrEnum):
     TOOL_OBSERVATION_TOO_LARGE = "tool_observation_too_large"
     EPISODE_CATALOG_UNAVAILABLE = "episode_catalog_unavailable"
     INVENTORY_NOT_OBSERVED = "inventory_not_observed"
+    ARCHIVE_SEARCH_REQUIRED = "archive_search_required"
     SUBTITLE_SAMPLE_FAILED = "subtitle_sample_failed"
     PLAN_COMPILER_UNAVAILABLE = "plan_compiler_unavailable"
     PLAN_BUILD_FAILED = "plan_build_failed"

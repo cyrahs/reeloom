@@ -84,16 +84,16 @@
             "type": "tool_call"
           },
           {
-            "arguments_json": "{\"tmdb_id\":200}",
-            "call_id": "inventory",
+            "arguments_json": "{\"cursor\":0,\"limit\":50,\"mode\":\"selected_tmdb_id\",\"name\":null}",
+            "call_id": "archive-search",
             "expect_input_contains": "\"episode_number\":2",
-            "name": "get_existing_inventory",
+            "name": "search_dir",
             "type": "tool_call"
           },
           {
             "arguments_json": "{\"subtitle_id\":\"subtitle:1\"}",
             "call_id": "subtitle",
-            "expect_input_contains": "\"occupied\":[]",
+            "expect_input_contains": "\"matches\":[]",
             "name": "detect_subtitle_variant",
             "type": "tool_call"
           },

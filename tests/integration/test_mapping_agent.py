@@ -25,7 +25,6 @@ from reeloom.kernel.candidates import (
     CandidateId,
     CandidateKind,
 )
-from reeloom.kernel.inventory import ExistingInventory
 from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
@@ -38,6 +37,9 @@ from reeloom.kernel.tmdb import (
 )
 from reeloom.ports.subtitles import SubtitleSample
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.server.archive_directory import (
+    FilesystemArchiveDirectoryBrowser,
+)
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.errors import BudgetExceeded, RuntimeErrorCode
 from reeloom.runtime.state import Phase, RunStatus, StopReason
@@ -194,9 +196,9 @@ def _context(
         candidate_source=source,
         work_type=TmdbWorkType.ANIME,
         tmdb_provider=_FakeTmdb(),
-        inventory=ExistingInventory(
-            work_type=TmdbWorkType.ANIME,
-            tmdb_id=200,
+        archive_browser=FilesystemArchiveDirectoryBrowser(
+            run_id="run-mapping",
+            root=AuthorizedRoot.create(output_root),
         ),
         subtitle_provider=_FakeSubtitleProvider(source),
         plan_compiler=FilesystemPlanCompiler(
@@ -256,16 +258,21 @@ def _correcting_mapping_model() -> ScriptedModel:
                 expect_input_contains='"phase":"map_episodes"',
             ),
             ToolCallStep(
-                name="get_existing_inventory",
-                arguments={"tmdb_id": 200},
-                call_id="inventory",
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": 0,
+                    "limit": 50,
+                },
+                call_id="archive-search",
                 expect_input_contains='"episode_number":2',
             ),
             ToolCallStep(
                 name="detect_subtitle_variant",
                 arguments={"subtitle_id": "subtitle:1"},
                 call_id="subtitle",
-                expect_input_contains='"occupied":[]',
+                expect_input_contains='"matches":[]',
             ),
             ToolCallStep(
                 name="submit_mapping",
@@ -330,9 +337,9 @@ def _movie_context(tmp_path: Path):
         candidate_source=source,
         work_type=TmdbWorkType.MOVIE,
         tmdb_provider=_FakeTmdb(),
-        inventory=ExistingInventory(
-            work_type=TmdbWorkType.MOVIE,
-            tmdb_id=200,
+        archive_browser=FilesystemArchiveDirectoryBrowser(
+            run_id="run-movie",
+            root=AuthorizedRoot.create(output_root),
         ),
         subtitle_provider=_FakeSubtitleProvider(source),
         plan_compiler=FilesystemPlanCompiler(
@@ -343,7 +350,7 @@ def _movie_context(tmp_path: Path):
             AuthorizedRoot.create(plan_store_root)
         ),
         clock=lambda: datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
-        budget=RunBudget(max_model_turns=7),
+        budget=RunBudget(max_model_turns=8),
     )
 
 
@@ -383,6 +390,16 @@ def test_movie_agent_builds_plan_and_leaves_extra_video_unmapped(
                 name="select_movie",
                 arguments={"tmdb_id": 200},
                 call_id="select",
+            ),
+            ToolCallStep(
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": 0,
+                    "limit": 50,
+                },
+                call_id="archive-search",
             ),
             ToolCallStep(
                 name="detect_subtitle_variant",
@@ -523,9 +540,14 @@ def test_invalid_nested_mapping_arguments_are_recoverable(
                 call_id="season",
             ),
             ToolCallStep(
-                name="get_existing_inventory",
-                arguments={"tmdb_id": 200},
-                call_id="inventory",
+                name="search_dir",
+                arguments={
+                    "mode": "selected_tmdb_id",
+                    "name": None,
+                    "cursor": 0,
+                    "limit": 50,
+                },
+                call_id="archive-search",
             ),
             ToolCallStep(
                 name="submit_mapping",

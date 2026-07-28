@@ -30,8 +30,11 @@ def _default_rules() -> Mapping[str, frozenset[Phase]]:
                 {Phase.IDENTIFY_MOVIE, Phase.MAP_MOVIE}
             ),
             "select_movie": frozenset({Phase.IDENTIFY_MOVIE}),
-            "get_existing_inventory": frozenset(
-                {Phase.MAP_EPISODES}
+            "search_dir": frozenset(
+                {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
+            ),
+            "list_dir": frozenset(
+                {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
             ),
             "detect_subtitle_variant": frozenset(
                 {Phase.MAP_EPISODES, Phase.MAP_MOVIE}

@@ -12,7 +12,7 @@ test("serves the dashboard from the real API and PostgreSQL control plane", asyn
   await expect(
     page.getByRole("heading", { name: "今天的整理进度，一眼看清。" }),
   ).toBeVisible();
-  await expect(page.getByText(/PostgreSQL 17 · Schema 19/)).toBeVisible();
+  await expect(page.getByText(/PostgreSQL 17 · Schema 20/)).toBeVisible();
   const session = await page.evaluate(async () => {
     const response = await fetch("/api/v1/session", {
       headers: {
@@ -139,6 +139,7 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
           : null,
         source_folder: null,
         folder_disposition: null,
+        archive_report: null,
       },
     }),
   );

@@ -41,6 +41,10 @@ from reeloom.runtime.events import (
 )
 from reeloom.runtime.state import Phase
 from reeloom.runtime.store import InMemoryEventStore
+from reeloom.server.archive_directory import (
+    FilesystemArchiveDirectoryBrowser,
+)
+from reeloom.server.archive_report import archive_report_from_state
 from reeloom.server.agent_worker import (
     ModelLeaseFactory,
     TmdbLease,
@@ -60,12 +64,16 @@ from reeloom.server.interactions import (
     InteractionKind,
     InteractionRequest,
 )
-from reeloom.server.inventory import ArchiveInventoryProvider
 from reeloom.server.organizer_definition import (
+    LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
+    LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
+    LEGACY_MOVIE_ORGANIZER_TOOL_NAMES,
+    LEGACY_ORGANIZER_SCHEMA_VERSION,
     ORGANIZER_NAME,
     ORGANIZER_SCHEMA_VERSION,
     MOVIE_ORGANIZER_NAME,
     MOVIE_ORGANIZER_SCHEMA_VERSION,
+    organizer_definition,
 )
 from reeloom.server.provider import ModelLease
 from reeloom.server.scheduler import AgentJobContext
@@ -127,12 +135,26 @@ class AgentInteractionExecutor:
                 EPISODE_ORGANIZER_TOOL_NAMES,
             )
         )
+        legacy_definition = (
+            (
+                MOVIE_ORGANIZER_NAME,
+                LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
+                LEGACY_MOVIE_ORGANIZER_TOOL_NAMES,
+            )
+            if work_type is TmdbWorkType.MOVIE
+            else (
+                ORGANIZER_NAME,
+                LEGACY_ORGANIZER_SCHEMA_VERSION,
+                LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
+            )
+        )
         if (
             definition.name,
             definition.schema_version,
             definition.tools,
-        ) != expected_definition:
+        ) not in {expected_definition, legacy_definition}:
             raise ValueError("bound agent definition is unsupported")
+        execution_definition = organizer_definition(work_type)
         session = BufferedAgentSession(
             repository=self.sessions,
             run_id=job.registration.run_id,
@@ -147,8 +169,11 @@ class AgentInteractionExecutor:
                     request=request,
                     session=session,
                     model=model,
-                    definition_name=definition.name,
-                    instructions=definition.instructions,
+                    definition_name=execution_definition.name,
+                    instructions=execution_definition.instructions,
+                    execution_schema_version=(
+                        execution_definition.schema_version
+                    ),
                 )
             tmdb = self.tmdb_factory()
             try:
@@ -159,7 +184,10 @@ class AgentInteractionExecutor:
                     session=session,
                     model=model,
                     tmdb=tmdb,
-                    instructions=definition.instructions,
+                    instructions=execution_definition.instructions,
+                    execution_schema_version=(
+                        execution_definition.schema_version
+                    ),
                 )
             finally:
                 await tmdb.close()
@@ -174,6 +202,7 @@ class AgentInteractionExecutor:
         model: ModelLease,
         definition_name: str,
         instructions: str,
+        execution_schema_version: str,
     ) -> InteractionExecution:
         async with asyncio.timeout(_QUESTION_TIMEOUT_SECONDS):
             result = await Runner.run(
@@ -199,6 +228,7 @@ class AgentInteractionExecutor:
             reply=result.final_output,
             session=session,
             model_tokens=tokens,
+            execution_schema_version=execution_schema_version,
         )
 
     async def _mapping(
@@ -211,6 +241,7 @@ class AgentInteractionExecutor:
         model: ModelLease,
         tmdb: TmdbLease,
         instructions: str,
+        execution_schema_version: str,
     ) -> InteractionExecution:
         work_type = self._work_type(job.registration.work_type)
         if request.reservation.kind is InteractionKind.REVISION:
@@ -236,8 +267,9 @@ class AgentInteractionExecutor:
             candidate_source=source,
             work_type=work_type,
             tmdb_provider=tmdb.provider,
-            inventory=ArchiveInventoryProvider(
-                output_root,
+            archive_browser=FilesystemArchiveDirectoryBrowser(
+                run_id=job.registration.run_id,
+                root=output_root,
                 exclude_paths=excluded,
             ),
             subtitle_provider=FilesystemSubtitleSampleProvider(scan),
@@ -368,6 +400,8 @@ class AgentInteractionExecutor:
             plan_hash=plan_hash,
             fresh_mapping=True,
             lineage_parent_hash=lineage_parent_hash,
+            execution_schema_version=execution_schema_version,
+            archive_report=archive_report_from_state(state),
         )
 
     @staticmethod
@@ -383,6 +417,8 @@ class AgentInteractionExecutor:
         plan_hash: str | None = None,
         fresh_mapping: bool = False,
         lineage_parent_hash: str | None = None,
+        execution_schema_version: str | None = None,
+        archive_report: dict[str, object] | None = None,
     ) -> InteractionExecution:
         return InteractionExecution(
             assistant_reply=reply,
@@ -397,6 +433,8 @@ class AgentInteractionExecutor:
             session_batch=tuple(session.batch_items),
             session_items=tuple(session.projected_items),
             lineage_parent_hash=lineage_parent_hash,
+            execution_schema_version=execution_schema_version,
+            archive_report=archive_report,
         )
 
     @staticmethod

@@ -7,6 +7,11 @@ from pathlib import PurePosixPath
 import pytest
 
 from reeloom.kernel.candidates import CandidateId, CandidateKind
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryCapability,
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.candidates import Candidate, CandidateSnapshot
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
@@ -27,6 +32,8 @@ from reeloom.runtime.event_codec import decode_event, encode_event
 from reeloom.runtime.events import (
     ApplyFailed,
     ApplyStarted,
+    ArchiveDirectoryListed,
+    ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
@@ -132,6 +139,18 @@ def _event_samples() -> tuple[object, ...]:
     source_root = RootBinding(PurePosixPath("/source"), 1, 10)
     output_root = RootBinding(PurePosixPath("/output"), 1, 11)
     series = SeriesIdentity("测试动画", 2025, 42)
+    archive_capability = ArchiveDirectoryCapability(
+        run_id="run-m7",
+        directory_id="dir-1",
+        parent_id=None,
+        relative_path=PurePosixPath("旧项目"),
+        name="旧项目",
+        depth=1,
+        device=1,
+        inode=2,
+        mtime_ns=3,
+        ctime_ns=4,
+    )
     return (
         RunStarted("run-m7", TmdbWorkType.ANIME),
         CandidateSnapshotCreated(
@@ -154,6 +173,35 @@ def _event_samples() -> tuple[object, ...]:
         ),
         ExistingInventoryObserved(
             "call-2", 42, TmdbWorkType.ANIME, ((1, 1),)
+        ),
+        ArchiveSearchObserved(
+            ArchiveSearchRecord(
+                call_id="archive-search",
+                mode="name",
+                query="旧项目",
+                tmdb_id=42,
+                work_type=TmdbWorkType.ANIME,
+                directory_ids=("dir-1",),
+                cursor=0,
+                next_cursor=None,
+                complete=True,
+                observed_at=datetime(2026, 7, 28, tzinfo=UTC),
+            ),
+            (archive_capability,),
+        ),
+        ArchiveDirectoryListed(
+            ArchiveDirectoryListing(
+                call_id="archive-list",
+                directory_id="dir-1",
+                child_ids=(),
+                videos=("旧项目 S01E01.mkv",),
+                occupied=((1, 1),),
+                cursor=0,
+                next_cursor=None,
+                complete=True,
+                observed_at=datetime(2026, 7, 28, tzinfo=UTC),
+            ),
+            (),
         ),
         SubtitleVariantDetected(
             "call-3",

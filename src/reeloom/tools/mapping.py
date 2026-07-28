@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import unicodedata
+from datetime import UTC, datetime
 
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.candidates import (
     CandidateId,
     CandidateKind,
 )
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.inventory import (
-    MAX_INVENTORY_TMDB_ID,
     ExistingInventory,
+    parse_episode_filename,
 )
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
@@ -17,10 +23,15 @@ from reeloom.kernel.subtitles import (
     MAX_SUBTITLE_SAMPLE_BYTES,
     detect_subtitle_variant as classify_subtitle_variant,
 )
+from reeloom.ports.archive_directory import (
+    ArchiveDirectoryBrowser,
+    ArchiveDirectoryError,
+)
 from reeloom.ports.subtitles import SubtitleSample, SubtitleSampleProvider
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
-    ExistingInventoryObserved,
+    ArchiveDirectoryListed,
+    ArchiveSearchObserved,
     MappingRejected,
     MappingSubmitted,
     MovieMappingSubmitted,
@@ -28,7 +39,6 @@ from reeloom.runtime.events import (
 )
 from reeloom.runtime.state import MappingValidationIssue, Phase
 from reeloom.runtime.tool_runtime import ToolRuntime
-from reeloom.ports.inventory import ExistingInventoryProvider
 from reeloom.tools.candidates import SnapshotCandidateSource
 
 _MAX_OBSERVATION_BYTES = 64 * 1024
@@ -116,30 +126,72 @@ def _reject(
     return _error(code, retryable=retryable)
 
 
-def _selected_matches(runtime: ToolRuntime, tmdb_id: int) -> bool:
+def _selected_identity(runtime: ToolRuntime) -> tuple[int, object] | None:
     state = runtime.state
+    identity = state.selected_movie or state.selected_series
+    if (
+        identity is None
+        or state.phase not in {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
+        or state.selected_work_type is not state.work_type
+    ):
+        return None
+    return identity.tmdb_id, identity
+
+
+def _valid_search_name(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = unicodedata.normalize("NFKC", value).strip()
     return (
-        state.phase is Phase.MAP_EPISODES
-        and state.selected_series is not None
-        and state.selected_series.tmdb_id == tmdb_id
-        and state.selected_work_type is state.work_type
+        2 <= len(normalized)
+        and len(normalized.encode("utf-8")) <= 256
+        and not any(
+            character in "/\\*?[]\x00"
+            or unicodedata.category(character).startswith("C")
+            for character in normalized
+        )
     )
 
 
-async def get_existing_inventory(
+async def search_dir(
     runtime: ToolRuntime,
-    inventory: ExistingInventory | ExistingInventoryProvider | None,
+    browser: ArchiveDirectoryBrowser | None,
     *,
     call_id: str,
-    tmdb_id: int,
+    mode: str,
+    name: str | None,
+    cursor: int | None,
+    limit: int,
 ) -> str:
-    tool_name = "get_existing_inventory"
+    tool_name = "search_dir"
     rejection = _begin(runtime, call_id=call_id, tool_name=tool_name)
     if rejection is not None:
         return rejection
+    selected = _selected_identity(runtime)
+    if browser is None or selected is None:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
+            retryable=False,
+        )
     if (
-        type(tmdb_id) is not int
-        or not 1 <= tmdb_id <= MAX_INVENTORY_TMDB_ID
+        mode not in {"selected_tmdb_id", "name"}
+        or (
+            cursor is not None
+            and (type(cursor) is not int or not 0 <= cursor <= 50)
+        )
+        or type(limit) is not int
+        or not 1 <= limit <= 50
+        or (
+            mode == "selected_tmdb_id"
+            and name is not None
+        )
+        or (
+            mode == "name"
+            and not _valid_search_name(name)
+        )
     ):
         return _reject(
             runtime,
@@ -148,54 +200,85 @@ async def get_existing_inventory(
             code=RuntimeErrorCode.INVALID_TOOL_ARGUMENTS.value,
             retryable=True,
         )
-    if not _selected_matches(runtime, tmdb_id):
-        return _reject(
-            runtime,
-            call_id=call_id,
-            tool_name=tool_name,
-            code=RuntimeErrorCode.UNKNOWN_TMDB_CANDIDATE.value,
-            retryable=True,
-        )
-    state = runtime.state
-    if inventory is None:
-        return _reject(
-            runtime,
-            call_id=call_id,
-            tool_name=tool_name,
-            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
-            retryable=False,
-        )
-    effective = (
-        await inventory.get_inventory(
-            work_type=state.work_type,
-            tmdb_id=tmdb_id,
-        )
-        if not isinstance(inventory, ExistingInventory)
-        else inventory
+    tmdb_id, _ = selected
+    offset = 0 if cursor is None else cursor
+    normalized_name = (
+        unicodedata.normalize("NFKC", name).strip()
+        if mode == "name" and name is not None
+        else None
     )
-    if (
-        effective.tmdb_id != tmdb_id
-        or effective.work_type is not state.work_type
+    query = (
+        f"tmdb-{tmdb_id}"
+        if mode == "selected_tmdb_id"
+        else str(normalized_name)
+    )
+    previous = next(
+        (
+            item
+            for item in reversed(runtime.state.archive_searches)
+            if item.mode == mode
+            and item.query == query
+            and item.tmdb_id == tmdb_id
+            and item.work_type is runtime.state.work_type
+        ),
+        None,
+    )
+    if offset != 0 and (
+        previous is None or previous.next_cursor != offset
     ):
         return _reject(
             runtime,
             call_id=call_id,
             tool_name=tool_name,
-            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
-            retryable=False,
+            code=RuntimeErrorCode.INVALID_TOOL_ARGUMENTS.value,
+            retryable=True,
         )
-    occupied = tuple(
-        (location.season, location.episode)
-        for location in effective.occupied
+    try:
+        capabilities, next_cursor, complete, observed_query = (
+            await browser.search(
+                work_type=runtime.state.work_type,
+                tmdb_id=tmdb_id,
+                mode=mode,
+                name=normalized_name,
+                cursor=offset,
+                limit=limit,
+            )
+        )
+    except ArchiveDirectoryError as error:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=error.code,
+            retryable=error.retryable,
+        )
+    record = ArchiveSearchRecord(
+        call_id=call_id,
+        mode=mode,  # type: ignore[arg-type]
+        query=observed_query,
+        tmdb_id=tmdb_id,
+        work_type=runtime.state.work_type,
+        directory_ids=tuple(
+            item.directory_id for item in capabilities
+        ),
+        cursor=offset,
+        next_cursor=next_cursor,
+        complete=complete,
+        observed_at=datetime.now(UTC),
     )
     observation = _serialize(
         {
             "ok": True,
-            "tmdb_id": tmdb_id,
-            "occupied": [
-                {"season": season, "episode": episode}
-                for season, episode in occupied
+            "matches": [
+                {
+                    "directory_id": item.directory_id,
+                    "name": item.name,
+                    "matched_by": mode,
+                }
+                for item in capabilities
             ],
+            "next_cursor": next_cursor,
+            "complete": complete,
         }
     )
     if observation is None:
@@ -207,11 +290,151 @@ async def get_existing_inventory(
             retryable=False,
         )
     runtime.store.append(
-        ExistingInventoryObserved(
+        ArchiveSearchObserved(
+            search=record,
+            capabilities=capabilities,
+        )
+    )
+    runtime.succeed(call_id=call_id, tool_name=tool_name)
+    return observation
+
+
+async def list_dir(
+    runtime: ToolRuntime,
+    browser: ArchiveDirectoryBrowser | None,
+    *,
+    call_id: str,
+    directory_id: str,
+    cursor: int | None,
+    limit: int,
+) -> str:
+    tool_name = "list_dir"
+    rejection = _begin(runtime, call_id=call_id, tool_name=tool_name)
+    if rejection is not None:
+        return rejection
+    selected = _selected_identity(runtime)
+    if browser is None or selected is None:
+        return _reject(
+            runtime,
             call_id=call_id,
-            tmdb_id=tmdb_id,
-            work_type=state.work_type,
-            occupied=occupied,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
+            retryable=False,
+        )
+    if (
+        not isinstance(directory_id, str)
+        or not directory_id
+        or len(directory_id.encode("utf-8")) > 128
+        or (
+            cursor is not None
+            and (type(cursor) is not int or not 0 <= cursor <= 2_256)
+        )
+        or type(limit) is not int
+        or not 1 <= limit <= 100
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.INVALID_TOOL_ARGUMENTS.value,
+            retryable=True,
+        )
+    capability = next(
+        (
+            item
+            for item in runtime.state.archive_directory_capabilities
+            if item.directory_id == directory_id
+        ),
+        None,
+    )
+    if capability is None:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code="unknown_directory_id",
+            retryable=False,
+        )
+    offset = 0 if cursor is None else cursor
+    previous = next(
+        (
+            item
+            for item in reversed(
+                runtime.state.archive_directory_listings
+            )
+            if item.directory_id == directory_id
+        ),
+        None,
+    )
+    if offset != 0 and (
+        previous is None or previous.next_cursor != offset
+    ):
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.INVALID_TOOL_ARGUMENTS.value,
+            retryable=True,
+        )
+    try:
+        children, videos, next_cursor, complete = await browser.list(
+            directory_id=directory_id,
+            cursor=offset,
+            limit=limit,
+        )
+    except ArchiveDirectoryError as error:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=error.code,
+            retryable=error.retryable,
+        )
+    occupied: set[tuple[int, int]] = set()
+    for video in videos:
+        occupied.update(parse_episode_filename(video))
+    listing = ArchiveDirectoryListing(
+        call_id=call_id,
+        directory_id=directory_id,
+        child_ids=tuple(item.directory_id for item in children),
+        videos=videos,
+        occupied=tuple(sorted(occupied)),
+        cursor=offset,
+        next_cursor=next_cursor,
+        complete=complete,
+        observed_at=datetime.now(UTC),
+    )
+    observation = _serialize(
+        {
+            "ok": True,
+            "items": [
+                {
+                    "directory_id": item.directory_id,
+                    "kind": "directory",
+                    "name": item.name,
+                }
+                for item in children
+            ]
+            + [
+                {"kind": "video", "name": item}
+                for item in videos
+            ],
+            "next_cursor": next_cursor,
+            "complete": complete,
+        }
+    )
+    if observation is None:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.TOOL_OBSERVATION_TOO_LARGE.value,
+            retryable=False,
+        )
+    runtime.store.append(
+        ArchiveDirectoryListed(
+            listing=listing,
+            capabilities=children,
         )
     )
     runtime.succeed(call_id=call_id, tool_name=tool_name)
@@ -379,7 +602,6 @@ def _mapping_rejection(
 async def submit_mapping(
     runtime: ToolRuntime,
     candidates: SnapshotCandidateSource | None,
-    inventory: ExistingInventory | ExistingInventoryProvider | None,
     *,
     call_id: str,
     payload: object,
@@ -410,12 +632,12 @@ async def submit_mapping(
             code=RuntimeErrorCode.EPISODE_CATALOG_UNAVAILABLE.value,
             retryable=True,
         )
-    if state.inventory_episodes is None:
+    if not state.archive_searches:
         return _reject(
             runtime,
             call_id=call_id,
             tool_name=tool_name,
-            code=RuntimeErrorCode.INVENTORY_NOT_OBSERVED.value,
+            code=RuntimeErrorCode.ARCHIVE_SEARCH_REQUIRED.value,
             retryable=True,
         )
     if state.selected_series is None:
@@ -426,38 +648,11 @@ async def submit_mapping(
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
             retryable=False,
         )
-    if inventory is None:
-        return _reject(
-            runtime,
-            call_id=call_id,
-            tool_name=tool_name,
-            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
-            retryable=False,
-        )
-    effective_inventory = (
-        await inventory.get_inventory(
-            work_type=state.work_type,
-            tmdb_id=state.selected_series.tmdb_id,
-        )
-        if not isinstance(inventory, ExistingInventory)
-        else inventory
+    effective_inventory = ExistingInventory.from_episodes(
+        work_type=state.work_type,
+        tmdb_id=state.selected_series.tmdb_id,
+        occupied=state.inventory_episodes or (),
     )
-    observed_inventory = tuple(
-        (location.season, location.episode)
-        for location in effective_inventory.occupied
-    )
-    if (
-        effective_inventory.work_type is not state.work_type
-        or effective_inventory.tmdb_id != state.selected_series.tmdb_id
-        or observed_inventory != state.inventory_episodes
-    ):
-        return _reject(
-            runtime,
-            call_id=call_id,
-            tool_name=tool_name,
-            code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
-            retryable=False,
-        )
 
     try:
         mapping = MappingDraft.from_dict(
@@ -539,6 +734,14 @@ async def submit_movie_mapping(
             tool_name=tool_name,
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE.value,
             retryable=False,
+        )
+    if not state.archive_searches:
+        return _reject(
+            runtime,
+            call_id=call_id,
+            tool_name=tool_name,
+            code=RuntimeErrorCode.ARCHIVE_SEARCH_REQUIRED.value,
+            retryable=True,
         )
     try:
         mapping = MovieMappingDraft.from_dict(

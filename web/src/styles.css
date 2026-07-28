@@ -888,6 +888,50 @@ button:disabled {
   margin: 28px 0;
 }
 
+.archive-report {
+  margin-bottom: 20px;
+}
+
+.archive-warning {
+  color: #765016;
+  font-size: 0.86rem;
+}
+
+.archive-tree {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.archive-entry {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding-block: 9px;
+  border-bottom: 1px solid #e5e7df;
+}
+
+.archive-entry > span:nth-child(2) {
+  overflow-wrap: anywhere;
+}
+
+.archive-entry > small {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.archive-entry.video > span:first-child {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 7px;
+  color: #1f5c46;
+  background: #dfeee6;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
 .preview-groups h3 {
   color: var(--muted);
   font-size: 0.74rem;

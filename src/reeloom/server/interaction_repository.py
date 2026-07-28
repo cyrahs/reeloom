@@ -300,6 +300,10 @@ class PostgresInteractionRepository:
                 "kind": result.kind.value,
                 "model_tokens": result.model_tokens,
                 "plan_hash": result.plan_hash,
+                "archive_report": execution.archive_report,
+                "execution_schema_version": (
+                    execution.execution_schema_version
+                ),
             },
             ensure_ascii=False,
             separators=(",", ":"),

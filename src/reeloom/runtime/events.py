@@ -5,6 +5,11 @@ from datetime import UTC, datetime
 from typing import TypeAlias
 
 from reeloom.kernel.candidates import CandidateId
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryCapability,
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
@@ -67,6 +72,18 @@ class ExistingInventoryObserved:
     tmdb_id: int
     work_type: TmdbWorkType
     occupied: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSearchObserved:
+    search: ArchiveSearchRecord
+    capabilities: tuple[ArchiveDirectoryCapability, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDirectoryListed:
+    listing: ArchiveDirectoryListing
+    capabilities: tuple[ArchiveDirectoryCapability, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +226,8 @@ RuntimeEvent: TypeAlias = (
     | MovieSelected
     | TmdbSeasonCatalogObserved
     | ExistingInventoryObserved
+    | ArchiveSearchObserved
+    | ArchiveDirectoryListed
     | SubtitleVariantDetected
     | MappingRejected
     | MappingSubmitted

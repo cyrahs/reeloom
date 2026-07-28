@@ -527,6 +527,9 @@ export function RunPage({ runId }: { runId: string }) {
 
       <div className="run-layout">
         <div className="run-main">
+          {run.data.archive_report ? (
+            <ArchiveReportCard report={run.data.archive_report} />
+          ) : null}
           <section className="panel">
             <div className="panel-heading">
               <div>
@@ -928,6 +931,59 @@ function PreviewGroups({
         ) : null,
       )}
     </div>
+  );
+}
+
+export function ArchiveReportCard({
+  report,
+}: {
+  report: NonNullable<Run["archive_report"]>;
+}) {
+  return (
+    <section className="panel archive-report">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">ARCHIVE REFERENCE</p>
+          <h2>历史媒体库参考</h2>
+        </div>
+        <Status value={report.status} />
+      </div>
+      <p className="section-help">
+        这些结果仅供 Agent 判断已有内容；实际写入位置始终以计划预览为准，
+        不会向旧目录合并文件。
+      </p>
+      {report.possible_existing_archive ? (
+        <div className="notice" role="status">
+          找到可能已归档的项目。旧目录格式可能造成重复归档，请核对下方内容。
+        </div>
+      ) : (
+        <div className="empty-inline"><p>没有找到匹配的历史目录。</p></div>
+      )}
+      {report.status === "incomplete" ? (
+        <p className="archive-warning">
+          Agent 未完整浏览所有匹配分页或子目录，本报告不能视为完整库存。
+        </p>
+      ) : null}
+      {report.entries.length ? (
+        <div className="archive-tree" aria-label="已浏览的历史媒体库内容">
+          {report.entries.map((entry) => (
+            <div
+              key={entry.entry_id}
+              className={`archive-entry ${entry.kind}`}
+              style={{ paddingInlineStart: `${(entry.depth - 1) * 18}px` }}
+            >
+              <span aria-hidden="true">
+                {entry.kind === "directory" ? "▸" : "V"}
+              </span>
+              <span>{entry.name}</span>
+              {entry.kind === "directory" && !entry.listed ? (
+                <small>未展开</small>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

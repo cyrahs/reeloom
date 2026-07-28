@@ -66,6 +66,8 @@ class InteractionExecution:
     session_batch: tuple[TResponseInputItem, ...] = ()
     session_items: tuple[TResponseInputItem, ...] = ()
     lineage_parent_hash: str | None = None
+    execution_schema_version: str | None = None
+    archive_report: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -93,6 +95,17 @@ class InteractionExecution:
                     or len(self.lineage_parent_hash.encode("utf-8")) > 128
                 )
             )
+            or (
+                self.execution_schema_version is not None
+                and (
+                    not isinstance(self.execution_schema_version, str)
+                    or not self.execution_schema_version
+                    or len(
+                        self.execution_schema_version.encode("utf-8")
+                    )
+                    > 128
+                )
+            )
         ):
             raise ServerError(
                 ServerErrorCode.INTERACTION_INVALID_RESULT
@@ -100,6 +113,19 @@ class InteractionExecution:
         try:
             _copy(list(self.session_batch))
             _copy(list(self.session_items))
+            if (
+                self.archive_report is not None
+                and len(
+                    json.dumps(
+                        self.archive_report,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("utf-8")
+                )
+                > 64 * 1024
+            ):
+                raise ValueError
         except Exception:
             raise ServerError(
                 ServerErrorCode.INTERACTION_INVALID_RESULT

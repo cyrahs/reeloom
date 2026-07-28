@@ -4,6 +4,11 @@ from dataclasses import replace
 from datetime import datetime
 
 from reeloom.kernel.approval import ApprovalRecord
+from reeloom.kernel.archive_directory import (
+    ArchiveDirectoryCapability,
+    ArchiveDirectoryListing,
+    ArchiveSearchRecord,
+)
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.inventory import MAX_INVENTORY_EPISODES
@@ -19,6 +24,8 @@ from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import (
     ApplyFailed,
     ApplyStarted,
+    ArchiveDirectoryListed,
+    ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
@@ -527,6 +534,183 @@ def reduce_event(
             observed_tool_calls=observed,
         )
 
+    if isinstance(event, ArchiveSearchObserved):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.search.call_id,
+            tool_name="search_dir",
+        )
+        identity = state.selected_movie or state.selected_series
+        previous_search = next(
+            (
+                item
+                for item in reversed(state.archive_searches)
+                if item.mode == event.search.mode
+                and item.query == event.search.query
+                and item.tmdb_id == event.search.tmdb_id
+                and item.work_type is event.search.work_type
+            ),
+            None,
+        )
+        if (
+            state.phase not in {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
+            or identity is None
+            or not isinstance(event.search, ArchiveSearchRecord)
+            or event.search.tmdb_id != identity.tmdb_id
+            or event.search.work_type is not state.work_type
+            or (
+                event.search.cursor != 0
+                and (
+                    previous_search is None
+                    or previous_search.next_cursor
+                    != event.search.cursor
+                )
+            )
+            or not isinstance(event.capabilities, tuple)
+            or tuple(
+                item.directory_id for item in event.capabilities
+            )
+            != event.search.directory_ids
+            or any(
+                not isinstance(item, ArchiveDirectoryCapability)
+                or item.run_id != state.run_id
+                or item.parent_id is not None
+                or item.depth != 1
+                for item in event.capabilities
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        capabilities = {
+            item.directory_id: item
+            for item in state.archive_directory_capabilities
+        }
+        paths = {
+            item.relative_path: item.directory_id
+            for item in state.archive_directory_capabilities
+        }
+        for item in event.capabilities:
+            previous = capabilities.get(item.directory_id)
+            path_owner = paths.get(item.relative_path)
+            if (
+                previous is not None
+                and previous != item
+                or path_owner is not None
+                and path_owner != item.directory_id
+            ):
+                raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+            capabilities[item.directory_id] = item
+            paths[item.relative_path] = item.directory_id
+        if len(capabilities) > 256 or len(state.archive_searches) >= 100:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            archive_directory_capabilities=tuple(
+                sorted(
+                    capabilities.values(),
+                    key=lambda item: item.directory_id,
+                )
+            ),
+            archive_searches=state.archive_searches + (event.search,),
+            inventory_episodes=(
+                ()
+                if state.phase is Phase.MAP_EPISODES
+                and state.inventory_episodes is None
+                else state.inventory_episodes
+            ),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, ArchiveDirectoryListed):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.listing.call_id,
+            tool_name="list_dir",
+        )
+        capabilities = {
+            item.directory_id: item
+            for item in state.archive_directory_capabilities
+        }
+        parent = capabilities.get(event.listing.directory_id)
+        previous_listing = next(
+            (
+                item
+                for item in reversed(
+                    state.archive_directory_listings
+                )
+                if item.directory_id == event.listing.directory_id
+            ),
+            None,
+        )
+        if (
+            state.phase not in {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
+            or not isinstance(event.listing, ArchiveDirectoryListing)
+            or parent is None
+            or (
+                event.listing.cursor != 0
+                and (
+                    previous_listing is None
+                    or previous_listing.next_cursor
+                    != event.listing.cursor
+                )
+            )
+            or tuple(
+                item.directory_id for item in event.capabilities
+            )
+            != event.listing.child_ids
+            or any(
+                not isinstance(item, ArchiveDirectoryCapability)
+                or item.run_id != state.run_id
+                or item.parent_id != parent.directory_id
+                or item.depth != parent.depth + 1
+                or item.relative_path.parent != parent.relative_path
+                for item in event.capabilities
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        paths = {
+            item.relative_path: item.directory_id
+            for item in capabilities.values()
+        }
+        for item in event.capabilities:
+            previous = capabilities.get(item.directory_id)
+            path_owner = paths.get(item.relative_path)
+            if (
+                previous is not None
+                and previous != item
+                or path_owner is not None
+                and path_owner != item.directory_id
+            ):
+                raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+            capabilities[item.directory_id] = item
+            paths[item.relative_path] = item.directory_id
+        listings = state.archive_directory_listings + (event.listing,)
+        if (
+            len(capabilities) > 256
+            or len(listings) > 256
+            or sum(len(item.videos) for item in listings) > 2_000
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        inventory = set(state.inventory_episodes or ())
+        inventory.update(event.listing.occupied)
+        return replace(
+            state,
+            event_count=event_count,
+            archive_directory_capabilities=tuple(
+                sorted(
+                    capabilities.values(),
+                    key=lambda item: item.directory_id,
+                )
+            ),
+            archive_directory_listings=listings,
+            inventory_episodes=(
+                tuple(sorted(inventory))
+                if state.phase is Phase.MAP_EPISODES
+                else state.inventory_episodes
+            ),
+            observed_tool_calls=observed,
+        )
+
     if isinstance(event, SubtitleVariantDetected):
         observed = _observe_tool_call(
             state,
@@ -876,6 +1060,11 @@ def reduce_event(
             pending_tool_calls=pending,
             observed_tool_calls=state.observed_tool_calls
             - {(event.call_id, event.tool_name)},
+            retryable_directory_failure=(
+                False
+                if event.tool_name in {"search_dir", "list_dir"}
+                else state.retryable_directory_failure
+            ),
         )
 
     if isinstance(event, ToolRejected):
@@ -891,6 +1080,11 @@ def reduce_event(
             pending_tool_calls=pending,
             observed_tool_calls=state.observed_tool_calls
             - {(event.call_id, event.tool_name)},
+            retryable_directory_failure=(
+                event.retryable and event.code.startswith("directory_")
+                if event.tool_name in {"search_dir", "list_dir"}
+                else state.retryable_directory_failure
+            ),
         )
 
     if isinstance(event, RunStopped):
