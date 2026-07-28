@@ -71,9 +71,10 @@ def test_config_is_canonical_versioned_and_round_trips(
     public = restored.public_payload()
     assert public["revision"] == 1
     assert "secret-abc" not in repr(public)
-    assert str(draft.watches[0].root) not in repr(public)
-    assert str(draft.watches[0].library_root) not in repr(public)
-    assert public["watches"][0]["library_root_configured"] is True
+    assert public["watches"][0]["root"] == str(draft.watches[0].root)
+    assert public["watches"][0]["library_root"] == str(
+        draft.watches[0].library_root
+    )
 
 
 def test_config_rejects_source_library_overlap(

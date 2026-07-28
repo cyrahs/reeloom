@@ -277,17 +277,17 @@
       "ConfigWatchResponse": {
         "additionalProperties": false,
         "properties": {
-          "library_root_configured": {
-            "title": "Library Root Configured",
-            "type": "boolean"
+          "library_root": {
+            "title": "Library Root",
+            "type": "string"
           },
           "poll_interval_seconds": {
             "title": "Poll Interval Seconds",
             "type": "integer"
           },
-          "root_configured": {
-            "title": "Root Configured",
-            "type": "boolean"
+          "root": {
+            "title": "Root",
+            "type": "string"
           },
           "settle_interval_seconds": {
             "title": "Settle Interval Seconds",
@@ -312,8 +312,8 @@
           "work_type",
           "poll_interval_seconds",
           "settle_interval_seconds",
-          "root_configured",
-          "library_root_configured"
+          "root",
+          "library_root"
         ],
         "title": "ConfigWatchResponse",
         "type": "object"

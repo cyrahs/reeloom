@@ -29,9 +29,9 @@ token。mutation 还需 `Idempotency-Key` 与 `If-Match`（exact revision 或
 - `POST /api/v1/operations/runs/{run_id}/folder-disposition/recover`
 
 SSE 使用 durable PostgreSQL `event_id` 作为 `id`，通过 `Last-Event-ID` 恢复。
-cursor ahead/invalid fail closed。除 Admin-only 目录选择接口外，浏览器投影只包含
-allowlisted typed fields，不返回 absolute path、prompt、Secret、DSN、canonical
-plan 或 tool observation。
+cursor ahead/invalid fail closed。除 Admin-only 配置和目录选择接口外，浏览器投影
+只包含 allowlisted typed fields，不返回 absolute path、prompt、Secret、DSN、
+canonical plan 或 tool observation。
 
 `GET /api/v1/runs/{run_id}` 在 approval 已 claim、但 settlement 尚未持久化时返回
 `recovery_approval_id`；此时普通 apply fail closed，Admin 必须调用 exact
@@ -51,12 +51,13 @@ canonical content-addressed plan。响应不包含 absolute root、source identi
 digest、canonical bytes、journal 或 rollback。
 
 Config 中每个 watch 直接绑定入站 `root` 与最终 `library_root`；`work_type`
-不参与路径选择。GET 只返回 `root_configured`、
-`library_root_configured` 与 `api_key_configured`。PUT 兼容显式 string/key
-格式，也接受绑定 exact `If-Match` revision 的 `{mode:"retain"}` 或
-`{mode:"replace", ...}`。省略 watch 表示删除；stale revision、缺失 retain
-target 和格式混用均 fail closed。旧数据库 revision 中按类型保存的 route
-只在读取历史记录时转换，不属于当前 HTTP wire。
+不参与路径选择。Admin GET 返回每个 watch 的 `root` 与 `library_root`，方便
+结构化配置表单显示当前路径；provider secret 仍只返回
+`api_key_configured`。PUT 兼容显式 string/key 格式，也接受绑定 exact
+`If-Match` revision 的 `{mode:"retain"}` 或 `{mode:"replace", ...}`。省略
+watch 表示删除；stale revision、缺失 retain target 和格式混用均 fail closed。
+旧数据库 revision 中按类型保存的 route 只在读取历史记录时转换，不属于当前
+HTTP wire。
 
 目录选择接口只枚举当前 Reeloom Pod 从 `/` 可见的真实目录，并返回所选目录的
 absolute path 供结构化配置表单使用。它不读取或返回文件，不跟随 symlink，并

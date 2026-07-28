@@ -95,8 +95,8 @@ class _Queries:
                     "work_type": "anime",
                     "poll_interval_seconds": 30,
                     "settle_interval_seconds": 120,
-                    "root_configured": True,
-                    "library_root_configured": True,
+                    "root": "/media/incoming",
+                    "library_root": "/media/library",
                 }
             ],
             "provider": {
@@ -407,9 +407,8 @@ def test_openapi_uses_named_strict_ui_contracts() -> None:
     assert "ConfigRouteRequest" not in components
     assert "ConfigRouteResponse" not in components
     assert "library_root" in components["ConfigWatchRequest"]["properties"]
-    assert "library_root_configured" in components[
-        "ConfigWatchResponse"
-    ]["properties"]
+    assert "root" in components["ConfigWatchResponse"]["properties"]
+    assert "library_root" in components["ConfigWatchResponse"]["properties"]
 
 
 def test_list_read_models_serialize_query_tuples() -> None:

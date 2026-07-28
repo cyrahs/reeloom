@@ -96,8 +96,8 @@ test("cannot retain a capability after changing its exact identity", () => {
           work_type: "anime",
           poll_interval_seconds: 30,
           settle_interval_seconds: 120,
-          root_configured: true,
-          library_root_configured: true,
+          root: "/media/incoming",
+          library_root: "/media/library",
         },
       ],
       provider: {

@@ -230,8 +230,8 @@ class ConfigRevision:
                     "work_type": item.work_type.value,
                     "poll_interval_seconds": item.poll_interval_seconds,
                     "settle_interval_seconds": item.settle_interval_seconds,
-                    "root_configured": True,
-                    "library_root_configured": True,
+                    "root": str(item.root),
+                    "library_root": str(item.library_root),
                 }
                 for item in self.watches
             ],

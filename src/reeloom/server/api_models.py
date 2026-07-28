@@ -224,8 +224,8 @@ class ConfigWatchResponse(_StrictModel):
     work_type: Literal["anime", "tv", "movie"]
     poll_interval_seconds: int
     settle_interval_seconds: int
-    root_configured: bool
-    library_root_configured: bool
+    root: str
+    library_root: str
 
 
 class ConfigProviderResponse(_StrictModel):

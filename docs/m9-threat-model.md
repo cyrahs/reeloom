@@ -28,5 +28,6 @@ filename display 和浏览器 mutation intent。
   outside the application trust boundary.
 - Explicit interaction text is now an Admin-readable PostgreSQL record and is
   retained with the run backup set.
-- The Admin directory browser intentionally reveals directory names and the
-  selected absolute path visible inside the Reeloom Pod, but never file content.
+- The Admin config read model and directory browser intentionally reveal
+  configured paths and browsable directory names visible inside the Reeloom
+  Pod, but never file content.

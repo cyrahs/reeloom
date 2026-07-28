@@ -76,7 +76,7 @@ filesystem，也不根据浏览器本地状态推断 effect 已成功。movie do
 
 1. Admin 可从 UI 完成配置到 apply/recovery 的完整旅程。
 2. preview 只返回 exact plan 的 relative display text。
-3. config GET 不返回 path/secret，retain 只绑定 exact revision。
+3. config GET 仅向 Admin 返回结构化 path，不返回 secret；retain 只绑定 exact revision。
 4. interaction read model 只包含显式用户消息和 final reply。
 5. token/API key/path/DSN/prompt/observation 不进入浏览器非必要表面。
 6. 所有不可信文本只作为 text 渲染。

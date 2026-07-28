@@ -541,7 +541,7 @@ UI 不编译 plan、不生成路径、不签发审批，也不推断 filesystem 
 
 - 只有 `/` 和 manifest 中的 hash assets 可匿名 GET/HEAD；
 - Admin token 经 session 验证后才保存在固定 localStorage key；
-- config retain 绑定 exact revision，GET 不返回 path/secret；
+- config retain 绑定 exact revision，Admin GET 返回结构化路径但不返回 secret；
 - preview 绑定 exact lineage/hash 并只投影相对路径；
 - interaction history 只包含显式用户消息和 final reply；
 - authenticated fetch SSE 使用 durable cursor，cursor ahead 完整 resync；

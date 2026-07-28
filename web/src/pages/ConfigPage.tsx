@@ -48,19 +48,19 @@ type DirectoryTarget = {
   select: (path: string) => void;
 };
 
+const newWatch = (): WatchForm => ({
+  watch_id: `watch-${globalThis.crypto.randomUUID()}`,
+  work_type: "anime",
+  poll_interval_seconds: 30,
+  settle_interval_seconds: 120,
+  rootMode: "replace",
+  rootPath: "",
+  libraryRootMode: "replace",
+  libraryRootPath: "",
+});
+
 const emptyState = (): FormState => ({
-  watches: [
-    {
-      watch_id: "primary",
-      work_type: "anime",
-      poll_interval_seconds: 30,
-      settle_interval_seconds: 120,
-      rootMode: "replace",
-      rootPath: "",
-      libraryRootMode: "replace",
-      libraryRootPath: "",
-    },
-  ],
+  watches: [newWatch()],
   base_url: "https://api.openai.com/v1",
   model: "gpt-5",
   reasoning_effort: "medium",
@@ -105,6 +105,7 @@ export function ConfigPage() {
   const [form, setForm] = useState<FormState>(emptyState);
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
+  const [providerNotice, setProviderNotice] = useState("");
   const [uncertainAttempt, setUncertainAttempt] =
     useState<ConfigAttempt | null>(null);
   const [resyncing, setResyncing] = useState(false);
@@ -182,8 +183,11 @@ export function ConfigPage() {
           body: {},
         },
       ),
+    onMutate: () => setProviderNotice(""),
     onSuccess: (result) =>
-      setNotice(result.available ? "Provider 连接正常。" : "Provider 当前不可用。"),
+      setProviderNotice(
+        result.available ? "Provider 连接正常。" : "Provider 当前不可用。",
+      ),
   });
 
   const submit = (event: FormEvent) => {
@@ -248,17 +252,8 @@ export function ConfigPage() {
             在入站目录内管理，不等同于媒体库目录。
           </p>
           {form.watches.map((watch, index) => (
-            <div className="form-card" key={index}>
+            <div className="form-card" key={watch.watch_id}>
               <div className="form-grid">
-                <Field label="Watch ID">
-                  <input
-                    value={watch.watch_id}
-                    onChange={(event) =>
-                      updateWatch(index, "watch_id", event.target.value)
-                    }
-                    required
-                  />
-                </Field>
                 <Field label="内容类型">
                   <select
                     value={watch.work_type}
@@ -311,11 +306,8 @@ export function ConfigPage() {
               <SecretChoice
                 label="入站目录"
                 mode={watch.rootMode}
-                canRetain={query.data?.watches.some(
-                  (item) =>
-                    item.watch_id === watch.watch_id &&
-                    item.work_type === watch.work_type,
-                ) ?? false}
+                canRetain={existingWatch(watch) !== undefined}
+                retainedValue={existingWatch(watch)?.root}
                 value={watch.rootPath}
                 onMode={(mode) => updateWatch(index, "rootMode", mode)}
                 onValue={(value) => updateWatch(index, "rootPath", value)}
@@ -330,12 +322,8 @@ export function ConfigPage() {
               <SecretChoice
                 label="媒体库目录"
                 mode={watch.libraryRootMode}
-                canRetain={query.data?.watches.some(
-                  (item) =>
-                    item.watch_id === watch.watch_id &&
-                    item.work_type === watch.work_type &&
-                    item.library_root_configured,
-                ) ?? false}
+                canRetain={existingWatch(watch) !== undefined}
+                retainedValue={existingWatch(watch)?.library_root}
                 value={watch.libraryRootPath}
                 onMode={(mode) => updateWatch(index, "libraryRootMode", mode)}
                 onValue={(value) =>
@@ -372,16 +360,7 @@ export function ConfigPage() {
                 ...current,
                 watches: [
                   ...current.watches,
-                  {
-                    watch_id: `watch-${current.watches.length + 1}`,
-                    work_type: "anime",
-                    poll_interval_seconds: 30,
-                    settle_interval_seconds: 120,
-                    rootMode: "replace",
-                    rootPath: "",
-                    libraryRootMode: "replace",
-                    libraryRootPath: "",
-                  },
+                  newWatch(),
                 ],
               }))
             }
@@ -456,6 +435,12 @@ export function ConfigPage() {
           >
             {probe.isPending ? "正在探测…" : "探测当前 Provider"}
           </button>
+          {providerNotice ? (
+            <div className="notice" role="status">{providerNotice}</div>
+          ) : null}
+          {probe.error instanceof ApiError ? (
+            <PageError code={probe.error.code} />
+          ) : null}
         </ConfigSection>
 
         <ConfigSection number="03" title="执行策略">
@@ -523,6 +508,14 @@ export function ConfigPage() {
       ),
     }));
   }
+
+  function existingWatch(watch: WatchForm) {
+    return query.data?.watches.find(
+      (item) =>
+        item.watch_id === watch.watch_id &&
+        item.work_type === watch.work_type,
+    );
+  }
 }
 
 export function toPayload(state: FormState, current?: Config) {
@@ -544,8 +537,7 @@ export function toPayload(state: FormState, current?: Config) {
           current.watches.some(
             (configured) =>
               configured.watch_id === item.watch_id &&
-              configured.work_type === item.work_type &&
-              configured.root_configured,
+              configured.work_type === item.work_type,
           ),
       ),
       library_root: root(
@@ -555,8 +547,7 @@ export function toPayload(state: FormState, current?: Config) {
           current.watches.some(
             (configured) =>
               configured.watch_id === item.watch_id &&
-              configured.work_type === item.work_type &&
-              configured.library_root_configured,
+              configured.work_type === item.work_type,
           ),
       ),
     })),
@@ -613,6 +604,7 @@ function SecretChoice({
   label,
   mode,
   canRetain,
+  retainedValue,
   value,
   onMode,
   onValue,
@@ -623,6 +615,7 @@ function SecretChoice({
   label: string;
   mode: RootMode;
   canRetain: boolean;
+  retainedValue?: string;
   value: string;
   onMode: (mode: RootMode) => void;
   onValue: (value: string) => void;
@@ -676,7 +669,9 @@ function SecretChoice({
           ) : null}
         </div>
       ) : (
-        <p className="retained-value">已配置 · 内容不会回传浏览器</p>
+        <p className="retained-value">
+          {retainedValue || value || "已配置 · 内容不会回传浏览器"}
+        </p>
       )}
     </fieldset>
   );

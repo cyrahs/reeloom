@@ -228,8 +228,8 @@ const watchSchema = z
     work_type: workTypeSchema,
     poll_interval_seconds: z.number().int(),
     settle_interval_seconds: z.number().int(),
-    root_configured: z.boolean(),
-    library_root_configured: z.boolean(),
+    root: z.string(),
+    library_root: z.string(),
   })
   .strict();
 

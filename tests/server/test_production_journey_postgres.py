@@ -320,11 +320,13 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 )
                 assert response.status_code == 200, response.text
                 public_config = response.json()
-                assert public_config["watches"][0]["root_configured"] is True
+                assert public_config["watches"][0]["root"] == str(incoming)
+                assert public_config["watches"][0][
+                    "library_root"
+                ] == str(archive)
                 assert (
                     public_config["provider"]["api_key_configured"] is True
                 )
-                assert str(incoming) not in response.text
                 assert "offline-provider-key" not in response.text
                 retained = await client.put(
                     "/api/v1/admin/config",
