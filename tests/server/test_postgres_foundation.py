@@ -36,7 +36,7 @@ def test_database_close_releases_pool_when_unlock_fails() -> None:
         def close(self) -> None:
             calls.append("pool")
 
-    control = PostgresControlPlane("postgresql://app@db/reeloom")
+    control = PostgresControlPlane("postgresql://reeloom@db/reeloom")
     control._lock_connection = LockConnection()  # type: ignore[assignment]
     control._pool = Pool()  # type: ignore[assignment]
 

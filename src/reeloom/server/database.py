@@ -38,13 +38,10 @@ class PostgresControlPlane:
     def __init__(
         self,
         dsn: str,
-        *,
-        migration_dsn: str | None = None,
     ) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise ServerError(ServerErrorCode.INVALID_SETTINGS)
         self._dsn = dsn
-        self._migration_dsn = migration_dsn
         self._pool: ConnectionPool | None = None
         self._lock_connection: psycopg.Connection | None = None
 
@@ -70,16 +67,8 @@ class PostgresControlPlane:
 
     def migrate(self) -> None:
         try:
-            if self._migration_dsn is None:
-                with self._require_pool().connection() as connection:
-                    self._migrate_connection(connection)
-            else:
-                with psycopg.connect(
-                    self._migration_dsn,
-                    autocommit=False,
-                    connect_timeout=5,
-                ) as connection:
-                    self._migrate_connection(connection)
+            with self._require_pool().connection() as connection:
+                self._migrate_connection(connection)
         except ServerError:
             raise
         except Exception:

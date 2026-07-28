@@ -14,10 +14,9 @@ backup 边界。
 
 启动顺序：
 
-1. 用 `REELOOM_MIGRATION_POSTGRES_DSN` 指向 migration role；用
-   `REELOOM_POSTGRES_DSN` 指向独立的 `reeloom_app` role。两套 credential
-   必须不同，密码若进入 DSN 必须 URL encode。启动会以 migration role 串行应用并
-   核对 version/checksum，业务 pool 只使用 application role。
+1. 创建拥有 `reeloom` 数据库的 `reeloom` login role，并通过唯一的
+   `REELOOM_POSTGRES_DSN` 注入连接。密码若进入 DSN 必须 URL encode。启动会在
+   同一个连接池中串行应用 migration、核对 version/checksum 并处理业务请求。
 2. 启动受支持的 PostgreSQL 16、17 或 18，确认备份与恢复演练已完成。
 3. 将 state root 与授权 media roots 挂载到固定绝对路径。
 4. 以 `REELOOM_WORKERS=1` 启动 server。启动必须同时取得 state-root process lock

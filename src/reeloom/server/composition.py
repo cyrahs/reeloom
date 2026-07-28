@@ -140,10 +140,7 @@ def build_application(
         raise ServerError(ServerErrorCode.MULTIPLE_WORKERS)
     AuthorizedRoot.create(settings.state_root)
     process_lock = ProcessLock.acquire(settings.state_root)
-    database = PostgresControlPlane(
-        settings.postgres_dsn,
-        migration_dsn=settings.migration_postgres_dsn,
-    )
+    database = PostgresControlPlane(settings.postgres_dsn)
     try:
         database.open()
         database.migrate()

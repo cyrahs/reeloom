@@ -40,7 +40,7 @@ def test_application_close_releases_resources_after_background_failure(
 
     application = ServerApplication(
         settings=DeploymentSettings(
-            postgres_dsn="postgresql://app@db/reeloom",
+            postgres_dsn="postgresql://reeloom@db/reeloom",
             state_root=tmp_path,
         ),
         boot_id="boot-test",

@@ -8,10 +8,10 @@ history, SDK session identity, and Executor journals. The browser, filenames,
 subtitles, TMDB text, Agent output, interaction text, tool observations, HTTP
 clients, provider responses, and media-directory contents are untrusted.
 
-The deployment operator, migration role, supported PostgreSQL instance, host
-kernel, mounted state root, and configured reverse proxy are trusted computing
-base. Compromise of those components is outside the application boundary and
-requires credential rotation plus backup restore.
+The deployment operator, `reeloom` database owner role, supported PostgreSQL
+instance, host kernel, mounted state root, and configured reverse proxy are
+trusted computing base. Compromise of those components is outside the
+application boundary and requires credential rotation plus backup restore.
 
 ## Trust boundaries and controls
 
@@ -25,7 +25,7 @@ requires credential rotation plus backup restore.
 | Approval → Executor | forged/stale/replayed approval, plan substitution | exact `run_id + plan_hash + scope + expiry + nonce`, immutable approval, unique claim, persisted plan hash only |
 | Executor → media | symlink/path escape, target overwrite, TOCTOU, partial move | authorized roots, no-follow identity revalidation, destination absence, no-replace rename, journal and fsync before mutation, rollback and deterministic recovery |
 | Crash/restart | duplicate model call, duplicate rename, ambiguous commit, semantic recovery | terminal interaction records, typed idempotency resolution, one active run operation, one-time claim, terminal journal reconciliation, recovery without LLM |
-| Deployment | second instance/worker, schema drift, database loss | process plus lifetime advisory locks, `workers=1`, PostgreSQL 16–18/version/checksum health, separate migration/application roles, fatal background DB state |
+| Deployment | second instance/worker, schema drift, database loss | process plus lifetime advisory locks, `workers=1`, PostgreSQL 16–18/version/checksum health, one explicit database-owner DSN, fatal background DB state |
 
 ## Data exposure rules
 
@@ -41,6 +41,10 @@ untrusted content.
 - Host, PostgreSQL, reverse-proxy, or bearer-token compromise bypasses the
   application boundary; use a secret manager, least privilege, TLS, network
   isolation, rotation, and audit.
+- The single `reeloom` role owns its database and can alter its schema. This
+  deployment simplicity trades away protection from a fully compromised
+  application database credential; immutable triggers still prevent accidental
+  history mutation during normal SQL use.
 - PostgreSQL, state-root, and media backups are one recovery set. An inconsistent
   restore must stay offline until reconciled from a known common snapshot.
 - Provider and TMDB availability can stop planning, but cannot authorize or

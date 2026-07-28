@@ -272,9 +272,9 @@ settlement，不调用 Agent。
 - 固定 PostgreSQL 16–18 allowlist 和 psycopg 3 connection pool。
 - CI 提供固定 PG 17 service；测试不在运行时下载 image。
 - 真实数据库 runner 只读取显式 `REELOOM_TEST_POSTGRES_DSN`，不读取 `.env*`。
-- application DSN 来自 deployment-only settings，不进入普通 config API。
-- migration 使用独立权限并校验 version/checksum；application role 不能
-  UPDATE/DELETE immutable history。
+- 唯一 PostgreSQL DSN 来自 deployment-only settings，不进入普通 config API。
+- `reeloom` database owner 串行执行 migration 并校验 version/checksum；
+  immutable history 继续由数据库 trigger 拒绝普通 UPDATE/DELETE。
 - 一条 pool 外的 lifetime advisory-lock connection 配合 state-root process lock。
 - server 生成并持久注册 boot ID；首版固定一个进程、一个 worker。
 - 同 run 使用进程内 `asyncio.Lock` 和数据库 `active_operation`，不实现 TTL

@@ -15,7 +15,6 @@ class DeploymentSettings:
     workers: int = 1
     provider_origins: tuple[str, ...] = ("https://api.openai.com",)
     tmdb_api_key: str = ""
-    migration_postgres_dsn: str | None = None
 
     @classmethod
     def from_environ(
@@ -24,10 +23,6 @@ class DeploymentSettings:
     ) -> DeploymentSettings:
         source = os.environ if environ is None else environ
         dsn = source.get("REELOOM_POSTGRES_DSN", "")
-        migration_dsn = source.get(
-            "REELOOM_MIGRATION_POSTGRES_DSN",
-            "",
-        )
         root_text = source.get("REELOOM_STATE_ROOT", "")
         worker_text = source.get("REELOOM_WORKERS", "1")
         origins_text = source.get(
@@ -39,10 +34,6 @@ class DeploymentSettings:
             not isinstance(dsn, str)
             or not dsn.strip()
             or len(dsn.encode("utf-8")) > 8_192
-            or not isinstance(migration_dsn, str)
-            or not migration_dsn.strip()
-            or len(migration_dsn.encode("utf-8")) > 8_192
-            or migration_dsn == dsn
             or not isinstance(root_text, str)
             or not root_text
             or not isinstance(tmdb_api_key, str)
@@ -72,7 +63,6 @@ class DeploymentSettings:
             workers=workers,
             provider_origins=origins,
             tmdb_api_key=tmdb_api_key,
-            migration_postgres_dsn=migration_dsn,
         )
 
     def __repr__(self) -> str:
@@ -80,5 +70,5 @@ class DeploymentSettings:
             "DeploymentSettings(postgres_dsn=<redacted>, "
             f"state_root=<redacted>, workers={self.workers}, "
             f"provider_origins={self.provider_origins!r}, "
-            "tmdb_api_key=<redacted>, migration_postgres_dsn=<redacted>)"
+            "tmdb_api_key=<redacted>)"
         )

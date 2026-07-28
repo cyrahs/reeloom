@@ -36,52 +36,6 @@ def test_immutable_history_rejects_update_and_delete() -> None:
 
 
 @pytest.mark.postgres
-def test_application_role_has_no_history_mutation_privileges() -> None:
-    control = PostgresControlPlane(_dsn())
-    try:
-        control.open()
-        control.migrate()
-        with control.pool.connection() as connection:
-            role = connection.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM pg_roles
-                    WHERE rolname = 'reeloom_app'
-                )
-                """
-            ).fetchone()
-            if not bool(role[0]):
-                pytest.skip("reeloom_app role is not installed")
-            privileges = connection.execute(
-                """
-                SELECT
-                    has_table_privilege(
-                        'reeloom_app',
-                        'schema_migrations',
-                        'INSERT'
-                    ),
-                    has_table_privilege(
-                        'reeloom_app',
-                        'runs',
-                        'DELETE'
-                    ),
-                    has_table_privilege(
-                        'reeloom_app',
-                        'run_operations',
-                        'DELETE'
-                    )
-                """
-            ).fetchone()
-        assert tuple(bool(item) for item in privileges) == (
-            False,
-            False,
-            True,
-        )
-    finally:
-        control.close()
-
-
-@pytest.mark.postgres
 def test_terminal_api_mutation_is_immutable() -> None:
     control = PostgresControlPlane(_dsn())
     scope = f"history-{uuid.uuid4().hex}"

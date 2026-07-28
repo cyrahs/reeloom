@@ -89,10 +89,7 @@ Set credentials in the process environment; Reeloom itself does not load
 dotenv files:
 
 ```bash
-export REELOOM_MIGRATION_POSTGRES_PASSWORD="$(
-  python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
-)"
-export REELOOM_APP_POSTGRES_PASSWORD="$(
+export REELOOM_POSTGRES_PASSWORD="$(
   python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 )"
 export REELOOM_ADMIN_TOKEN="$(
@@ -117,7 +114,8 @@ build by digest instead of deploying a mutable tag.
 
 Production requirements:
 
-- PostgreSQL 16, 17, or 18 with distinct migration and application roles.
+- PostgreSQL 16, 17, or 18 with a `reeloom` login role that owns the
+  `reeloom` database.
 - Exactly one Reeloom process and one worker.
 - A persistent state root for secrets, plans, and executor journals.
 - Explicit media mounts and provider-origin allowlisting.
