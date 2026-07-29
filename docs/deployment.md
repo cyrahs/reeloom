@@ -31,11 +31,13 @@ backup 边界。
 启用 `automatic` 前，必须在配置页对每个 watch 运行移动能力检测，并确认文件夹
 收尾与媒体执行均为 `supported`。`permission_denied` 表示进程身份不能写入目录或
 mount 为只读；不要依赖 `fsGroup` 修复由 FUSE 合成的 `root:root 0755` 权限。
-如部署只能使用有 `default_permissions` 的统一 root-owned CloudDrive mount，可在
-保持非 root UID、只读 rootfs、禁提权、RuntimeDefault seccomp 和 `drop: ALL`
-的同时单独授予 `DAC_OVERRIDE`。这会扩大该进程对整个可见 mount 的 DAC 权限，
-应作为明确记录的部署残余风险；能由 storage backend 提供专用 UID/GID 或 ACL
-时应优先使用后者。
+如部署只能使用有 `default_permissions` 的统一 root-owned CloudDrive mount，
+可在只读 rootfs、禁提权、RuntimeDefault seccomp 和 `drop: ALL` 的同时单独授予
+`DAC_OVERRIDE`。必须验证进程的 permitted/effective capability，而不只检查 Pod
+spec 或 bounding set；部分 OCI runtime 会清除非 root 进程的 effective set。若
+storage backend 不能提供专用 UID/GID 或 ACL，这类 runtime 只能把容器 UID 设为
+0 才能保留唯一的 `DAC_OVERRIDE`。root UID 和该 capability 都会扩大进程对整个
+可见 mount 的 DAC 权限，必须作为明确记录的部署残余风险。
 
 `REELOOM_TMDB_API_KEY` 由 deployment secret manager 注入，仅构造唯一允许的业务
 网络 adapter；server 不读取 dotenv。模型 provider key 仍通过 admin config
