@@ -14,6 +14,7 @@ from reeloom.kernel.movie_amendment import (
 from reeloom.server.archive_report import archive_report_from_projection
 from reeloom.server.config import ConfigRevision
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.run_deletion_policy import RUN_DELETION_READY_SQL
 
 
 class PlanContentStore(Protocol):
@@ -184,7 +185,7 @@ class PostgresQueries:
         try:
             with self._pool.connection() as connection:
                 row = connection.execute(
-                    """
+                    f"""
                     SELECT r.run_id, r.status, r.work_type,
                            s.phase, s.runtime_status, s.event_sequence,
                            s.model_turns, s.model_tokens, s.tool_calls,
@@ -213,42 +214,7 @@ class PostgresQueries:
                            folder.approval_id,
                            folder.failure_code,
                            folder.move_backend,
-                           NOT EXISTS (
-                               SELECT 1 FROM interactions AS interaction
-                               WHERE interaction.run_id = r.run_id
-                                 AND interaction.status = 'active'
-                           )
-                           AND NOT EXISTS (
-                               SELECT 1
-                               FROM approval_claims AS claim
-                               LEFT JOIN approval_settlements AS settled
-                                 ON settled.approval_id = claim.approval_id
-                               WHERE claim.run_id = r.run_id
-                                 AND settled.approval_id IS NULL
-                           )
-                           AND NOT EXISTS (
-                               SELECT 1
-                               FROM folder_disposition_approvals AS approval
-                               JOIN folder_disposition_claims AS claim
-                                 ON claim.approval_id =
-                                    approval.approval_id
-                               LEFT JOIN folder_disposition_settlements
-                                    AS settled
-                                 ON settled.approval_id =
-                                    claim.approval_id
-                               WHERE approval.run_id = r.run_id
-                                 AND settled.approval_id IS NULL
-                           )
-                           AND (
-                               d.folder_generation_id IS NULL
-                               OR EXISTS (
-                                   SELECT 1
-                                   FROM watch_folder_observations AS observed
-                                   WHERE observed.discovery_id =
-                                         d.discovery_id
-                                     AND observed.status = 'settled'
-                               )
-                           ) AS deletion_ready,
+                           ({RUN_DELETION_READY_SQL}) AS deletion_ready,
                            s.projection_payload,
                            (
                                SELECT interaction.result->'archive_report'
@@ -391,11 +357,7 @@ class PostgresQueries:
             and row[29] is not None
         ):
             actions.append("recover_folder_disposition")
-        if (
-            not busy
-            and status in {"completed", "failed", "rolled_back"}
-            and bool(row[32])
-        ):
+        if bool(row[32]):
             actions.append("delete_run")
         return {
             "run_id": str(row[0]),
@@ -470,14 +432,15 @@ class PostgresQueries:
         try:
             with self._pool.connection() as connection:
                 rows = connection.execute(
-                    """
+                    f"""
                     WITH page_cursor AS (
                         SELECT created_at, run_id
                         FROM runs
                         WHERE run_id = %s
                     )
                     SELECT r.run_id, r.status, r.work_type, r.created_at,
-                           s.phase, s.plan_hash, d.source_folder
+                           s.phase, s.plan_hash, d.source_folder,
+                           ({RUN_DELETION_READY_SQL}) AS deletion_ready
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -511,6 +474,9 @@ class PostgresQueries:
                 "plan_hash": row[5],
                 "source_folder": (
                     None if row[6] is None else str(row[6])
+                ),
+                "available_actions": (
+                    ["delete_run"] if bool(row[7]) else []
                 ),
             }
             for row in rows

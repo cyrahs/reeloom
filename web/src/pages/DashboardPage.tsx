@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { ApiError } from "../api";
 import { useAuth } from "../auth";
+import { RunDeletionAction } from "../components/RunDeletion";
 import { PageError, ShortHash, Status } from "../components/Status";
 import { HashLink } from "../router";
 import {
@@ -163,6 +164,7 @@ export function DashboardPage() {
                   <th>阶段</th>
                   <th>计划</th>
                   <th>状态</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -178,6 +180,13 @@ export function DashboardPage() {
                     <td>{run.phase ?? "—"}</td>
                     <td><ShortHash value={run.plan_hash} /></td>
                     <td><Status value={run.status} /></td>
+                    <td>
+                      {run.available_actions.includes("delete_run") ? (
+                        <RunDeletionAction runId={run.run_id} />
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

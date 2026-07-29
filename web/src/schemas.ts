@@ -26,6 +26,7 @@ export const runSummarySchema = z
     phase: z.string().nullable(),
     plan_hash: z.string().nullable(),
     source_folder: z.string().nullable(),
+    available_actions: z.array(z.literal("delete_run")),
   })
   .strict();
 

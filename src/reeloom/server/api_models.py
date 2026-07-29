@@ -55,6 +55,7 @@ class RunSummary(_StrictModel):
     phase: str | None
     plan_hash: str | None
     source_folder: str | None = None
+    available_actions: list[Literal["delete_run"]]
 
 
 class RunsResponse(_StrictModel):

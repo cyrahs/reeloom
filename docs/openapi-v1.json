@@ -2041,6 +2041,14 @@
       "RunSummary": {
         "additionalProperties": false,
         "properties": {
+          "available_actions": {
+            "items": {
+              "const": "delete_run",
+              "type": "string"
+            },
+            "title": "Available Actions",
+            "type": "array"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -2102,7 +2110,8 @@
           "work_type",
           "created_at",
           "phase",
-          "plan_hash"
+          "plan_hash",
+          "available_actions"
         ],
         "title": "RunSummary",
         "type": "object"

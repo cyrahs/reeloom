@@ -511,6 +511,7 @@ def test_list_read_models_serialize_query_tuples() -> None:
             "created_at": "2026-07-26T00:00:00+00:00",
             "phase": None,
             "plan_hash": None,
+            "available_actions": [],
         },
     )
     queries.list_discoveries = lambda **_: (  # type: ignore[method-assign]

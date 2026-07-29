@@ -2,6 +2,7 @@ import {
   previewSchema,
   moveCapabilitySchema,
   runDeletionSchema,
+  runSummarySchema,
   runSchema,
   workTypeSchema,
 } from "../src/schemas";
@@ -70,6 +71,18 @@ test("run deletion and action schemas remain strict", () => {
   ).toBe(false);
   const actions = runSchema.shape.available_actions;
   expect(actions.parse(["delete_run"])).toEqual(["delete_run"]);
+  expect(
+    runSummarySchema.parse({
+      run_id: "run-1",
+      status: "failed",
+      work_type: "anime",
+      created_at: "2026-07-28T12:00:00Z",
+      phase: null,
+      plan_hash: null,
+      source_folder: null,
+      available_actions: ["delete_run"],
+    }).available_actions,
+  ).toEqual(["delete_run"]);
 });
 
 test("move capability response is bounded and strict", () => {

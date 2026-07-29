@@ -5,8 +5,8 @@ import { createElement } from "react";
 import {
   ArchiveReportCard,
   canApproveCurrentPlan,
-  DeleteRunDialog,
 } from "../src/pages/RunPage";
+import { DeleteRunDialog } from "../src/components/RunDeletion";
 
 test("only the current durable plan can be approved", () => {
   expect(canApproveCurrentPlan("sha256:head", "sha256:head")).toBe(true);

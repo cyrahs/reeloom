@@ -6,8 +6,7 @@ from datetime import datetime
 from psycopg_pool import ConnectionPool
 
 from reeloom.server.errors import ServerError, ServerErrorCode
-
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "rolled_back"})
+from reeloom.server.run_deletion_policy import RUN_DELETION_READY_SQL
 
 
 class PostgresRunDeletionService:
@@ -19,49 +18,14 @@ class PostgresRunDeletionService:
             with self._pool.connection() as connection:
                 with connection.transaction():
                     row = connection.execute(
-                        """
-                        SELECT r.status,
-                               deletion.deleted_at,
-                               EXISTS (
-                                   SELECT 1 FROM run_operations
-                                   WHERE run_id = r.run_id
-                               ),
-                               EXISTS (
-                                   SELECT 1 FROM interactions
-                                   WHERE run_id = r.run_id
-                                     AND status = 'active'
-                               ),
-                               EXISTS (
-                                   SELECT 1
-                                   FROM approval_claims AS claim
-                                   LEFT JOIN approval_settlements AS settled
-                                     ON settled.approval_id =
-                                        claim.approval_id
-                                   WHERE claim.run_id = r.run_id
-                                     AND settled.approval_id IS NULL
-                               ),
-                               EXISTS (
-                                   SELECT 1
-                                   FROM folder_disposition_approvals AS approval
-                                   JOIN folder_disposition_claims AS claim
-                                     ON claim.approval_id =
-                                        approval.approval_id
-                                   LEFT JOIN folder_disposition_settlements
-                                        AS settled
-                                     ON settled.approval_id =
-                                        claim.approval_id
-                                   WHERE approval.run_id = r.run_id
-                                     AND settled.approval_id IS NULL
-                               ),
-                               d.folder_generation_id,
-                               folder.status
+                        f"""
+                        SELECT deletion.deleted_at,
+                               ({RUN_DELETION_READY_SQL}) AS deletion_ready
                         FROM runs AS r
                         JOIN discoveries AS d
                           ON d.discovery_id = r.discovery_id
                         LEFT JOIN run_deletions AS deletion
                           ON deletion.run_id = r.run_id
-                        LEFT JOIN watch_folder_observations AS folder
-                          ON folder.discovery_id = d.discovery_id
                         WHERE r.run_id = %s
                         FOR UPDATE OF r
                         """,
@@ -69,22 +33,9 @@ class PostgresRunDeletionService:
                     ).fetchone()
                     if row is None:
                         raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
-                    if row[1] is not None:
-                        return self._result(run_id, row[1])
-                    if (
-                        str(row[0]) not in _TERMINAL_STATUSES
-                        or bool(row[2])
-                        or bool(row[3])
-                        or bool(row[4])
-                        or bool(row[5])
-                        or (
-                            row[6] is not None
-                            and (
-                                row[7] is None
-                                or str(row[7]) != "settled"
-                            )
-                        )
-                    ):
+                    if row[0] is not None:
+                        return self._result(run_id, row[0])
+                    if not bool(row[1]):
                         raise ServerError(
                             ServerErrorCode.RUN_DELETE_CONFLICT
                         )
