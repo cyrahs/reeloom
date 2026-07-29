@@ -18,7 +18,12 @@ import {
   idempotencyKey,
 } from "../api";
 import { useAuth } from "../auth";
-import { PageError, ShortHash, Status } from "../components/Status";
+import {
+  errorMessage,
+  PageError,
+  ShortHash,
+  Status,
+} from "../components/Status";
 import { HashLink } from "../router";
 import {
   applyResultSchema,
@@ -522,6 +527,12 @@ export function RunPage({ runId }: { runId: string }) {
               <dd>{run.data.folder_disposition.file_count}</dd>
             </div>
           </dl>
+          {run.data.folder_disposition.failure_code ? (
+            <div className="notice danger" role="alert">
+              {errorMessage(run.data.folder_disposition.failure_code)}
+              <code>{run.data.folder_disposition.failure_code}</code>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

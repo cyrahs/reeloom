@@ -172,6 +172,67 @@ test("shows provider probe result inside the provider section", async () => {
   ).toBeVisible();
 });
 
+test("shows bounded move capability below its watch", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  vi.spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(jsonResponse({ api_version: "1.0.0", role: "admin" }))
+    .mockResolvedValueOnce(jsonResponse({
+      revision: 1,
+      revision_id: "revision-1",
+      watches: [{
+        watch_id: "primary",
+        work_type: "anime",
+        poll_interval_seconds: 30,
+        settle_interval_seconds: 120,
+        root: "/media/incoming/anime",
+        library_root: "/media/library/anime",
+      }],
+      provider: {
+        base_url: "https://api.openai.com/v1",
+        model: "gpt-5",
+        reasoning_effort: "medium",
+        verbosity: "medium",
+        api_key_configured: true,
+      },
+      apply_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
+    }))
+    .mockResolvedValueOnce(jsonResponse({
+      watch_id: "primary",
+      move_backend: "native",
+      folder_disposition: {
+        status: "unsupported",
+        failure_code: "atomic_move_unsupported",
+      },
+      media_apply: {
+        status: "cross_filesystem",
+        failure_code: "cross_filesystem",
+      },
+    }));
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <AuthGate>
+        <ConfigPage />
+      </AuthGate>
+    </QueryClientProvider>,
+  );
+
+  await screen.findByText("/media/incoming/anime");
+  await userEvent.click(
+    screen.getByRole("button", { name: "检测原子移动兼容性" }),
+  );
+
+  expect(await screen.findByText(/文件夹收尾：挂载不支持/)).toBeVisible();
+  expect(screen.getByText(/媒体执行：跨文件系统/)).toBeVisible();
+});
+
 function jsonResponse(payload: unknown) {
   return new Response(JSON.stringify(payload), {
     status: 200,

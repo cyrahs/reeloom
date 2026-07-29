@@ -158,36 +158,15 @@ class ApplyCoordinator:
         approval_id: str | None = None,
     ) -> ApplyResult | None:
         if approval_id is None:
-            settled = self._completed_layouts.settlement_for_plan(
+            return self._completed_layouts.settlement_for_plan(
                 run_id=run_id,
                 plan_hash=plan_hash,
             )
-            if settled is not None:
-                return settled
-            approval_id = self._approvals.claimed_id(
-                run_id=run_id,
-                plan_hash=plan_hash,
-            )
-            if approval_id is None:
-                return None
-        else:
-            settled = self._completed_layouts.settlement(
-                run_id=run_id,
-                plan_hash=plan_hash,
-                approval_id=approval_id,
-            )
-            if settled is not None:
-                return settled
-        try:
-            return self.recover(
-                run_id=run_id,
-                plan_hash=plan_hash,
-                approval_id=approval_id,
-            )
-        except ApprovalError as error:
-            if error.code is ApprovalErrorCode.NOT_FOUND:
-                return None
-            raise
+        return self._completed_layouts.settlement(
+            run_id=run_id,
+            plan_hash=plan_hash,
+            approval_id=approval_id,
+        )
 
     @contextmanager
     def _operation(

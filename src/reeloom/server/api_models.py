@@ -114,6 +114,8 @@ class FolderDispositionView(_StrictModel):
         "recovery_required",
     ]
     recovery_approval_id: str | None
+    failure_code: str | None = None
+    move_backend: Literal["native", "clouddrive_webdav"] = "native"
 
 
 class ArchiveReportSearch(_StrictModel):
@@ -355,6 +357,27 @@ class ProviderProbeRequest(_StrictModel):
 class ProviderProbeResponse(_StrictModel):
     available: bool
     status_code: int | None
+
+
+class MoveCapabilityCheck(_StrictModel):
+    status: Literal[
+        "supported",
+        "unsupported",
+        "cross_filesystem",
+        "uncertain",
+    ]
+    failure_code: str | None
+
+
+class MoveCapabilityProbeRequest(_StrictModel):
+    pass
+
+
+class MoveCapabilityResponse(_StrictModel):
+    watch_id: str
+    move_backend: Literal["native"]
+    folder_disposition: MoveCapabilityCheck
+    media_apply: MoveCapabilityCheck
 
 
 class InteractionRequest(_StrictModel):

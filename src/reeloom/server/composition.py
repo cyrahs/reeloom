@@ -26,6 +26,7 @@ from reeloom.server.agent_worker import (
     TmdbLeaseFactory,
 )
 from reeloom.server.apply_service import ApplyCoordinator
+from reeloom.server.archive_directory import run_directory_io
 from reeloom.server.approval_repository import PostgresApprovalStore
 from reeloom.server.auth import AuthSettings
 from reeloom.server.background import BackgroundServices
@@ -49,8 +50,14 @@ from reeloom.server.interactions import (
     InteractionRequest,
     InteractionService,
 )
+from reeloom.ports.archive_directory import ArchiveDirectoryError
 from reeloom.server.idempotency import PostgresIdempotencyService
 from reeloom.server.queries import PostgresQueries
+from reeloom.server.move_capability import (
+    MoveCapability,
+    MoveCapabilityStatus,
+    probe_move_capability,
+)
 from reeloom.server.run_deletion import PostgresRunDeletionService
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
@@ -345,6 +352,46 @@ def build_application(
                 config=config.provider,
                 api_key=secrets.load(config.provider.secret_ref),
             )
+
+        async def probe_moves(watch_id: str) -> dict[str, object]:
+            config = config_repository.head()
+            if config is None:
+                raise ServerError(ServerErrorCode.CONFIG_NOT_FOUND)
+            watch = next(
+                (
+                    item
+                    for item in config.watches
+                    if item.watch_id == watch_id
+                ),
+                None,
+            )
+            if watch is None:
+                raise ServerError(ServerErrorCode.WATCH_NOT_FOUND)
+
+            def execute() -> tuple[MoveCapability, MoveCapability]:
+                source = AuthorizedRoot.create(watch.root)
+                return (
+                    probe_move_capability(source, source),
+                    probe_move_capability(
+                        source,
+                        AuthorizedRoot.create(watch.library_root),
+                    ),
+                )
+
+            try:
+                folder, media = await run_directory_io(execute)
+            except ArchiveDirectoryError as error:
+                uncertain = MoveCapability(
+                    MoveCapabilityStatus.UNCERTAIN,
+                    error.code,
+                )
+                folder = media = uncertain
+            return {
+                "watch_id": watch.watch_id,
+                "move_backend": "native",
+                "folder_disposition": folder.payload(),
+                "media_apply": media.payload(),
+            }
         effective_interaction_execute = (
             interaction_execute
             if interaction_execute is not None
@@ -399,6 +446,7 @@ def build_application(
                 config_update=update_config,
                 config_resolve=resolve_config,
                 provider_probe=probe_provider,
+                move_capability_probe=probe_moves,
                 directory_list=PodDirectoryBrowser().list,
                 idempotency=idempotency,
                 run_delete=run_deletions.delete,

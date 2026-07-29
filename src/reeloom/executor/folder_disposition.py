@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import os
 import stat
 from dataclasses import dataclass
@@ -9,7 +8,11 @@ from typing import Protocol
 
 from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
-from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.executor.errors import (
+    ExecutorError,
+    ExecutorErrorCode,
+    atomic_move_error_code,
+)
 from reeloom.executor.atomic_rename import rename_noreplace
 from reeloom.executor.folder_transaction import FolderTransactionRecord
 from reeloom.executor.preflight import FilesystemPreflightExecutor
@@ -48,6 +51,7 @@ class FolderDispositionStore(Protocol):
         transaction: FolderTransactionRecord,
         *,
         status: str,
+        failure_code: ExecutorErrorCode | None = None,
     ) -> None: ...
 
     def settle(
@@ -142,6 +146,7 @@ class FolderDispositionExecutor:
                         }
                         else "recovery_required"
                     ),
+                    failure_code=error.code,
                 )
                 raise
             self.journals.record_completed(transaction)
@@ -160,18 +165,24 @@ class FolderDispositionExecutor:
         ):
             raise ExecutorError(ExecutorErrorCode.ROOT_DRIFT)
         target = self._effective_target(plan, transaction)
-        source_exists = self._matches(
+        source_state = self._entry_state(
             root,
             PurePosixPath(plan.source_folder),
             plan,
-            missing_ok=True,
         )
-        target_exists = self._matches(
+        target_state = self._entry_state(
             root,
             target,
             plan,
-            missing_ok=True,
         )
+        source_exists = source_state == "expected"
+        target_exists = target_state == "expected"
+        if source_state == "other":
+            raise ExecutorError(ExecutorErrorCode.STATE_AMBIGUOUS)
+        if target_state == "other":
+            raise ExecutorError(
+                ExecutorErrorCode.DESTINATION_COLLISION
+            )
         if not source_exists:
             if not target_exists:
                 if (
@@ -233,14 +244,35 @@ class FolderDispositionExecutor:
                     ExecutorErrorCode.DESTINATION_COLLISION
                 )
             self.journals.record_started(transaction)
-            self._rename_noreplace(
-                root_fd,
-                plan.source_folder,
-                bucket_fd,
-                target.name,
+            failure_code: ExecutorErrorCode | None = None
+            try:
+                rename_noreplace(
+                    root_fd,
+                    plan.source_folder,
+                    bucket_fd,
+                    target.name,
+                )
+            except OSError as error:
+                failure_code = atomic_move_error_code(error)
+            moved = self._reconcile_forward_move(
+                root,
+                target,
+                plan,
+                failure_code=failure_code,
             )
-            os.fsync(root_fd)
-            os.fsync(bucket_fd)
+            if not moved:
+                if failure_code is None:
+                    raise ExecutorError(
+                        ExecutorErrorCode.STATE_AMBIGUOUS
+                    )
+                raise ExecutorError(failure_code)
+            try:
+                os.fsync(root_fd)
+                os.fsync(bucket_fd)
+            except OSError:
+                raise ExecutorError(
+                    ExecutorErrorCode.STATE_AMBIGUOUS
+                ) from None
         finally:
             if bucket_fd is not None:
                 os.close(bucket_fd)
@@ -314,12 +346,28 @@ class FolderDispositionExecutor:
         bucket_fd: int | None = None
         try:
             bucket_fd = self._open_bucket(root_fd, target.parts[0])
-            self._rename_noreplace(
-                bucket_fd,
-                target.name,
-                root_fd,
-                plan.source_folder,
+            failure_code: ExecutorErrorCode | None = None
+            try:
+                rename_noreplace(
+                    bucket_fd,
+                    target.name,
+                    root_fd,
+                    plan.source_folder,
+                )
+            except OSError as error:
+                failure_code = atomic_move_error_code(error)
+            still_forward = self._reconcile_forward_move(
+                root,
+                target,
+                plan,
+                failure_code=failure_code,
             )
+            if still_forward:
+                if failure_code is None:
+                    raise ExecutorError(
+                        ExecutorErrorCode.STATE_AMBIGUOUS
+                    )
+                raise ExecutorError(failure_code)
             os.fsync(bucket_fd)
             os.fsync(root_fd)
             self.journals.record_rolled_back(transaction)
@@ -350,6 +398,21 @@ class FolderDispositionExecutor:
         *,
         missing_ok: bool = False,
     ) -> bool:
+        state = FolderDispositionExecutor._entry_state(
+            root,
+            relative,
+            plan,
+        )
+        if state == "absent" and not missing_ok:
+            raise ExecutorError(ExecutorErrorCode.SOURCE_DRIFT)
+        return state == "expected"
+
+    @staticmethod
+    def _entry_state(
+        root: AuthorizedRoot,
+        relative: PurePosixPath,
+        plan: FolderDispositionPlan,
+    ) -> str:
         root_fd = FilesystemPreflightExecutor._open_bound_root(
             plan.source_root
         )
@@ -364,9 +427,7 @@ class FolderDispositionExecutor:
                         nondirectory_code=ExecutorErrorCode.SOURCE_DRIFT,
                     )
                 except ExecutorError:
-                    if missing_ok:
-                        return False
-                    raise
+                    return "absent"
                 if current_fd != root_fd:
                     os.close(current_fd)
                 current_fd = next_fd
@@ -377,18 +438,47 @@ class FolderDispositionExecutor:
                     follow_symlinks=False,
                 )
             except FileNotFoundError:
-                if missing_ok:
-                    return False
-                raise ExecutorError(ExecutorErrorCode.SOURCE_DRIFT) from None
-            return (
+                return "absent"
+            except OSError:
+                return "other"
+            return "expected" if (
                 stat.S_ISDIR(metadata.st_mode)
                 and metadata.st_dev == plan.folder_device
                 and metadata.st_ino == plan.folder_inode
-            )
+            ) else "other"
         finally:
             if current_fd != root_fd:
                 os.close(current_fd)
             os.close(root_fd)
+
+    @classmethod
+    def _reconcile_forward_move(
+        cls,
+        root: AuthorizedRoot,
+        target: PurePosixPath,
+        plan: FolderDispositionPlan,
+        *,
+        failure_code: ExecutorErrorCode | None,
+    ) -> bool:
+        source_state = cls._entry_state(
+            root,
+            PurePosixPath(plan.source_folder),
+            plan,
+        )
+        target_state = cls._entry_state(root, target, plan)
+        if source_state == "absent" and target_state == "expected":
+            return True
+        if source_state == "expected" and target_state == "absent":
+            return False
+        if (
+            failure_code is ExecutorErrorCode.DESTINATION_COLLISION
+            and source_state == "expected"
+            and target_state == "other"
+        ):
+            raise ExecutorError(
+                ExecutorErrorCode.DESTINATION_COLLISION
+            )
+        raise ExecutorError(ExecutorErrorCode.STATE_AMBIGUOUS)
 
     @staticmethod
     def _open_bucket(root_fd: int, name: str) -> int:
@@ -423,26 +513,6 @@ class FolderDispositionExecutor:
             raise ExecutorError(
                 ExecutorErrorCode.DESTINATION_COLLISION
             ) from None
-
-    @staticmethod
-    def _rename_noreplace(
-        source_fd: int,
-        source: str,
-        target_fd: int,
-        target: str,
-    ) -> None:
-        try:
-            rename_noreplace(source_fd, source, target_fd, target)
-            return
-        except OSError as error:
-            error_number = error.errno
-        if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
-            raise ExecutorError(
-                ExecutorErrorCode.DESTINATION_COLLISION
-            ) from None
-        if error_number == errno.EXDEV:
-            raise ExecutorError(ExecutorErrorCode.CROSS_FILESYSTEM) from None
-        raise ExecutorError(ExecutorErrorCode.MOVE_FAILED) from None
 
     @staticmethod
     def _load_result_target(

@@ -124,6 +124,8 @@ export const runSchema = z
           "recovery_required",
         ]),
         recovery_approval_id: z.string().nullable(),
+        failure_code: z.string().nullable(),
+        move_backend: z.enum(["native", "clouddrive_webdav"]),
       })
       .strict()
       .nullable(),
@@ -308,6 +310,27 @@ export const directoryListingSchema = z
         })
         .strict(),
     ).max(1000),
+  })
+  .strict();
+
+const moveCapabilityCheckSchema = z
+  .object({
+    status: z.enum([
+      "supported",
+      "unsupported",
+      "cross_filesystem",
+      "uncertain",
+    ]),
+    failure_code: z.string().nullable(),
+  })
+  .strict();
+
+export const moveCapabilitySchema = z
+  .object({
+    watch_id: z.string(),
+    move_backend: z.literal("native"),
+    folder_disposition: moveCapabilityCheckSchema,
+    media_apply: moveCapabilityCheckSchema,
   })
   .strict();
 

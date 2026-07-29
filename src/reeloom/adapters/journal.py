@@ -241,7 +241,6 @@ class FilesystemJournalStore:
         if completed and (
             applied != set(candidate_ids)
             or restored
-            or failures
         ):
             raise ExecutorError(ExecutorErrorCode.INVALID_JOURNAL)
         return JournalTerminalSummary(

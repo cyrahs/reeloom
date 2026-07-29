@@ -8,6 +8,7 @@ import { PageError } from "../components/Status";
 import {
   configSchema,
   directoryListingSchema,
+  moveCapabilitySchema,
   type Config,
 } from "../schemas";
 import {
@@ -205,6 +206,15 @@ export function ConfigPage() {
       ),
   });
 
+  const moveProbe = useMutation({
+    mutationFn: (watchId: string) =>
+      api.request(
+        `/api/v1/admin/watches/${encodeURIComponent(watchId)}/move-capability-probe`,
+        moveCapabilitySchema,
+        { method: "POST", body: {} },
+      ),
+  });
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setNotice("");
@@ -353,6 +363,42 @@ export function ConfigPage() {
                 }
                 placeholder="/media/library/anime"
               />
+              <button
+                type="button"
+                className="secondary"
+                disabled={
+                  existingWatch(watch) === undefined ||
+                  moveProbe.isPending
+                }
+                onClick={() => moveProbe.mutate(watch.watch_id)}
+              >
+                {moveProbe.isPending &&
+                moveProbe.variables === watch.watch_id
+                  ? "正在检测移动能力…"
+                  : "检测原子移动兼容性"}
+              </button>
+              {moveProbe.data?.watch_id === watch.watch_id ? (
+                <div
+                  className={
+                    moveProbe.data.folder_disposition.status === "supported" &&
+                    moveProbe.data.media_apply.status === "supported"
+                      ? "notice"
+                      : "notice danger"
+                  }
+                  role="status"
+                >
+                  文件夹收尾：
+                  {moveCapabilityLabel(
+                    moveProbe.data.folder_disposition.status,
+                  )}
+                  ；媒体执行：
+                  {moveCapabilityLabel(moveProbe.data.media_apply.status)}
+                </div>
+              ) : null}
+              {moveProbe.error instanceof ApiError &&
+              moveProbe.variables === watch.watch_id ? (
+                <PageError code={moveProbe.error.code} />
+              ) : null}
               <button
                 type="button"
                 className="text-button danger-text"
@@ -881,4 +927,15 @@ function DirectoryPicker({
       </div>
     </div>
   );
+}
+
+function moveCapabilityLabel(
+  status: "supported" | "unsupported" | "cross_filesystem" | "uncertain",
+) {
+  return {
+    supported: "支持原子不覆盖移动",
+    unsupported: "挂载不支持",
+    cross_filesystem: "跨文件系统，无法原子移动",
+    uncertain: "结果不确定，请保持目录不变",
+  }[status];
 }

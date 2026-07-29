@@ -31,7 +31,20 @@ export function ShortHash({ value }: { value: string | null }) {
 export function PageError({ code }: { code: string }) {
   return (
     <div className="notice danger" role="alert">
-      请求未完成：<code>{code}</code>
+      {errorMessage(code)} <code>{code}</code>
     </div>
   );
+}
+
+export function errorMessage(code: string) {
+  return {
+    atomic_move_unsupported:
+      "当前挂载不支持原子不覆盖移动；源内容保持原位。修复挂载后请使用原审批执行 exact recovery。",
+    transient_io:
+      "目录访问暂时失败；服务端没有自动重复移动，请稍后使用原事务恢复。",
+    state_ambiguous:
+      "移动结果无法安全确认；请保持源和目标不变并执行 exact recovery。",
+    recovery_required:
+      "请求结果尚未安全结算，只能使用服务端返回的 exact approval ID 恢复。",
+  }[code] ?? "请求未完成：";
 }

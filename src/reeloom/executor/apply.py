@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import errno
 import os
 import stat
 from dataclasses import dataclass
 from enum import StrEnum
 
-from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.executor.errors import (
+    ExecutorError,
+    ExecutorErrorCode,
+    atomic_move_error_code,
+)
 from reeloom.executor.atomic_rename import rename_noreplace
 from reeloom.executor.manifest import (
     ExecutionManifest,
@@ -120,7 +123,51 @@ class FilesystemExecutor:
                         bound_destination_fd,
                     )
             except ExecutorError as error:
-                if error.code is ExecutorErrorCode.RECOVERY_REQUIRED:
+                if error.code is ExecutorErrorCode.STATE_AMBIGUOUS:
+                    self._record_failure_once(
+                        transaction,
+                        manifest,
+                        error.code,
+                    )
+                    raise ExecutorError(
+                        ExecutorErrorCode.RECOVERY_REQUIRED
+                    ) from None
+                if error.code in {
+                    ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                    ExecutorErrorCode.RECOVERY_REQUIRED,
+                    ExecutorErrorCode.TRANSIENT_IO,
+                } and (
+                    not applied
+                    or error.code is ExecutorErrorCode.RECOVERY_REQUIRED
+                ):
+                    if (
+                        not applied
+                        and bound_destination_fd is not None
+                        and error.code
+                        in {
+                            ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                            ExecutorErrorCode.TRANSIENT_IO,
+                        }
+                    ):
+                        try:
+                            self._remove_created_directory(
+                                manifest,
+                                bound_destination_fd,
+                            )
+                        except ExecutorError:
+                            self._record_failure_once(
+                                transaction,
+                                manifest,
+                                ExecutorErrorCode.STATE_AMBIGUOUS,
+                            )
+                            raise ExecutorError(
+                                ExecutorErrorCode.RECOVERY_REQUIRED
+                            ) from None
+                    self._record_failure_once(
+                        transaction,
+                        manifest,
+                        error.code,
+                    )
                     raise
                 return self._rollback_after_failure(
                     manifest,
@@ -253,6 +300,38 @@ class FilesystemExecutor:
         finally:
             os.close(root_fd)
 
+    @classmethod
+    def _remove_created_directory(
+        cls,
+        manifest: ExecutionManifest,
+        directory_fd: int,
+    ) -> None:
+        directory = manifest.required_absent_directory
+        if directory is None:
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        cls._require_bound_directory(manifest, directory_fd)
+        try:
+            if os.listdir(directory_fd):
+                raise ExecutorError(
+                    ExecutorErrorCode.STATE_AMBIGUOUS
+                )
+        except OSError:
+            raise ExecutorError(
+                ExecutorErrorCode.STATE_AMBIGUOUS
+            ) from None
+        root_fd = FilesystemPreflightExecutor._open_bound_root(
+            manifest.output_root
+        )
+        try:
+            os.rmdir(directory.name, dir_fd=root_fd)
+            os.fsync(root_fd)
+        except OSError:
+            raise ExecutorError(
+                ExecutorErrorCode.STATE_AMBIGUOUS
+            ) from None
+        finally:
+            os.close(root_fd)
+
     def recover(
         self,
         *,
@@ -302,6 +381,22 @@ class FilesystemExecutor:
                 approval_id=approval_id,
                 summary=summary,
             )
+        if (
+            summary.applied_count == 0
+            and summary.failure_code
+            in {
+                ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                ExecutorErrorCode.TRANSIENT_IO,
+            }
+        ):
+            FilesystemPreflightExecutor(
+                plans=self.plans
+            ).validate(manifest)
+            return self._apply_locked(
+                manifest,
+                transaction,
+                approval_id=approval_id,
+            )
 
         try:
             for move in reversed(manifest.moves):
@@ -334,6 +429,19 @@ class FilesystemExecutor:
             transaction,
             approval_id=approval_id,
         )
+
+    def _record_failure_once(
+        self,
+        transaction: TransactionRecord,
+        manifest: ExecutionManifest,
+        code: ExecutorErrorCode,
+    ) -> None:
+        summary = self.journals.terminal_summary(
+            transaction,
+            tuple(move.source_id for move in manifest.moves),
+        )
+        if summary.failure_code is None:
+            self.journals.record_failure(transaction, code)
 
     def _rollback_after_failure(
         self,
@@ -506,6 +614,7 @@ class FilesystemExecutor:
                     ExecutorErrorCode.DESTINATION_COLLISION
                 ),
             )
+            failure_code: ExecutorErrorCode | None = None
             try:
                 _rename_noreplace(
                     source_parent_fd,
@@ -513,46 +622,28 @@ class FilesystemExecutor:
                     destination_parent_fd,
                     move.destination.name,
                 )
-            except FileExistsError:
-                raise ExecutorError(
-                    ExecutorErrorCode.DESTINATION_COLLISION
-                ) from None
             except OSError as error:
-                if error.errno == errno.EXDEV:
+                failure_code = atomic_move_error_code(error)
+            moved = cls._reconcile_forward_move(
+                source_parent_fd,
+                source.relative_path.name,
+                destination_parent_fd,
+                move.destination.name,
+                source,
+                failure_code=failure_code,
+            )
+            if not moved:
+                if failure_code is None:
                     raise ExecutorError(
-                        ExecutorErrorCode.CROSS_FILESYSTEM
-                    ) from None
-                raise ExecutorError(
-                    ExecutorErrorCode.MOVE_FAILED
-                ) from None
-            try:
-                cls._require_absent(
-                    source_parent_fd,
-                    source.relative_path.name,
-                    collision_code=ExecutorErrorCode.SOURCE_DRIFT,
-                )
-                cls._require_source(
-                    destination_parent_fd,
-                    move.destination.name,
-                    source,
-                )
-            except ExecutorError:
-                raise ExecutorError(
-                    ExecutorErrorCode.RECOVERY_REQUIRED
-                ) from None
+                        ExecutorErrorCode.STATE_AMBIGUOUS
+                    )
+                raise ExecutorError(failure_code)
             try:
                 os.fsync(source_parent_fd)
                 os.fsync(destination_parent_fd)
             except OSError:
-                cls._restore_unjournaled_move(
-                    source_parent_fd,
-                    source.relative_path.name,
-                    destination_parent_fd,
-                    move.destination.name,
-                    source,
-                )
                 raise ExecutorError(
-                    ExecutorErrorCode.MOVE_FAILED
+                    ExecutorErrorCode.STATE_AMBIGUOUS
                 ) from None
         finally:
             for file_descriptor in (
@@ -858,6 +949,48 @@ class FilesystemExecutor:
         return "other"
 
     @classmethod
+    def _reconcile_forward_move(
+        cls,
+        source_parent_fd: int,
+        source_name: str,
+        destination_parent_fd: int,
+        destination_name: str,
+        source: ExecutionSource,
+        *,
+        failure_code: ExecutorErrorCode | None,
+    ) -> bool:
+        try:
+            source_state = cls._source_state(
+                source_parent_fd,
+                source_name,
+                source,
+                moved=False,
+            )
+            destination_state = cls._source_state(
+                destination_parent_fd,
+                destination_name,
+                source,
+                moved=True,
+            )
+        except ExecutorError:
+            raise ExecutorError(
+                ExecutorErrorCode.STATE_AMBIGUOUS
+            ) from None
+        if source_state == "absent" and destination_state == "expected":
+            return True
+        if source_state == "expected" and destination_state == "absent":
+            return False
+        if (
+            failure_code is ExecutorErrorCode.DESTINATION_COLLISION
+            and source_state == "expected"
+            and destination_state == "other"
+        ):
+            raise ExecutorError(
+                ExecutorErrorCode.DESTINATION_COLLISION
+            )
+        raise ExecutorError(ExecutorErrorCode.STATE_AMBIGUOUS)
+
+    @classmethod
     def _require_source(
         cls,
         parent_fd: int,
@@ -912,52 +1045,3 @@ class FilesystemExecutor:
                 ExecutorErrorCode.SYMLINK_NOT_ALLOWED
             )
         raise ExecutorError(collision_code)
-
-    @classmethod
-    def _restore_unjournaled_move(
-        cls,
-        source_parent_fd: int,
-        source_name: str,
-        destination_parent_fd: int,
-        destination_name: str,
-        source: ExecutionSource,
-    ) -> None:
-        try:
-            if (
-                cls._source_state(
-                    destination_parent_fd,
-                    destination_name,
-                    source,
-                    moved=True,
-                )
-                != "expected"
-            ):
-                raise ExecutorError(
-                    ExecutorErrorCode.RECOVERY_REQUIRED
-                )
-            _rename_noreplace(
-                destination_parent_fd,
-                destination_name,
-                source_parent_fd,
-                source_name,
-            )
-            os.fsync(source_parent_fd)
-            os.fsync(destination_parent_fd)
-            cls._require_source(
-                source_parent_fd,
-                source_name,
-                source,
-            )
-            cls._require_absent(
-                destination_parent_fd,
-                destination_name,
-                collision_code=(
-                    ExecutorErrorCode.RECOVERY_REQUIRED
-                ),
-            )
-        except ExecutorError:
-            raise
-        except OSError:
-            raise ExecutorError(
-                ExecutorErrorCode.RECOVERY_REQUIRED
-            ) from None

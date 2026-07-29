@@ -220,12 +220,14 @@ def _app(
     static_root: Path | None = None,
     directory_list: Callable[[str], dict[str, object]] | None = None,
     run_delete: Callable[[str], dict[str, object]] | None = None,
+    move_capability_probe: Callable[..., object] | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
             queries=_Queries(),
             directory_list=directory_list,
             run_delete=run_delete,
+            move_capability_probe=move_capability_probe,  # type: ignore[arg-type]
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -235,6 +237,46 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+def test_admin_can_probe_exact_watch_move_capability() -> None:
+    async def probe(watch_id: str) -> dict[str, object]:
+        assert watch_id == "watch-1"
+        return {
+            "watch_id": watch_id,
+            "move_backend": "native",
+            "folder_disposition": {
+                "status": "supported",
+                "failure_code": None,
+            },
+            "media_apply": {
+                "status": "unsupported",
+                "failure_code": "atomic_move_unsupported",
+            },
+        }
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(move_capability_probe=probe)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            return await client.post(
+                "/api/v1/admin/watches/watch-1/move-capability-probe",
+                json={},
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert response.json()["media_apply"] == {
+        "status": "unsupported",
+        "failure_code": "atomic_move_unsupported",
+    }
 
 
 def test_admin_can_delete_an_eligible_run_record() -> None:

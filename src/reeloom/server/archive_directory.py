@@ -86,6 +86,10 @@ class _DirectoryIOLane:
 _IO_LANE = _DirectoryIOLane()
 
 
+async def run_directory_io(operation: Callable[[], _T]) -> _T:
+    return await _IO_LANE.run(operation)
+
+
 @dataclass(frozen=True, slots=True)
 class _Entry:
     name: str

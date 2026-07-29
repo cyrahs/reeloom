@@ -11,6 +11,7 @@ key、额外字段、超限 body/page/text 会被拒绝。
 - `GET/PUT /api/v1/admin/config`
 - `GET /api/v1/admin/directories`
 - `POST /api/v1/admin/config/provider-probe`
+- `POST /api/v1/admin/watches/{watch_id}/move-capability-probe`
 - `GET /api/v1/discoveries`
 - `GET /api/v1/folders`
 - `GET /api/v1/runs`

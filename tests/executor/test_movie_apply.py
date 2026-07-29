@@ -1,3 +1,4 @@
+import errno
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -102,6 +103,66 @@ def test_movie_plan_applies_through_existing_executor(tmp_path: Path) -> None:
     assert not (watch / "movie.mkv").exists()
     assert (movie_root / "电影 (2024).mkv").read_bytes() == b"movie"
     assert (movie_root / "电影 (2024).chs.srt").exists()
+
+
+def test_movie_unsupported_move_removes_only_owned_empty_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, watch, archive, plans_root, approvals_root, journals_root = _plan(
+        tmp_path
+    )
+    plans = FilesystemPlanStore(AuthorizedRoot.create(plans_root))
+    plans.save(plan)
+    now = datetime(2026, 7, 26, tzinfo=UTC)
+    approval = ApprovalRecord.create(
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+        scope=ApprovalScope.APPLY,
+        expires_at=now + timedelta(minutes=5),
+        nonce="u" * 32,
+    )
+    approvals = FilesystemApprovalStore(
+        AuthorizedRoot.create(approvals_root),
+        clock=lambda: now,
+    )
+    approvals.issue(approval)
+    executor = FilesystemExecutor(
+        plans=plans,
+        approvals=approvals,
+        journals=FilesystemJournalStore(
+            AuthorizedRoot.create(journals_root)
+        ),
+    )
+
+    def unsupported(*args: object) -> None:
+        del args
+        raise OSError(errno.EOPNOTSUPP, "unsupported")
+
+    monkeypatch.setattr(
+        apply_module,
+        "_rename_noreplace",
+        unsupported,
+    )
+    with pytest.raises(ExecutorError) as raised:
+        executor.apply(
+            plan_hash=plan.plan_hash,
+            approval_id=approval.approval_id,
+        )
+
+    assert (
+        raised.value.code
+        is ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED
+    )
+    assert (watch / "movie.mkv").is_file()
+    assert tuple(archive.iterdir()) == ()
+
+    monkeypatch.undo()
+    result = executor.recover(
+        plan_hash=plan.plan_hash,
+        approval_id=approval.approval_id,
+    )
+    assert result.status is ApplyStatus.COMPLETED
 
 
 def test_movie_apply_rejects_created_directory_replacement(

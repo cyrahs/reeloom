@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import pytest
 
+import reeloom.executor.folder_disposition as folder_module
 from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
@@ -40,9 +42,13 @@ class _Approvals:
         self.begun += 1
 
     def mark_transaction(
-        self, transaction: object, *, status: str
+        self,
+        transaction: object,
+        *,
+        status: str,
+        failure_code: ExecutorErrorCode | None = None,
     ) -> None:
-        del transaction
+        del transaction, failure_code
         self.statuses.append(status)
 
     def settle(self, transaction: object, *, run_id: str) -> None:
@@ -253,6 +259,88 @@ def test_recovery_recreates_missing_transaction_record(
 
     assert approvals.begun == 1
     assert approvals.settled
+    assert (watch / "archive" / "Incoming" / "extra.txt").is_file()
+
+
+def test_unsupported_atomic_move_stays_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    source = watch / "Incoming"
+    source.mkdir()
+    (source / "extra.txt").write_text("leftover")
+    executor, plans, approvals = _executor(tmp_path)
+    plan = _plan(
+        watch,
+        action=FolderDispositionAction.ARCHIVE,
+        target=PurePosixPath("archive/Incoming"),
+    )
+    plans.save_folder_disposition(plan)
+
+    def unsupported(*args: object) -> None:
+        del args
+        raise OSError(errno.EOPNOTSUPP, "unsupported")
+
+    monkeypatch.setattr(folder_module, "rename_noreplace", unsupported)
+    with pytest.raises(ExecutorError) as raised:
+        executor.apply(
+            plan_hash=plan.plan_hash,
+            approval_id="approval-test",
+        )
+
+    assert (
+        raised.value.code
+        is ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED
+    )
+    assert source.is_dir()
+    assert not (watch / "archive" / "Incoming").exists()
+    assert approvals.statuses[-1] == "recovery_required"
+
+    monkeypatch.undo()
+    result = executor.recover(
+        plan_hash=plan.plan_hash,
+        approval_id="approval-test",
+    )
+    assert result.status == "completed"
+    assert (watch / "archive" / "Incoming" / "extra.txt").is_file()
+
+
+def test_error_after_atomic_move_converges_to_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    source = watch / "Incoming"
+    source.mkdir()
+    (source / "extra.txt").write_text("leftover")
+    executor, plans, _ = _executor(tmp_path)
+    plan = _plan(
+        watch,
+        action=FolderDispositionAction.ARCHIVE,
+        target=PurePosixPath("archive/Incoming"),
+    )
+    plans.save_folder_disposition(plan)
+    real_rename = folder_module.rename_noreplace
+
+    def moved_then_error(*args: object) -> None:
+        real_rename(*args)
+        raise OSError(errno.EIO, "late error")
+
+    monkeypatch.setattr(
+        folder_module,
+        "rename_noreplace",
+        moved_then_error,
+    )
+
+    result = executor.apply(
+        plan_hash=plan.plan_hash,
+        approval_id="approval-test",
+    )
+
+    assert result.status == "completed"
     assert (watch / "archive" / "Incoming" / "extra.txt").is_file()
 
 

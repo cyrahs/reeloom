@@ -9,6 +9,7 @@
 | Drift and late content | Complete | pre-effect generation invalidation, stable late-content replan, old combination rejection |
 | API and UI | Complete | source-folder read model, exact dual-hash apply, disposition action/recovery, plain-text UI |
 | Compatibility | Complete | unchanged Episode/Movie loaders and full M0-M10 offline regression |
+| Atomic move compatibility | Complete | typed unsupported/transient errors, post-syscall state convergence, read-only settlement resolution, exact forward recovery, Admin capability probe |
 
 Production PostgreSQL and browser acceptance use the existing explicit
 PostgreSQL/E2E test gates.

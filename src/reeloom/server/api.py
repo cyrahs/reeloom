@@ -49,6 +49,8 @@ from reeloom.server.api_models import (
     InteractionHistoryResponse,
     InteractionRequest,
     InteractionResponse,
+    MoveCapabilityProbeRequest,
+    MoveCapabilityResponse,
     PlanLineageResponse,
     PlanLineageItem,
     PlanPreviewResponse,
@@ -189,6 +191,9 @@ class ApiDependencies:
         | None
     ) = None
     provider_probe: Callable[[], Awaitable[object]] | None = None
+    move_capability_probe: (
+        Callable[[str], Awaitable[dict[str, object]]] | None
+    ) = None
     directory_list: (
         Callable[[str], dict[str, object]] | None
     ) = None
@@ -821,6 +826,7 @@ def create_api(
                 ServerErrorCode.RUN_BUSY: 409,
                 ServerErrorCode.RUN_NOT_FOUND: 404,
                 ServerErrorCode.RUN_DELETE_CONFLICT: 409,
+                ServerErrorCode.WATCH_NOT_FOUND: 404,
                 ServerErrorCode.FRESH_MAPPING_REQUIRED: 422,
                 ServerErrorCode.DATABASE_UNAVAILABLE: 503,
                 ServerErrorCode.PROVIDER_UNAVAILABLE: 503,
@@ -1050,6 +1056,23 @@ def create_api(
             "available": result.available,
             "status_code": result.status_code,
         }
+
+    @app.post(
+        "/api/v1/admin/watches/{watch_id}/move-capability-probe",
+        response_model=MoveCapabilityResponse,
+    )
+    async def move_capability_probe(
+        watch_id: str,
+        body: MoveCapabilityProbeRequest,
+    ) -> dict[str, object]:
+        del body
+        if (
+            not watch_id
+            or len(watch_id.encode("utf-8")) > 128
+            or dependencies.move_capability_probe is None
+        ):
+            raise HTTPException(404, detail={"code": "watch_not_found"})
+        return await dependencies.move_capability_probe(watch_id)
 
     @app.get(
         "/api/v1/runs/{run_id}/plan",

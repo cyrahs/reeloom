@@ -211,6 +211,8 @@ class PostgresQueries:
                            folder.reason_code,
                            folder.status,
                            folder.approval_id,
+                           folder.failure_code,
+                           folder.move_backend,
                            NOT EXISTS (
                                SELECT 1 FROM interactions AS interaction
                                WHERE interaction.run_id = r.run_id
@@ -303,7 +305,10 @@ class PostgresQueries:
                                        ELSE 'planned'
                                    END
                                ) AS status,
-                               approval.approval_id
+                               approval.approval_id,
+                               txn.failure_code,
+                               COALESCE(txn.move_backend, 'native')
+                                   AS move_backend
                         FROM folder_disposition_plans AS p
                         LEFT JOIN LATERAL (
                             SELECT a.approval_id
@@ -389,7 +394,7 @@ class PostgresQueries:
         if (
             not busy
             and status in {"completed", "failed", "rolled_back"}
-            and bool(row[30])
+            and bool(row[32])
         ):
             actions.append("delete_run")
         return {
@@ -443,12 +448,16 @@ class PostgresQueries:
                     "recovery_approval_id": (
                         None if row[29] is None else str(row[29])
                     ),
+                    "failure_code": (
+                        None if row[30] is None else str(row[30])
+                    ),
+                    "move_backend": str(row[31]),
                 }
             ),
             "archive_report": (
-                row[32]
-                if isinstance(row[32], dict)
-                else archive_report_from_projection(row[31])
+                row[34]
+                if isinstance(row[34], dict)
+                else archive_report_from_projection(row[33])
             ),
         }
 

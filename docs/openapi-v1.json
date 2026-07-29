@@ -922,10 +922,30 @@
             "title": "Action",
             "type": "string"
           },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
           "file_count": {
             "minimum": 0.0,
             "title": "File Count",
             "type": "integer"
+          },
+          "move_backend": {
+            "default": "native",
+            "enum": [
+              "native",
+              "clouddrive_webdav"
+            ],
+            "title": "Move Backend",
+            "type": "string"
           },
           "plan_hash": {
             "title": "Plan Hash",
@@ -1316,6 +1336,72 @@
           "api_key"
         ],
         "title": "LegacyProviderRequest",
+        "type": "object"
+      },
+      "MoveCapabilityCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "status": {
+            "enum": [
+              "supported",
+              "unsupported",
+              "cross_filesystem",
+              "uncertain"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "failure_code"
+        ],
+        "title": "MoveCapabilityCheck",
+        "type": "object"
+      },
+      "MoveCapabilityProbeRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "MoveCapabilityProbeRequest",
+        "type": "object"
+      },
+      "MoveCapabilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "folder_disposition": {
+            "$ref": "#/components/schemas/MoveCapabilityCheck"
+          },
+          "media_apply": {
+            "$ref": "#/components/schemas/MoveCapabilityCheck"
+          },
+          "move_backend": {
+            "const": "native",
+            "title": "Move Backend",
+            "type": "string"
+          },
+          "watch_id": {
+            "title": "Watch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "watch_id",
+          "move_backend",
+          "folder_disposition",
+          "media_apply"
+        ],
+        "title": "MoveCapabilityResponse",
         "type": "object"
       },
       "MovePreviewItem": {
@@ -2603,6 +2689,110 @@
           }
         ],
         "summary": "List Directories"
+      }
+    },
+    "/api/v1/admin/watches/{watch_id}/move-capability-probe": {
+      "post": {
+        "operationId": "move_capability_probe_api_v1_admin_watches__watch_id__move_capability_probe_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "watch_id",
+            "required": true,
+            "schema": {
+              "title": "Watch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveCapabilityProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoveCapabilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Move Capability Probe"
       }
     },
     "/api/v1/discoveries": {

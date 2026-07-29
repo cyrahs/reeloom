@@ -267,7 +267,19 @@ class BackgroundServices:
             ):
                 database_error = error
             reason_code = self._failure_reason(error)
-            if reason_code is not None:
+            execution_blocked = (
+                isinstance(error, ExecutorError)
+                and error.code
+                in {
+                    ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                    ExecutorErrorCode.RECOVERY_REQUIRED,
+                    ExecutorErrorCode.STATE_AMBIGUOUS,
+                    ExecutorErrorCode.TRANSIENT_IO,
+                }
+            )
+            if execution_blocked:
+                succeeded = True
+            elif reason_code is not None:
                 try:
                     self._prepare_terminal_failure(
                         run_id=run_id,

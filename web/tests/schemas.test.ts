@@ -1,5 +1,6 @@
 import {
   previewSchema,
+  moveCapabilitySchema,
   runDeletionSchema,
   runSchema,
   workTypeSchema,
@@ -69,4 +70,24 @@ test("run deletion and action schemas remain strict", () => {
   ).toBe(false);
   const actions = runSchema.shape.available_actions;
   expect(actions.parse(["delete_run"])).toEqual(["delete_run"]);
+});
+
+test("move capability response is bounded and strict", () => {
+  const value = {
+    watch_id: "watch-1",
+    move_backend: "native",
+    folder_disposition: {
+      status: "unsupported",
+      failure_code: "atomic_move_unsupported",
+    },
+    media_apply: {
+      status: "supported",
+      failure_code: null,
+    },
+  };
+  expect(moveCapabilitySchema.safeParse(value).success).toBe(true);
+  expect(
+    moveCapabilitySchema.safeParse({ ...value, absolute_path: "/private" })
+      .success,
+  ).toBe(false);
 });

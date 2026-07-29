@@ -229,6 +229,68 @@ def test_rollback_manifest_exists_before_first_rename(
     assert result.status is ApplyStatus.COMPLETED
 
 
+def test_unsupported_atomic_move_resumes_with_same_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+
+    def unsupported(*args: object) -> None:
+        del args
+        raise OSError(errno.EOPNOTSUPP, "unsupported")
+
+    monkeypatch.setattr(
+        apply_module,
+        "_rename_noreplace",
+        unsupported,
+    )
+    with pytest.raises(ExecutorError) as raised:
+        _apply(environment)
+
+    assert (
+        raised.value.code
+        is ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED
+    )
+    assert (environment.source / "episode-1.mkv").is_file()
+    assert not _destination(environment, 0).exists()
+
+    monkeypatch.undo()
+    recovered = environment.executor().recover(
+        plan_hash=environment.plan.plan_hash,
+        approval_id=environment.approval.approval_id,
+    )
+
+    assert recovered.status is ApplyStatus.COMPLETED
+    assert recovered.failure_code is (
+        ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED
+    )
+    assert _destination(environment, 0).is_file()
+
+
+def test_error_after_move_is_reconciled_without_duplicate_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    real_rename = apply_module._rename_noreplace
+
+    def moved_then_error(*args: object) -> None:
+        real_rename(*args)
+        raise OSError(errno.EIO, "late error")
+
+    monkeypatch.setattr(
+        apply_module,
+        "_rename_noreplace",
+        moved_then_error,
+    )
+
+    result = _apply(environment)
+
+    assert result.status is ApplyStatus.COMPLETED
+    assert result.applied_count == 1
+    assert _destination(environment, 0).is_file()
+
+
 def test_apply_never_overwrites_target_created_at_rename_time(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -311,7 +373,7 @@ def test_partial_failure_rolls_back_applied_moves(
     assert result.status is ApplyStatus.ROLLED_BACK
     assert result.applied_count == 1
     assert result.rolled_back_count == 1
-    assert result.failure_code is ExecutorErrorCode.MOVE_FAILED
+    assert result.failure_code is ExecutorErrorCode.TRANSIENT_IO
     assert (
         environment.source / "episode-1.mkv"
     ).read_bytes() == b"video-1"
@@ -452,7 +514,7 @@ def test_recovery_is_idempotent_after_crash_during_rollback(
     assert recovered.status is ApplyStatus.ROLLED_BACK
     assert recovered.applied_count == 1
     assert recovered.rolled_back_count == 1
-    assert recovered.failure_code is ExecutorErrorCode.MOVE_FAILED
+    assert recovered.failure_code is ExecutorErrorCode.TRANSIENT_IO
     assert (
         environment.source / "episode-1.mkv"
     ).read_bytes() == b"video-1"

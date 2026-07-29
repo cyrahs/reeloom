@@ -443,6 +443,7 @@ class PostgresFolderDispositionRepository:
         transaction: FolderTransactionRecord,
         *,
         status: str,
+        failure_code: ExecutorErrorCode | None = None,
     ) -> None:
         if status not in {
             "renamed",
@@ -457,13 +458,20 @@ class PostgresFolderDispositionRepository:
                     row = connection.execute(
                         """
                         UPDATE folder_disposition_transactions
-                        SET status = %s, updated_at = clock_timestamp()
+                        SET status = %s,
+                            failure_code = COALESCE(%s, failure_code),
+                            updated_at = clock_timestamp()
                         WHERE transaction_id = %s
                           AND approval_id = %s
                         RETURNING transaction_id
                         """,
                         (
                             status,
+                            (
+                                None
+                                if failure_code is None
+                                else failure_code.value
+                            ),
                             transaction.transaction_id,
                             transaction.approval_id,
                         ),

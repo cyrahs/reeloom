@@ -12,8 +12,13 @@ force.
 | Old plan executes after drift | active generation is invalidated before media effect; apply requires the current active observation |
 | Residual target is overwritten | target suffix is fixed in the canonical plan; execution uses atomic no-replace rename |
 | Crash creates an ambiguous move | journal precedes rename; recovery accepts only exact source/destination inode combinations |
+| FUSE rejects no-replace flags | bounded `atomic_move_unsupported`, proven no-effect reconciliation, and exact forward recovery; no ordinary rename fallback |
+| Read or SSE retry repeats a move | settlement resolution is read-only; only the explicit recovery mutation can resume a claimed transaction |
+| Capability probe touches media | probe uses random, identity-bound empty directories on the single-slot I/O lane and removes only those empty directories |
 | Late file is silently absorbed | post-media drift settles again and creates a new immutable disposition hash |
 | Temporary provider failure moves input to fail | only allowlisted deterministic failures produce a fail plan |
 
 Residual risk: a same-filesystem directory rename is atomic, but storage
 durability still depends on the mounted filesystem honoring directory fsync.
+CloudDrive WebDAV/gRPC is not enabled as a move backend until its live
+conformance demonstrates the same no-overwrite and recovery properties.
