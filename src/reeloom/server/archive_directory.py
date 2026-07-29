@@ -48,7 +48,12 @@ class _DirectoryIOLane:
             daemon=True,
         ).start()
 
-    async def run(self, operation: Callable[[], _T]) -> _T:
+    async def run(
+        self,
+        operation: Callable[[], _T],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> _T:
         future: concurrent.futures.Future[object] = (
             concurrent.futures.Future()
         )
@@ -63,7 +68,11 @@ class _DirectoryIOLane:
         try:
             return await asyncio.wait_for(
                 asyncio.shield(asyncio.wrap_future(future)),
-                timeout=_IO_TIMEOUT_SECONDS,
+                timeout=(
+                    _IO_TIMEOUT_SECONDS
+                    if timeout_seconds is None
+                    else timeout_seconds
+                ),
             )  # type: ignore[return-value]
         except TimeoutError:
             raise ArchiveDirectoryError(
@@ -86,8 +95,15 @@ class _DirectoryIOLane:
 _IO_LANE = _DirectoryIOLane()
 
 
-async def run_directory_io(operation: Callable[[], _T]) -> _T:
-    return await _IO_LANE.run(operation)
+async def run_directory_io(
+    operation: Callable[[], _T],
+    *,
+    timeout_seconds: float | None = None,
+) -> _T:
+    return await _IO_LANE.run(
+        operation,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 @dataclass(frozen=True, slots=True)

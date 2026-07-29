@@ -379,7 +379,10 @@ def build_application(
                 )
 
             try:
-                folder, media = await run_directory_io(execute)
+                folder, media = await run_directory_io(
+                    execute,
+                    timeout_seconds=60.0,
+                )
             except ArchiveDirectoryError as error:
                 uncertain = MoveCapability(
                     MoveCapabilityStatus.UNCERTAIN,

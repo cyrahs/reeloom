@@ -317,6 +317,20 @@ def test_single_io_lane_times_out_then_opens_circuit(
         release.set()
 
 
+def test_io_lane_accepts_longer_admin_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(archive_directory, "_IO_TIMEOUT_SECONDS", 0.01)
+    lane = archive_directory._DirectoryIOLane()
+
+    assert asyncio.run(
+        lane.run(
+            lambda: threading.Event().wait(0.02) or "complete",
+            timeout_seconds=0.1,
+        )
+    ) == "complete"
+
+
 def test_archive_report_requires_contiguous_pages_and_is_tree_ordered() -> None:
     observed_at = datetime(2026, 7, 28, tzinfo=UTC)
     root_a = ArchiveDirectoryCapability(
