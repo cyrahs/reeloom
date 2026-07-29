@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +19,10 @@ from reeloom.server.config import (
     WatchConfig,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.provider import validate_provider_base_url
+from reeloom.server.provider import (
+    ControlledModelLease,
+    validate_provider_base_url,
+)
 from reeloom.server.scheduler import (
     AgentJobContext,
     Discovery,
@@ -297,6 +301,22 @@ def test_provider_base_url_rejects_unsafe_urls(
 )
 def test_provider_base_url_allows_any_https_origin(url: str) -> None:
     assert validate_provider_base_url(url) == url
+
+
+def test_model_provider_retries_transient_failures_five_times() -> None:
+    lease = ControlledModelLease(
+        config=ProviderConfig(
+            base_url="https://127.0.0.1/v1",
+            model="gpt-5",
+            reasoning_effort="high",
+            verbosity="low",
+            secret_ref="secret-abc",
+        ),
+        api_key=b"explicit-secret",
+    )
+
+    assert lease._client.max_retries == 5
+    asyncio.run(lease.close())
 
 
 def test_provider_transport_pins_dns_and_preserves_host() -> None:

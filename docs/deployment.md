@@ -50,6 +50,8 @@ write-only 写入 filesystem SecretStore。
 provider Base URL 由 Admin 配置，可使用任意 HTTPS origin；保存该配置即授权
 Reeloom 将 API key、模型输入和候选上下文发送到该 origin。URL 不得包含凭据、
 query 或 fragment，provider transport 仍固定解析结果并禁用 redirect 与环境代理。
+模型请求对 SDK 判定为 transient 的连接错误、429 和 5xx 默认最多重试 5 次，
+使用带 jitter 的递增退避，并始终受单次请求超时和 run 总时间预算约束。
 
 反向代理必须允许 `/api/v1/runs/*/events/stream` 长连接并传递
 `Authorization`、`Last-Event-ID` 与 disconnect；不得把 Bearer 写入 access log。

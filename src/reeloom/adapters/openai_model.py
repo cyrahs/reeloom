@@ -44,7 +44,7 @@ class OpenAIModelConfig:
 
     model_name: str
     request_timeout_seconds: float = 60.0
-    max_retries: int = 2
+    max_retries: int = 5
     organization: str | None = None
     project: str | None = None
     reasoning_effort: ReasoningEffort | None = None

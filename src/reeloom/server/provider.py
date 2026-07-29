@@ -18,6 +18,7 @@ from reeloom.server.config import ProviderConfig
 from reeloom.server.errors import ServerError, ServerErrorCode
 
 _MAX_MODEL_RESPONSE_BYTES = 8 * 1024 * 1024
+_MODEL_MAX_RETRIES = 5
 
 
 def _origin(value: str, *, allow_path: bool) -> str:
@@ -300,7 +301,8 @@ class ControlledModelLease:
             webhook_secret="",
             base_url=config.base_url.rstrip("/") + "/",
             timeout=timeout_seconds,
-            max_retries=0,
+            # The SDK applies bounded exponential backoff with jitter.
+            max_retries=_MODEL_MAX_RETRIES,
             http_client=self._http,
         )
         self._model: Model = OpenAIResponsesModel(

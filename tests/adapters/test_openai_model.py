@@ -61,6 +61,10 @@ def test_provider_uses_explicit_official_responses_configuration(
     assert config.model_settings().verbosity == "low"
 
 
+def test_model_config_defaults_to_five_retries() -> None:
+    assert OpenAIModelConfig(model_name="gpt-5.6").max_retries == 5
+
+
 @pytest.mark.parametrize(
     ("model_name", "timeout", "retries"),
     (
