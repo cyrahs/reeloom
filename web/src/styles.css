@@ -563,6 +563,11 @@ button:disabled {
   background: #f7e5e3;
 }
 
+.notice.warning {
+  border-color: var(--amber);
+  background: #f7eddf;
+}
+
 .revision-badge {
   display: flex;
   min-width: 160px;

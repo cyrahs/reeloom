@@ -29,7 +29,8 @@ backup 边界。
 另一个 mount，但单个媒体执行仍须满足既有的 rename 约束。
 
 启用 `automatic` 前，必须在配置页对每个 watch 运行移动能力检测，并确认文件夹
-收尾与媒体执行均为 `supported`。`permission_denied` 表示进程身份不能写入目录或
+收尾与媒体执行均为 `supported`，或明确接受 FUSE 的 `degraded` checked-rename
+残余竞态。`permission_denied` 表示进程身份不能写入目录或
 mount 为只读；不要依赖 `fsGroup` 修复由 FUSE 合成的 `root:root 0755` 权限。
 如部署只能使用有 `default_permissions` 的统一 root-owned CloudDrive mount，
 可在只读 rootfs、禁提权、RuntimeDefault seccomp 和 `drop: ALL` 的同时单独授予

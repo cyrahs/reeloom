@@ -14,7 +14,7 @@ from reeloom.executor.errors import (
     atomic_move_error_code,
     filesystem_error_code,
 )
-from reeloom.executor.atomic_rename import rename_noreplace
+from reeloom.executor.atomic_rename import rename_noreplace_compatible
 from reeloom.executor.folder_transaction import FolderTransactionRecord
 from reeloom.executor.preflight import FilesystemPreflightExecutor
 from reeloom.kernel.folder_disposition import (
@@ -24,6 +24,8 @@ from reeloom.kernel.folder_disposition import (
 from reeloom.kernel.naming import filesystem_name_key
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
+
+rename_noreplace = rename_noreplace_compatible
 
 
 class FolderDispositionStore(Protocol):

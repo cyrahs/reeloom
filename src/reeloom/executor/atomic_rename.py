@@ -4,6 +4,7 @@ import ctypes
 import errno
 import logging
 import os
+import sys
 from enum import StrEnum
 
 _RENAME_NOREPLACE = 1
@@ -11,6 +12,8 @@ _RENAME_EXCL = 0x00000004
 _LIBC = ctypes.CDLL(None, use_errno=True)
 _RENAMEAT2 = getattr(_LIBC, "renameat2", None)
 _RENAMEATX_NP = getattr(_LIBC, "renameatx_np", None)
+_FSTATFS = getattr(_LIBC, "fstatfs", None)
+_FUSE_SUPER_MAGIC = 0x65735546
 _LOGGER = logging.getLogger(__name__)
 for function in (_RENAMEAT2, _RENAMEATX_NP):
     if function is not None:
@@ -22,6 +25,9 @@ for function in (_RENAMEAT2, _RENAMEATX_NP):
             ctypes.c_uint,
         )
         function.restype = ctypes.c_int
+if _FSTATFS is not None:
+    _FSTATFS.argtypes = (ctypes.c_int, ctypes.c_void_p)
+    _FSTATFS.restype = ctypes.c_int
 
 
 class AtomicRenameFailure(StrEnum):
@@ -31,6 +37,11 @@ class AtomicRenameFailure(StrEnum):
     TRANSIENT_IO = "transient_io"
     UNSUPPORTED = "unsupported"
     UNKNOWN = "unknown"
+
+
+class RenameBackend(StrEnum):
+    NATIVE = "native"
+    FUSE_CHECKED_RENAME = "fuse_checked_rename"
 
 
 _UNSUPPORTED = frozenset(
@@ -103,3 +114,67 @@ def rename_noreplace(
             errno.errorcode.get(error_number, "UNKNOWN"),
         )
         raise OSError(error_number, os.strerror(error_number))
+
+
+def rename_noreplace_compatible(
+    source_parent_fd: int,
+    source_name: str,
+    destination_parent_fd: int,
+    destination_name: str,
+) -> RenameBackend:
+    """Prefer native no-replace, then allow checked rename on FUSE."""
+
+    try:
+        rename_noreplace(
+            source_parent_fd,
+            source_name,
+            destination_parent_fd,
+            destination_name,
+        )
+        return RenameBackend.NATIVE
+    except OSError as error:
+        if (
+            classify_atomic_rename_error(error)
+            is not AtomicRenameFailure.UNSUPPORTED
+            or not _is_fuse_fd(source_parent_fd)
+            or not _is_fuse_fd(destination_parent_fd)
+        ):
+            raise
+
+    try:
+        os.stat(
+            destination_name,
+            dir_fd=destination_parent_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError(
+            errno.EEXIST,
+            os.strerror(errno.EEXIST),
+            destination_name,
+        )
+    _LOGGER.warning("using degraded FUSE checked-rename backend")
+    os.rename(
+        source_name,
+        destination_name,
+        src_dir_fd=source_parent_fd,
+        dst_dir_fd=destination_parent_fd,
+    )
+    return RenameBackend.FUSE_CHECKED_RENAME
+
+
+def _is_fuse_fd(file_descriptor: int) -> bool:
+    if (
+        not sys.platform.startswith("linux")
+        or _FSTATFS is None
+    ):
+        return False
+    buffer = ctypes.create_string_buffer(256)
+    if _FSTATFS(file_descriptor, ctypes.byref(buffer)) != 0:
+        return False
+    return (
+        ctypes.c_long.from_buffer(buffer).value
+        == _FUSE_SUPER_MAGIC
+    )

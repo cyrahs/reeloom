@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import reeloom.server.move_capability as capability_module
+from reeloom.executor.atomic_rename import RenameBackend
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.move_capability import (
     MoveCapabilityStatus,
@@ -62,6 +63,58 @@ def test_probe_reports_unsupported_without_touching_other_entries(
     assert result.failure_code == "atomic_move_unsupported"
     assert tuple(source.iterdir()) == ()
     assert tuple(destination.iterdir()) == (existing,)
+
+
+def test_probe_reports_fuse_checked_rename_as_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+
+    def checked_rename(
+        source_fd: int,
+        source_name: str,
+        destination_fd: int,
+        destination_name: str,
+    ) -> RenameBackend:
+        try:
+            os.stat(
+                destination_name,
+                dir_fd=destination_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(
+                errno.EEXIST, os.strerror(errno.EEXIST)
+            )
+        os.rename(
+            source_name,
+            destination_name,
+            src_dir_fd=source_fd,
+            dst_dir_fd=destination_fd,
+        )
+        return RenameBackend.FUSE_CHECKED_RENAME
+
+    monkeypatch.setattr(
+        capability_module,
+        "rename_noreplace",
+        checked_rename,
+    )
+    result = probe_move_capability(
+        AuthorizedRoot.create(source),
+        AuthorizedRoot.create(destination),
+    )
+
+    assert result.status is MoveCapabilityStatus.DEGRADED
+    assert result.move_backend is RenameBackend.FUSE_CHECKED_RENAME
+    assert result.failure_code is None
+    assert tuple(source.iterdir()) == ()
+    assert tuple(destination.iterdir()) == ()
 
 
 def test_probe_rejects_backend_that_ignores_no_replace(

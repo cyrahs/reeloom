@@ -318,6 +318,7 @@ const moveCapabilityCheckSchema = z
   .object({
     status: z.enum([
       "supported",
+      "degraded",
       "unsupported",
       "cross_filesystem",
       "uncertain",
@@ -329,7 +330,7 @@ const moveCapabilityCheckSchema = z
 export const moveCapabilitySchema = z
   .object({
     watch_id: z.string(),
-    move_backend: z.literal("native"),
+    move_backend: z.enum(["native", "fuse_checked_rename"]),
     folder_disposition: moveCapabilityCheckSchema,
     media_apply: moveCapabilityCheckSchema,
   })

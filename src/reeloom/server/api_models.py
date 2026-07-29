@@ -363,6 +363,7 @@ class ProviderProbeResponse(_StrictModel):
 class MoveCapabilityCheck(_StrictModel):
     status: Literal[
         "supported",
+        "degraded",
         "unsupported",
         "cross_filesystem",
         "uncertain",
@@ -376,7 +377,7 @@ class MoveCapabilityProbeRequest(_StrictModel):
 
 class MoveCapabilityResponse(_StrictModel):
     watch_id: str
-    move_backend: Literal["native"]
+    move_backend: Literal["native", "fuse_checked_rename"]
     folder_disposition: MoveCapabilityCheck
     media_apply: MoveCapabilityCheck
 

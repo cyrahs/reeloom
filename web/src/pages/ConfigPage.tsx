@@ -375,16 +375,14 @@ export function ConfigPage() {
                 {moveProbe.isPending &&
                 moveProbe.variables === watch.watch_id
                   ? "正在检测移动能力…"
-                  : "检测原子移动兼容性"}
+                  : "检测移动兼容性"}
               </button>
               {moveProbe.data?.watch_id === watch.watch_id ? (
                 <div
-                  className={
-                    moveProbe.data.folder_disposition.status === "supported" &&
-                    moveProbe.data.media_apply.status === "supported"
-                      ? "notice"
-                      : "notice danger"
-                  }
+                  className={moveCapabilityClass(
+                    moveProbe.data.folder_disposition.status,
+                    moveProbe.data.media_apply.status,
+                  )}
                   role="status"
                 >
                   文件夹收尾：
@@ -952,12 +950,31 @@ function DirectoryPicker({
 }
 
 function moveCapabilityLabel(
-  status: "supported" | "unsupported" | "cross_filesystem" | "uncertain",
+  status:
+    | "supported"
+    | "degraded"
+    | "unsupported"
+    | "cross_filesystem"
+    | "uncertain",
 ) {
   return {
     supported: "支持原子不覆盖移动",
+    degraded: "FUSE 降级移动（移动前检查，不保证原子不覆盖）",
     unsupported: "挂载不支持",
     cross_filesystem: "跨文件系统，无法原子移动",
     uncertain: "结果不确定，请保持目录不变",
   }[status];
+}
+
+function moveCapabilityUsable(status: string) {
+  return status === "supported" || status === "degraded";
+}
+
+function moveCapabilityClass(folder: string, media: string) {
+  if (!moveCapabilityUsable(folder) || !moveCapabilityUsable(media)) {
+    return "notice danger";
+  }
+  return folder === "degraded" || media === "degraded"
+    ? "notice warning"
+    : "notice";
 }

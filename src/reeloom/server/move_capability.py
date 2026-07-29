@@ -6,7 +6,10 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
-from reeloom.executor.atomic_rename import rename_noreplace
+from reeloom.executor.atomic_rename import (
+    RenameBackend,
+    rename_noreplace_compatible,
+)
 from reeloom.executor.errors import (
     ExecutorErrorCode,
     atomic_move_error_code,
@@ -14,9 +17,12 @@ from reeloom.executor.errors import (
 )
 from reeloom.policy.path_policy import AuthorizedRoot
 
+rename_noreplace = rename_noreplace_compatible
+
 
 class MoveCapabilityStatus(StrEnum):
     SUPPORTED = "supported"
+    DEGRADED = "degraded"
     UNSUPPORTED = "unsupported"
     CROSS_FILESYSTEM = "cross_filesystem"
     UNCERTAIN = "uncertain"
@@ -26,6 +32,7 @@ class MoveCapabilityStatus(StrEnum):
 class MoveCapability:
     status: MoveCapabilityStatus
     failure_code: str | None = None
+    move_backend: RenameBackend = RenameBackend.NATIVE
 
     def payload(self) -> dict[str, object]:
         return {
@@ -80,7 +87,7 @@ def probe_move_capability(
             )
         )
         try:
-            rename_noreplace(
+            move_backend = rename_noreplace(
                 source_fd,
                 source_name,
                 destination_parent_fd,
@@ -173,7 +180,20 @@ def probe_move_capability(
         os.fsync(source_fd)
         os.fsync(destination_parent_fd)
         os.fsync(destination_fd)
-        return MoveCapability(MoveCapabilityStatus.SUPPORTED)
+        effective_backend = (
+            move_backend
+            if isinstance(move_backend, RenameBackend)
+            else RenameBackend.NATIVE
+        )
+        return MoveCapability(
+            (
+                MoveCapabilityStatus.DEGRADED
+                if effective_backend
+                is RenameBackend.FUSE_CHECKED_RENAME
+                else MoveCapabilityStatus.SUPPORTED
+            ),
+            move_backend=effective_backend,
+        )
     except OSError as error:
         return _failure(filesystem_error_code(error))
     finally:

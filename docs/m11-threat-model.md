@@ -12,7 +12,7 @@ force.
 | Old plan executes after drift | active generation is invalidated before media effect; apply requires the current active observation |
 | Residual target is overwritten | target suffix is fixed in the canonical plan; execution uses atomic no-replace rename |
 | Crash creates an ambiguous move | journal precedes rename; recovery accepts only exact source/destination inode combinations |
-| FUSE rejects no-replace flags | bounded `atomic_move_unsupported`, proven no-effect reconciliation, and exact forward recovery; no ordinary rename fallback |
+| FUSE rejects no-replace flags | report `degraded` and use the explicitly accepted checked-rename fallback; retain journal, identity reconciliation and recovery, while documenting the remaining external-writer race |
 | Read or SSE retry repeats a move | settlement resolution is read-only; only the explicit recovery mutation can resume a claimed transaction |
 | Capability probe touches media | probe uses random, identity-bound empty directories on the single-slot I/O lane and removes only those empty directories |
 | Late file is silently absorbed | post-media drift settles again and creates a new immutable disposition hash |

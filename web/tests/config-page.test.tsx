@@ -224,10 +224,10 @@ test("shows bounded move capability below its watch", async () => {
     }))
     .mockResolvedValueOnce(jsonResponse({
       watch_id: "primary",
-      move_backend: "native",
+      move_backend: "fuse_checked_rename",
       folder_disposition: {
-        status: "uncertain",
-        failure_code: "permission_denied",
+        status: "degraded",
+        failure_code: null,
       },
       media_apply: {
         status: "cross_filesystem",
@@ -245,12 +245,12 @@ test("shows bounded move capability below its watch", async () => {
 
   await screen.findByText("/media/incoming/anime");
   await userEvent.click(
-    screen.getByRole("button", { name: "检测原子移动兼容性" }),
+    screen.getByRole("button", { name: "检测移动兼容性" }),
   );
 
-  expect(await screen.findByText(/文件夹收尾：结果不确定/)).toBeVisible();
-  expect(screen.getByText(/目录不可写或挂载为只读/)).toBeVisible();
-  expect(screen.getByText("permission_denied")).toBeVisible();
+  expect(
+    await screen.findByText(/文件夹收尾：FUSE 降级移动/),
+  ).toBeVisible();
   expect(screen.getByText(/媒体执行：跨文件系统/)).toBeVisible();
 });
 

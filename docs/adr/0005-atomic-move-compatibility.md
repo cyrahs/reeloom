@@ -6,9 +6,10 @@ Accepted.
 
 ## Decision
 
-Reeloom continues to require a native no-replace move primitive. It never
-falls back to ordinary `rename`, preflight-then-rename, copy/unlink, or a
-probabilistic reservation.
+Reeloom prefers a native no-replace move primitive. When that primitive
+returns an unsupported error and both bound parent directories are on Linux
+FUSE, it may fall back to an immediately rechecked ordinary `rename`.
+Non-FUSE filesystems and every other error remain fail closed.
 
 Native move failures are classified into bounded codes. After every syscall
 result Reeloom re-observes the exact source and destination identity:
@@ -31,10 +32,12 @@ The Admin configuration page exposes an explicit capability probe. It uses
 only owned empty directories, verifies collision preservation and parent
 `fsync`, and shares the bounded single-slot directory I/O lane.
 
-CloudDrive FUSE is not given an ordinary-rename exception. A future
-CloudDrive WebDAV backend remains reserved but disabled until live
-conformance proves exact-target no-overwrite, timeout convergence, identity
-stability, rollback behavior, and restart safety.
+The FUSE fallback is explicitly reported as `fuse_checked_rename` with
+`degraded` capability status. It preserves preflight, dirfd/no-follow
+binding, journal-before-effect, post-move identity convergence, rollback and
+recovery. It cannot eliminate the race between the final absence check and
+ordinary rename, so an external concurrent writer can still be overwritten.
+This is an accepted deployment residual risk for FUSE only.
 
 ## Compatibility
 

@@ -100,6 +100,16 @@ test("move capability response is bounded and strict", () => {
   };
   expect(moveCapabilitySchema.safeParse(value).success).toBe(true);
   expect(
+    moveCapabilitySchema.safeParse({
+      ...value,
+      move_backend: "fuse_checked_rename",
+      folder_disposition: {
+        status: "degraded",
+        failure_code: null,
+      },
+    }).success,
+  ).toBe(true);
+  expect(
     moveCapabilitySchema.safeParse({ ...value, absolute_path: "/private" })
       .success,
   ).toBe(false);

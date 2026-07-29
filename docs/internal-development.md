@@ -56,8 +56,8 @@ Agent/LLM 的审批消费、最终检查、执行与恢复边界：
   event 使用原子发布的独立 immutable 文件 append-only 记录，不原地覆盖状态；
 - media rename 使用 Linux `renameat2(RENAME_NOREPLACE)` 或 Darwin
   `renameatx_np(RENAME_EXCL)`，目标在最终检查后临时出现也不会被覆盖；
-  系统不支持安全原语时记录 `atomic_move_unsupported`、证明没有副作用并保留
-  exact recovery；不使用普通 rename 降级；
+  Linux FUSE 明确返回不支持时允许 `fuse_checked_rename` 降级：再次检查目标后
+  使用普通 rename，并保留 exact recovery；该后端接受外部并发写入的残余竞态；
 - 每次 rename 返回或报错后都重新验证 source/destination identity；只读 API
   不触发 recovery。配置页的显式探测仅操作自身创建的空目录；
 - partial failure 自动逆序 rollback；崩溃恢复依据 exact plan、claimed

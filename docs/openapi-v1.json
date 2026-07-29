@@ -1355,6 +1355,7 @@
           "status": {
             "enum": [
               "supported",
+              "degraded",
               "unsupported",
               "cross_filesystem",
               "uncertain"
@@ -1386,7 +1387,10 @@
             "$ref": "#/components/schemas/MoveCapabilityCheck"
           },
           "move_backend": {
-            "const": "native",
+            "enum": [
+              "native",
+              "fuse_checked_rename"
+            ],
             "title": "Move Backend",
             "type": "string"
           },

@@ -30,6 +30,9 @@ key、额外字段、超限 body/page/text 会被拒绝。
 - `POST /api/v1/operations/runs/{run_id}/recover`
 - `POST /api/v1/operations/runs/{run_id}/folder-disposition/recover`
 
+移动能力探测的 `degraded` 状态表示 Linux FUSE 正在使用
+`fuse_checked_rename`：执行前仍会重验目标不存在，但不承诺原子 no-replace。
+
 SSE 使用 durable PostgreSQL `event_id` 作为 `id`，通过 `Last-Event-ID` 恢复。
 cursor ahead/invalid fail closed。除 Admin-only 配置和目录选择接口外，浏览器投影
 只包含 allowlisted typed fields，不返回 absolute path、prompt、Secret、DSN、

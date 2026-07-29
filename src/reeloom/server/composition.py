@@ -391,7 +391,15 @@ def build_application(
                 folder = media = uncertain
             return {
                 "watch_id": watch.watch_id,
-                "move_backend": "native",
+                "move_backend": (
+                    "fuse_checked_rename"
+                    if any(
+                        item.move_backend.value
+                        == "fuse_checked_rename"
+                        for item in (folder, media)
+                    )
+                    else "native"
+                ),
                 "folder_disposition": folder.payload(),
                 "media_apply": media.payload(),
             }

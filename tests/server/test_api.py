@@ -279,6 +279,42 @@ def test_admin_can_probe_exact_watch_move_capability() -> None:
     }
 
 
+def test_move_probe_exposes_fuse_degraded_backend() -> None:
+    async def probe(watch_id: str) -> dict[str, object]:
+        return {
+            "watch_id": watch_id,
+            "move_backend": "fuse_checked_rename",
+            "folder_disposition": {
+                "status": "degraded",
+                "failure_code": None,
+            },
+            "media_apply": {
+                "status": "degraded",
+                "failure_code": None,
+            },
+        }
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(move_capability_probe=probe)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            return await client.post(
+                "/api/v1/admin/watches/watch-1/move-capability-probe",
+                json={},
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert response.json()["move_backend"] == "fuse_checked_rename"
+
+
 def test_admin_can_delete_an_eligible_run_record() -> None:
     deleted: list[str] = []
 

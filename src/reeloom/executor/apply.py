@@ -11,7 +11,7 @@ from reeloom.executor.errors import (
     atomic_move_error_code,
     filesystem_error_code,
 )
-from reeloom.executor.atomic_rename import rename_noreplace
+from reeloom.executor.atomic_rename import rename_noreplace_compatible
 from reeloom.executor.manifest import (
     ExecutionManifest,
     ExecutionMove,
@@ -28,7 +28,7 @@ from reeloom.ports.journals import (
 )
 from reeloom.ports.plans import PlanStore
 
-_rename_noreplace = rename_noreplace
+_rename_noreplace = rename_noreplace_compatible
 
 
 class ApplyStatus(StrEnum):
