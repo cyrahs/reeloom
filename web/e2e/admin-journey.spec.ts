@@ -168,6 +168,17 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
         plan_hash: planHash,
         plan_kind: "initial",
         counts: { move: 1, unmapped: 0, unchanged: 0 },
+        review: {
+          status: "system_only",
+          agent_summary: null,
+          advisory_only: true,
+          coverage: {
+            total_unmapped: 0,
+            agent_explained: 0,
+            system_verified: 0,
+            fallback: 0,
+          },
+        },
         items: [
           {
             index: 0,
@@ -176,6 +187,7 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
             kind: "video",
             source: "episode.mkv",
             destination: "Series/Season 01/Series - S01E01.mkv",
+            explanation: null,
           },
         ],
         next_after: null,
@@ -215,6 +227,10 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
   });
 
   await page.goto("/#/runs/run-1");
+  await expect(
+    page.getByRole("heading", { name: "计划说明" }),
+  ).toBeVisible();
+  await expect(page.getByText("仅系统证据")).toBeVisible();
   const approveButton = page.getByRole("button", {
     name: "审批并执行此 exact plan",
   });

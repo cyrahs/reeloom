@@ -186,12 +186,32 @@ const previewItemFields = {
   kind: z.enum(["video", "subtitle"]),
   source: z.string(),
 };
+const previewExplanationSchema = z
+  .object({
+    reason_code: z.enum([
+      "existing_episode",
+      "possible_existing_movie",
+      "extra_video",
+      "ambiguous_mapping",
+      "unsupported_content",
+      "duplicate_candidate",
+      "not_selected",
+      "other",
+    ]),
+    agent_detail: z.string().max(1024).nullable(),
+    verification: z.enum(["verified", "advisory", "fallback"]),
+    season: z.number().int().min(0).max(999).nullable(),
+    episode: z.number().int().min(1).max(100_000).nullable(),
+    related_video_id: z.string().nullable(),
+  })
+  .strict();
 const previewItemSchema = z.discriminatedUnion("disposition", [
   z
     .object({
       ...previewItemFields,
       disposition: z.literal("move"),
       destination: z.string(),
+      explanation: z.null(),
     })
     .strict(),
   z
@@ -199,6 +219,7 @@ const previewItemSchema = z.discriminatedUnion("disposition", [
       ...previewItemFields,
       disposition: z.literal("unmapped"),
       destination: z.null(),
+      explanation: previewExplanationSchema,
     })
     .strict(),
   z
@@ -206,6 +227,7 @@ const previewItemSchema = z.discriminatedUnion("disposition", [
       ...previewItemFields,
       disposition: z.literal("unchanged"),
       destination: z.null(),
+      explanation: z.null(),
     })
     .strict(),
 ]);
@@ -221,6 +243,25 @@ export const previewSchema = z
         move: z.number().int().nonnegative(),
         unmapped: z.number().int().nonnegative(),
         unchanged: z.number().int().nonnegative(),
+      })
+      .strict(),
+    review: z
+      .object({
+        status: z.enum([
+          "agent_and_system",
+          "system_only",
+          "unavailable",
+        ]),
+        agent_summary: z.string().max(4096).nullable(),
+        advisory_only: z.literal(true),
+        coverage: z
+          .object({
+            total_unmapped: z.number().int().nonnegative(),
+            agent_explained: z.number().int().nonnegative(),
+            system_verified: z.number().int().nonnegative(),
+            fallback: z.number().int().nonnegative(),
+          })
+          .strict(),
       })
       .strict(),
     items: z.array(previewItemSchema),

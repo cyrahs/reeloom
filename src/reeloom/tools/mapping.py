@@ -19,6 +19,7 @@ from reeloom.kernel.inventory import (
 )
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import normalize_plan_review
 from reeloom.kernel.subtitles import (
     MAX_SUBTITLE_SAMPLE_BYTES,
     detect_subtitle_variant as classify_subtitle_variant,
@@ -33,11 +34,12 @@ from reeloom.runtime.events import (
     ArchiveDirectoryListed,
     ArchiveSearchObserved,
     MappingRejected,
+    MappingReviewCaptured,
     MappingSubmitted,
     MovieMappingSubmitted,
     SubtitleVariantDetected,
 )
-from reeloom.runtime.state import MappingValidationIssue, Phase
+from reeloom.runtime.state import MappingValidationIssue, Phase, RunState
 from reeloom.runtime.tool_runtime import ToolRuntime
 from reeloom.tools.candidates import SnapshotCandidateSource
 
@@ -567,6 +569,26 @@ def _validation_issue(error: DomainError) -> MappingValidationIssue:
     )
 
 
+def _verified_inventory_conflicts(
+    state: RunState,
+) -> tuple[tuple[CandidateId, int, int], ...]:
+    conflicts: list[tuple[CandidateId, int, int]] = []
+    for issue in state.mapping_conflicts:
+        if issue.code != ErrorCode.INVENTORY_CONFLICT.value:
+            continue
+        context = dict(issue.context)
+        try:
+            candidate_id = CandidateId.parse(context["video_id"])
+            season = context["season"]
+            episode = context["episode"]
+            if type(season) is not int or type(episode) is not int:
+                continue
+        except (DomainError, KeyError, TypeError, ValueError):
+            continue
+        conflicts.append((candidate_id, season, episode))
+    return tuple(conflicts)
+
+
 def _mapping_rejection(
     runtime: ToolRuntime,
     *,
@@ -605,6 +627,7 @@ async def submit_mapping(
     *,
     call_id: str,
     payload: object,
+    review: object = None,
 ) -> str:
     tool_name = "submit_mapping"
     rejection = _begin(runtime, call_id=call_id, tool_name=tool_name)
@@ -686,6 +709,21 @@ async def submit_mapping(
             issue=_validation_issue(error),
         )
 
+    mapped_ids = frozenset(
+        [item.video_id for item in mapping.videos]
+        + [item.subtitle_id for item in mapping.subtitles]
+    )
+    runtime.store.append(
+        MappingReviewCaptured(
+            call_id=call_id,
+            review=normalize_plan_review(
+                review,
+                candidate_ids=state.candidate_ids or (),
+                mapped_ids=mapped_ids,
+                verified_conflicts=_verified_inventory_conflicts(state),
+            ),
+        )
+    )
     runtime.store.append(
         MappingSubmitted(
             call_id=call_id,
@@ -712,6 +750,7 @@ async def submit_movie_mapping(
     *,
     call_id: str,
     payload: object,
+    review: object = None,
 ) -> str:
     """Validate a complete single-feature Movie mapping."""
 
@@ -770,6 +809,19 @@ async def submit_movie_mapping(
             call_id=call_id,
             issue=_validation_issue(error),
         )
+    runtime.store.append(
+        MappingReviewCaptured(
+            call_id=call_id,
+            review=normalize_plan_review(
+                review,
+                candidate_ids=state.candidate_ids or (),
+                mapped_ids=frozenset(
+                    (mapping.video_id, *mapping.subtitle_ids)
+                ),
+                verified_conflicts=_verified_inventory_conflicts(state),
+            ),
+        )
+    )
     runtime.store.append(
         MovieMappingSubmitted(
             call_id=call_id,

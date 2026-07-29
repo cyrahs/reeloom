@@ -14,6 +14,7 @@ from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
     MappingRejected,
+    MappingReviewCaptured,
     MappingSubmitted,
     ModelUsageRecorded,
     MoveApplied,
@@ -172,6 +173,14 @@ def _attributes(event: RuntimeEvent) -> dict[str, TraceValue]:
         return {"variant": event.variant.value}
     if isinstance(event, MappingRejected):
         return {"code": _safe_code(event.issue.code)}
+    if isinstance(event, MappingReviewCaptured):
+        return {
+            "item_count": len(event.review.items),
+            "verified_count": sum(
+                item.verification.value == "verified"
+                for item in event.review.items
+            ),
+        }
     if isinstance(event, MappingSubmitted):
         return {
             "subtitle_count": len(event.mapping.subtitles),

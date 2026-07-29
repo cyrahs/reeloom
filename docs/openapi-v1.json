@@ -1424,6 +1424,10 @@
             "title": "Disposition",
             "type": "string"
           },
+          "explanation": {
+            "title": "Explanation",
+            "type": "null"
+          },
           "index": {
             "minimum": 0.0,
             "title": "Index",
@@ -1448,7 +1452,8 @@
           "kind",
           "source",
           "disposition",
-          "destination"
+          "destination",
+          "explanation"
         ],
         "title": "MovePreviewItem",
         "type": "object"
@@ -1548,6 +1553,90 @@
         "title": "PlanPreviewCounts",
         "type": "object"
       },
+      "PlanPreviewExplanation": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_detail": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Detail"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode"
+          },
+          "reason_code": {
+            "enum": [
+              "existing_episode",
+              "possible_existing_movie",
+              "extra_video",
+              "ambiguous_mapping",
+              "unsupported_content",
+              "duplicate_candidate",
+              "not_selected",
+              "other"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "related_video_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Related Video Id"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "maximum": 999.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "verification": {
+            "enum": [
+              "verified",
+              "advisory",
+              "fallback"
+            ],
+            "title": "Verification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason_code",
+          "verification",
+          "related_video_id"
+        ],
+        "title": "PlanPreviewExplanation",
+        "type": "object"
+      },
       "PlanPreviewResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1595,6 +1684,9 @@
             "title": "Plan Kind",
             "type": "string"
           },
+          "review": {
+            "$ref": "#/components/schemas/PlanReviewSummary"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -1611,9 +1703,84 @@
           "plan_hash",
           "plan_kind",
           "counts",
+          "review",
           "items"
         ],
         "title": "PlanPreviewResponse",
+        "type": "object"
+      },
+      "PlanReviewCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_explained": {
+            "minimum": 0.0,
+            "title": "Agent Explained",
+            "type": "integer"
+          },
+          "fallback": {
+            "minimum": 0.0,
+            "title": "Fallback",
+            "type": "integer"
+          },
+          "system_verified": {
+            "minimum": 0.0,
+            "title": "System Verified",
+            "type": "integer"
+          },
+          "total_unmapped": {
+            "minimum": 0.0,
+            "title": "Total Unmapped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_unmapped",
+          "agent_explained",
+          "system_verified",
+          "fallback"
+        ],
+        "title": "PlanReviewCoverage",
+        "type": "object"
+      },
+      "PlanReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "advisory_only": {
+            "const": true,
+            "title": "Advisory Only",
+            "type": "boolean"
+          },
+          "agent_summary": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Summary"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/PlanReviewCoverage"
+          },
+          "status": {
+            "enum": [
+              "agent_and_system",
+              "system_only",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "advisory_only",
+          "coverage"
+        ],
+        "title": "PlanReviewSummary",
         "type": "object"
       },
       "ProviderProbeRequest": {
@@ -2215,6 +2382,10 @@
             "title": "Disposition",
             "type": "string"
           },
+          "explanation": {
+            "title": "Explanation",
+            "type": "null"
+          },
           "index": {
             "minimum": 0.0,
             "title": "Index",
@@ -2239,7 +2410,8 @@
           "kind",
           "source",
           "disposition",
-          "destination"
+          "destination",
+          "explanation"
         ],
         "title": "UnchangedPreviewItem",
         "type": "object"
@@ -2260,6 +2432,9 @@
             "title": "Disposition",
             "type": "string"
           },
+          "explanation": {
+            "$ref": "#/components/schemas/PlanPreviewExplanation"
+          },
           "index": {
             "minimum": 0.0,
             "title": "Index",
@@ -2284,7 +2459,8 @@
           "kind",
           "source",
           "disposition",
-          "destination"
+          "destination",
+          "explanation"
         ],
         "title": "UnmappedPreviewItem",
         "type": "object"

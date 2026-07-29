@@ -5,6 +5,7 @@ import uuid
 
 from psycopg_pool import ConnectionPool
 
+from reeloom.kernel.plan_review import PLAN_REVIEW_SCHEMA, PlanReview
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.event_codec import encode_event
 from reeloom.runtime.errors import RuntimeDomainError
@@ -538,6 +539,7 @@ class PostgresInteractionRepository:
                             STATE_PROJECTION_SCHEMA,
                             patch_state(
                                 runtime[14],
+                                schema_version=str(runtime[13]),
                                 event_count=int(runtime[0]) + 1,
                                 failures=(
                                     int(runtime[7])
@@ -653,6 +655,25 @@ class PostgresInteractionRepository:
                                     is InteractionKind.REAPPLY
                                     else "initial"
                                 ),
+                            ),
+                        )
+                        review = (
+                            execution.plan_review
+                            or PlanReview.system_only()
+                        )
+                        connection.execute(
+                            """
+                            INSERT INTO plan_reviews
+                                (run_id, version, plan_hash,
+                                 schema_version, payload)
+                            VALUES (%s, %s, %s, %s, %s::jsonb)
+                            """,
+                            (
+                                reservation.run_id,
+                                version,
+                                execution.plan_hash,
+                                PLAN_REVIEW_SCHEMA,
+                                review.canonical_bytes().decode("ascii"),
                             ),
                         )
                         connection.execute(

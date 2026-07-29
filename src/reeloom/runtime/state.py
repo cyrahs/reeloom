@@ -12,6 +12,7 @@ from reeloom.kernel.archive_directory import (
 )
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.initial_plan import InitialPlan
@@ -134,6 +135,9 @@ class RunState:
     ] = ()
     mapping_draft: MappingDraft | None = None
     movie_mapping_draft: MovieMappingDraft | None = None
+    mapping_review: PlanReview | None = None
+    mapping_review_call_id: str | None = None
+    mapping_conflicts: tuple[MappingValidationIssue, ...] = ()
     rename_plan: InitialPlan | None = None
     plan_hash: str | None = None
     approval_id: str | None = None

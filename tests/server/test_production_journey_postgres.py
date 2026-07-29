@@ -622,10 +622,12 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                         SELECT
                             (SELECT count(*) FROM plan_lineage
                              WHERE run_id = %s),
+                            (SELECT count(*) FROM plan_reviews
+                             WHERE run_id = %s),
                             (SELECT count(*) FROM approvals
                              WHERE run_id = %s)
                         """,
-                        (run_id, run_id),
+                        (run_id, run_id, run_id),
                     ).fetchone()
                     final_projection = connection.execute(
                         """
@@ -635,7 +637,7 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                         """,
                         (run_id,),
                     ).fetchone()
-                assert tuple(int(item) for item in counts) == (4, 2)
+                assert tuple(int(item) for item in counts) == (4, 4, 2)
                 assert tuple(str(item) for item in final_projection) == (
                     "completed",
                     amendment_hash,

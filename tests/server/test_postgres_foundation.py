@@ -71,6 +71,16 @@ def test_empty_database_migration_is_idempotent_and_healthy() -> None:
         health = control.health()
         assert health.schema_version == EXPECTED_SCHEMA_VERSION
         assert health.postgres_major in {16, 17, 18}
+        with control.pool.connection() as connection:
+            immutable = connection.execute(
+                """
+                SELECT count(*)
+                FROM pg_trigger
+                WHERE tgname = 'plan_reviews_immutable'
+                  AND NOT tgisinternal
+                """
+            ).fetchone()
+        assert immutable is not None and int(immutable[0]) == 1
     finally:
         control.close()
 

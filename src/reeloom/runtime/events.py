@@ -12,6 +12,7 @@ from reeloom.kernel.archive_directory import (
 )
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.initial_plan import InitialPlan
@@ -97,6 +98,12 @@ class SubtitleVariantDetected:
 class MappingRejected:
     call_id: str
     issue: MappingValidationIssue
+
+
+@dataclass(frozen=True, slots=True)
+class MappingReviewCaptured:
+    call_id: str
+    review: PlanReview
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +237,7 @@ RuntimeEvent: TypeAlias = (
     | ArchiveDirectoryListed
     | SubtitleVariantDetected
     | MappingRejected
+    | MappingReviewCaptured
     | MappingSubmitted
     | MovieMappingSubmitted
     | PlanBuilt

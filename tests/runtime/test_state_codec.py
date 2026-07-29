@@ -16,6 +16,7 @@ from reeloom.kernel.archive_directory import (
     ArchiveSearchRecord,
 )
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import MovieIdentity
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.budget import RunBudget
@@ -23,6 +24,7 @@ from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     ModelUsageRecorded,
     MovieMappingSubmitted,
+    MappingReviewCaptured,
     MovieSelected,
     RunStarted,
     TmdbCandidatesObserved,
@@ -31,7 +33,12 @@ from reeloom.runtime.events import (
     ToolSucceeded,
 )
 from reeloom.runtime.reducer import reduce_event
-from reeloom.runtime.state_codec import decode_state, encode_state
+from reeloom.runtime.state_codec import (
+    STATE_PROJECTION_SCHEMA,
+    V3_STATE_PROJECTION_SCHEMA,
+    decode_state,
+    encode_state,
+)
 
 
 def test_run_state_projection_round_trips_without_event_history() -> None:
@@ -71,6 +78,33 @@ def test_run_state_projection_rejects_unknown_fields() -> None:
 
     with pytest.raises(Exception):
         decode_state(payload, load_plan=lambda _plan_hash: pytest.fail())
+
+
+def test_projection_schema_label_must_match_payload_shape() -> None:
+    state = reduce_event(
+        None,
+        RunStarted("run-1", TmdbWorkType.ANIME),
+    )
+    payload = encode_state(state)
+    payload.pop("mapping_review")
+    payload.pop("mapping_review_call_id")
+    payload.pop("mapping_conflicts")
+
+    with pytest.raises(ValueError):
+        decode_state(
+            payload,
+            load_plan=lambda _plan_hash: pytest.fail(),
+            schema_version=STATE_PROJECTION_SCHEMA,
+        )
+
+    assert (
+        decode_state(
+            payload,
+            load_plan=lambda _plan_hash: pytest.fail(),
+            schema_version=V3_STATE_PROJECTION_SCHEMA,
+        )
+        == state
+    )
 
 
 def test_directory_observations_round_trip_in_v3_projection() -> None:
@@ -210,6 +244,9 @@ def test_legacy_episode_projection_remains_readable() -> None:
     payload.pop("archive_searches")
     payload.pop("archive_directory_listings")
     payload.pop("retryable_directory_failure")
+    payload.pop("mapping_review")
+    payload.pop("mapping_review_call_id")
+    payload.pop("mapping_conflicts")
 
     assert decode_state(
         payload,
@@ -247,6 +284,13 @@ def test_movie_run_state_projection_round_trips() -> None:
     state = reduce_event(
         state,
         ToolRequested("mapping", "submit_mapping"),
+    )
+    state = reduce_event(
+        state,
+        MappingReviewCaptured(
+            "mapping",
+            PlanReview.system_only(),
+        ),
     )
     state = reduce_event(
         state,

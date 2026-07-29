@@ -16,12 +16,14 @@ from reeloom.kernel.candidates import (
 from reeloom.kernel.archive_directory import ArchiveDirectoryCapability
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.ports.subtitles import SubtitleSample
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
+    MappingReviewCaptured,
     MappingSubmitted,
     RunStarted,
     SeriesSelected,
@@ -547,6 +549,42 @@ def test_reducer_rejects_mapping_from_foreign_candidate_ids() -> None:
     assert error.value.code is RuntimeErrorCode.INVALID_TRANSITION
 
 
+def test_reducer_rejects_review_from_a_different_mapping_call() -> None:
+    candidates = _candidates()
+    runtime, source = _runtime(candidates)
+    asyncio.run(_observe_archive(runtime))
+    mapping = MappingDraft.from_dict(
+        _payload(episode=1),
+        candidates=candidates,
+        catalog=EpisodeCatalog.from_counts({1: 2}),
+    )
+    runtime.begin(call_id="mapping-a", tool_name="submit_mapping")
+    runtime.store.append(
+        MappingReviewCaptured(
+            call_id="mapping-a",
+            review=PlanReview.system_only(),
+        )
+    )
+    runtime.reject(
+        call_id="mapping-a",
+        tool_name="submit_mapping",
+        code="temporary",
+        retryable=True,
+    )
+    runtime.begin(call_id="mapping-b", tool_name="submit_mapping")
+
+    with pytest.raises(RuntimeDomainError) as error:
+        runtime.store.append(
+            MappingSubmitted(
+                call_id="mapping-b",
+                candidate_snapshot_id=source.snapshot_id,
+                mapping=mapping,
+            )
+        )
+
+    assert error.value.code is RuntimeErrorCode.INVALID_TRANSITION
+
+
 def test_domain_observation_is_bound_once_to_exact_call_id() -> None:
     runtime, _ = _runtime(_candidates())
     runtime.begin(call_id="season-extra", tool_name="get_tmdb_season")
@@ -738,3 +776,38 @@ def test_subtitle_variant_must_be_detected_before_mapping() -> None:
     assert "read_file" not in raw_detection
     assert provider.requested_max_bytes == 64 * 1024
     assert accepted["ok"] is True
+
+
+def test_mapping_captures_review_without_changing_mapping_success() -> None:
+    candidates = _candidates(with_subtitle=True)
+    runtime, source = _runtime(candidates)
+    asyncio.run(_observe_archive(runtime))
+
+    accepted = json.loads(
+        asyncio.run(
+            submit_mapping(
+                runtime,
+                source,
+                call_id="mapping-review",
+                payload=_payload(episode=1),
+                review={
+                    "summary": "字幕无法可靠关联。",
+                    "unmapped_explanations": [
+                        {
+                            "candidate_id": "subtitle:1",
+                            "reason": "ambiguous_mapping",
+                            "detail": "无法确认对应视频。",
+                            "season": None,
+                            "episode": None,
+                            "related_video_id": None,
+                        }
+                    ],
+                },
+            )
+        )
+    )
+
+    assert accepted["ok"] is True
+    assert runtime.state.phase is Phase.BUILD_PLAN
+    assert runtime.state.mapping_review is not None
+    assert runtime.state.mapping_review.agent_summary == "字幕无法可靠关联。"

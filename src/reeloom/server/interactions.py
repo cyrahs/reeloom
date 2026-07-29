@@ -11,6 +11,7 @@ from typing import Protocol
 
 from agents.items import TResponseInputItem
 
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.runtime.budget import RunBudget
 from reeloom.server.session import _copy
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -68,6 +69,7 @@ class InteractionExecution:
     lineage_parent_hash: str | None = None
     execution_schema_version: str | None = None
     archive_report: dict[str, object] | None = None
+    plan_review: PlanReview | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -126,6 +128,8 @@ class InteractionExecution:
                 > 64 * 1024
             ):
                 raise ValueError
+            if self.plan_review is not None:
+                self.plan_review.canonical_bytes()
         except Exception:
             raise ServerError(
                 ServerErrorCode.INTERACTION_INVALID_RESULT

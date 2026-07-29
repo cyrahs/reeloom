@@ -55,6 +55,12 @@ source/destination。服务端先固定 PostgreSQL lineage，再在事务外加�
 canonical content-addressed plan。响应不包含 absolute root、source identity、
 digest、canonical bytes、journal 或 rollback。
 
+Preview 顶层的 `review` 与每个 `unmapped` item 的 `explanation` 绑定同一
+plan version/hash。Agent 文本始终标记为 advisory；`verified` 只表示服务端已用
+持久化库存事实核验。历史计划缺少 review sidecar 时仅对明确的
+`inventory_conflict` 做只读重建，证据不足则返回 `unavailable`。这些说明不进入
+plan hash、审批或 Executor。
+
 Config 中每个 watch 直接绑定入站 `root` 与最终 `library_root`；`work_type`
 不参与路径选择。Admin GET 返回每个 watch 的 `root` 与 `library_root`，方便
 结构化配置表单显示当前路径；provider secret 仍只返回

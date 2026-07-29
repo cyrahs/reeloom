@@ -197,6 +197,42 @@ class PlanPreviewCounts(_StrictModel):
     unchanged: int = Field(ge=0)
 
 
+class PlanReviewCoverage(_StrictModel):
+    total_unmapped: int = Field(ge=0)
+    agent_explained: int = Field(ge=0)
+    system_verified: int = Field(ge=0)
+    fallback: int = Field(ge=0)
+
+
+class PlanReviewSummary(_StrictModel):
+    status: Literal[
+        "agent_and_system",
+        "system_only",
+        "unavailable",
+    ]
+    agent_summary: str | None = Field(default=None, max_length=4096)
+    advisory_only: Literal[True]
+    coverage: PlanReviewCoverage
+
+
+class PlanPreviewExplanation(_StrictModel):
+    reason_code: Literal[
+        "existing_episode",
+        "possible_existing_movie",
+        "extra_video",
+        "ambiguous_mapping",
+        "unsupported_content",
+        "duplicate_candidate",
+        "not_selected",
+        "other",
+    ]
+    agent_detail: str | None = Field(default=None, max_length=1024)
+    verification: Literal["verified", "advisory", "fallback"]
+    season: int | None = Field(default=None, ge=0, le=999)
+    episode: int | None = Field(default=None, ge=1, le=100_000)
+    related_video_id: str | None
+
+
 class _PlanPreviewItem(_StrictModel):
     index: int = Field(ge=0)
     candidate_id: str
@@ -207,16 +243,19 @@ class _PlanPreviewItem(_StrictModel):
 class MovePreviewItem(_PlanPreviewItem):
     disposition: Literal["move"]
     destination: str
+    explanation: None
 
 
 class UnmappedPreviewItem(_PlanPreviewItem):
     disposition: Literal["unmapped"]
     destination: None
+    explanation: PlanPreviewExplanation
 
 
 class UnchangedPreviewItem(_PlanPreviewItem):
     disposition: Literal["unchanged"]
     destination: None
+    explanation: None
 
 
 class PlanPreviewResponse(_StrictModel):
@@ -225,6 +264,7 @@ class PlanPreviewResponse(_StrictModel):
     plan_hash: str
     plan_kind: Literal["initial", "amendment"]
     counts: PlanPreviewCounts
+    review: PlanReviewSummary
     items: list[
         MovePreviewItem | UnmappedPreviewItem | UnchangedPreviewItem
     ]

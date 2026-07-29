@@ -4,7 +4,9 @@ import { createElement } from "react";
 
 import {
   ArchiveReportCard,
+  PlanReviewCard,
   canApproveCurrentPlan,
+  shouldShowArchiveReport,
 } from "../src/pages/RunPage";
 import { DeleteRunDialog } from "../src/components/RunDeletion";
 import { errorMessage } from "../src/components/Status";
@@ -13,6 +15,12 @@ test("only the current durable plan can be approved", () => {
   expect(canApproveCurrentPlan("sha256:head", "sha256:head")).toBe(true);
   expect(canApproveCurrentPlan("sha256:head", "sha256:old")).toBe(false);
   expect(canApproveCurrentPlan(null, "sha256:head")).toBe(false);
+});
+
+test("archive reference is only shown for the exact current plan", () => {
+  expect(shouldShowArchiveReport("sha256:head", "sha256:head")).toBe(true);
+  expect(shouldShowArchiveReport("sha256:old", "sha256:head")).toBe(false);
+  expect(shouldShowArchiveReport(null, "sha256:head")).toBe(false);
 });
 
 test("permission failures have actionable text", () => {
@@ -72,4 +80,25 @@ test("archive reference renders untrusted names as plain text", () => {
   expect(screen.getByText(malicious)).toBeInTheDocument();
   expect(container.querySelector("img")).toBeNull();
   expect(screen.getByText(/不能视为完整库存/)).toBeInTheDocument();
+});
+
+test("plan review labels Agent text as advisory and renders it literally", () => {
+  const malicious = "<script>alert(1)</script>";
+  const { container } = render(createElement(PlanReviewCard, {
+    review: {
+      status: "agent_and_system",
+      agent_summary: malicious,
+      advisory_only: true,
+      coverage: {
+        total_unmapped: 1,
+        agent_explained: 1,
+        system_verified: 1,
+        fallback: 0,
+      },
+    },
+  }));
+
+  expect(screen.getByText(malicious)).toBeInTheDocument();
+  expect(screen.getByText(/Agent 判断（仅供审查）/)).toBeInTheDocument();
+  expect(container.querySelector("script")).toBeNull();
 });

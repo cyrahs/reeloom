@@ -12,6 +12,7 @@ from reeloom.kernel.archive_directory import (
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import (
     MovieIdentity,
     SeriesIdentity,
@@ -46,7 +47,8 @@ from reeloom.runtime.state import (
 
 LEGACY_STATE_PROJECTION_SCHEMA = "runtime-state-v1"
 V2_STATE_PROJECTION_SCHEMA = "runtime-state-v2"
-STATE_PROJECTION_SCHEMA = "runtime-state-v3"
+V3_STATE_PROJECTION_SCHEMA = "runtime-state-v3"
+STATE_PROJECTION_SCHEMA = "runtime-state-v4"
 _LEGACY_FIELDS = frozenset(
     {
         "applied_count",
@@ -95,13 +97,19 @@ _V3_FIELDS = _V2_FIELDS | {
     "archive_directory_listings",
     "archive_searches",
 }
-_FIELDS = _V3_FIELDS | {"retryable_directory_failure"}
+_V3_CURRENT_FIELDS = _V3_FIELDS | {"retryable_directory_failure"}
+_FIELDS = _V3_CURRENT_FIELDS | {
+    "mapping_conflicts",
+    "mapping_review",
+    "mapping_review_call_id",
+}
 
 
 def is_supported_projection_schema(value: object) -> bool:
     return value in {
         LEGACY_STATE_PROJECTION_SCHEMA,
         V2_STATE_PROJECTION_SCHEMA,
+        V3_STATE_PROJECTION_SCHEMA,
         STATE_PROJECTION_SCHEMA,
     }
 
@@ -170,6 +178,15 @@ def encode_state(state: RunState) -> dict[str, object]:
             if state.movie_mapping_draft is None
             else _movie_mapping_payload(state.movie_mapping_draft)
         ),
+        "mapping_review": (
+            None
+            if state.mapping_review is None
+            else state.mapping_review.to_dict()
+        ),
+        "mapping_review_call_id": state.mapping_review_call_id,
+        "mapping_conflicts": [
+            _issue_payload(item) for item in state.mapping_conflicts
+        ],
         "model_tokens": state.model_tokens,
         "model_turns": state.model_turns,
         "observed_tool_calls": _pairs(state.observed_tool_calls),
@@ -234,9 +251,14 @@ def canonical_state(state: RunState) -> str:
 
 def patch_state(
     value: object,
+    *,
+    schema_version: str | None = None,
     **changes: object,
 ) -> str:
-    payload = _normalized_payload(value)
+    payload = _normalized_payload(
+        value,
+        schema_version=schema_version,
+    )
     if not set(changes) <= _FIELDS:
         raise ValueError
     decode_state(
@@ -483,8 +505,12 @@ def decode_state(
     value: object,
     *,
     load_plan: Callable[[str], InitialPlan],
+    schema_version: str | None = None,
 ) -> RunState:
-    payload = _normalized_payload(value)
+    payload = _normalized_payload(
+        value,
+        schema_version=schema_version,
+    )
     series = payload["selected_series"]
     if series is None:
         selected_series = None
@@ -600,6 +626,17 @@ def decode_state(
             if payload["movie_mapping_draft"] is None
             else _movie_mapping(payload["movie_mapping_draft"])
         ),
+        mapping_review=(
+            None
+            if payload["mapping_review"] is None
+            else PlanReview.from_dict(payload["mapping_review"])
+        ),
+        mapping_review_call_id=_optional_text(
+            payload["mapping_review_call_id"]
+        ),
+        mapping_conflicts=tuple(
+            _issue(item) for item in payload["mapping_conflicts"]
+        ),
         rename_plan=(
             None
             if rename_plan_hash is None
@@ -628,14 +665,41 @@ def decode_state(
     )
 
 
-def _normalized_payload(value: object) -> dict[str, object]:
+def _normalized_payload(
+    value: object,
+    *,
+    schema_version: str | None = None,
+) -> dict[str, object]:
     raw = require_object(value, field="run_state")
     keys = frozenset(raw)
+    if schema_version is not None:
+        expected = {
+            LEGACY_STATE_PROJECTION_SCHEMA: (_LEGACY_FIELDS,),
+            V2_STATE_PROJECTION_SCHEMA: (_V2_FIELDS,),
+            V3_STATE_PROJECTION_SCHEMA: (
+                _V3_FIELDS,
+                _V3_CURRENT_FIELDS,
+            ),
+            STATE_PROJECTION_SCHEMA: (_FIELDS,),
+        }.get(schema_version)
+        if expected is None or keys not in expected:
+            raise ValueError("projection schema does not match payload")
     if keys == _FIELDS:
         return dict(check_fields(raw, _FIELDS, field="run_state"))
+    if keys == _V3_CURRENT_FIELDS:
+        payload = dict(
+            check_fields(raw, _V3_CURRENT_FIELDS, field="run_state")
+        )
+        payload["mapping_review"] = None
+        payload["mapping_review_call_id"] = None
+        payload["mapping_conflicts"] = []
+        return payload
     if keys == _V3_FIELDS:
         payload = dict(check_fields(raw, _V3_FIELDS, field="run_state"))
         payload["retryable_directory_failure"] = False
+        payload["mapping_review"] = None
+        payload["mapping_review_call_id"] = None
+        payload["mapping_conflicts"] = []
         return payload
     if keys == _V2_FIELDS:
         payload = dict(check_fields(raw, _V2_FIELDS, field="run_state"))
@@ -643,6 +707,9 @@ def _normalized_payload(value: object) -> dict[str, object]:
         payload["archive_searches"] = []
         payload["archive_directory_listings"] = []
         payload["retryable_directory_failure"] = False
+        payload["mapping_review"] = None
+        payload["mapping_review_call_id"] = None
+        payload["mapping_conflicts"] = []
         return payload
     if keys == _LEGACY_FIELDS:
         payload = dict(
@@ -654,5 +721,8 @@ def _normalized_payload(value: object) -> dict[str, object]:
         payload["archive_searches"] = []
         payload["archive_directory_listings"] = []
         payload["retryable_directory_failure"] = False
+        payload["mapping_review"] = None
+        payload["mapping_review_call_id"] = None
+        payload["mapping_conflicts"] = []
         return payload
     return dict(check_fields(raw, _FIELDS, field="run_state"))

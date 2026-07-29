@@ -14,6 +14,7 @@ from reeloom.kernel.errors import DomainError
 from reeloom.kernel.inventory import MAX_INVENTORY_EPISODES
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
@@ -32,6 +33,7 @@ from reeloom.runtime.events import (
     ExecutionSettled,
     InteractionCompleted,
     MappingRejected,
+    MappingReviewCaptured,
     MappingSubmitted,
     MovieMappingSubmitted,
     MovieSelected,
@@ -758,7 +760,35 @@ def reduce_event(
             state,
             event_count=event_count,
             validation_issues=(event.issue,),
+            mapping_review=None,
+            mapping_review_call_id=None,
+            mapping_conflicts=(
+                state.mapping_conflicts
+                if (
+                    event.issue.code != "inventory_conflict"
+                    or event.issue in state.mapping_conflicts
+                    or len(state.mapping_conflicts) >= 128
+                )
+                else (*state.mapping_conflicts, event.issue)
+            ),
             observed_tool_calls=observed,
+        )
+
+    if isinstance(event, MappingReviewCaptured):
+        if (
+            state.phase not in {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
+            or not isinstance(event.review, PlanReview)
+            or not isinstance(event.call_id, str)
+            or not event.call_id
+            or (event.call_id, "submit_mapping")
+            not in state.pending_tool_calls
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            mapping_review=event.review,
+            mapping_review_call_id=event.call_id,
         )
 
     if isinstance(event, MovieMappingSubmitted):
@@ -777,6 +807,8 @@ def reduce_event(
             or event.candidate_snapshot_id != state.candidate_snapshot_id
             or state.candidate_ids is None
             or event.mapping.video_id not in state.candidate_ids
+            or state.mapping_review_call_id
+            not in {None, event.call_id}
             or any(
                 item not in state.candidate_ids or item not in detected
                 for item in event.mapping.subtitle_ids
@@ -809,6 +841,8 @@ def reduce_event(
             or state.candidate_ids is None
             or not state.episode_catalog_counts
             or state.inventory_episodes is None
+            or state.mapping_review_call_id
+            not in {None, event.call_id}
             or any(
                 subtitle.subtitle_id not in detected_subtitles
                 for subtitle in event.mapping.subtitles

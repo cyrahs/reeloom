@@ -411,6 +411,21 @@ def test_movie_agent_builds_plan_and_leaves_extra_video_unmapped(
                 arguments={
                     "video_id": "video:1",
                     "subtitle_ids": ["subtitle:1"],
+                    "review": {
+                        "summary": 7,
+                        "unmapped_explanations": [
+                            {
+                                "candidate_id": "video:2",
+                                "reason": "invented_reason",
+                                "detail": {"not": "text"},
+                                "season": "zero",
+                                "episode": None,
+                                "related_video_id": None,
+                                "unexpected": True,
+                            }
+                        ],
+                        "unexpected": True,
+                    },
                 },
                 call_id="mapping",
             ),
@@ -432,6 +447,9 @@ def test_movie_agent_builds_plan_and_leaves_extra_video_unmapped(
         str(item)
         for item in result.state.rename_plan.draft.unmapped_candidate_ids
     ) == ("video:2",)
+    assert result.state.mapping_review is not None
+    assert result.state.mapping_review.agent_summary is None
+    assert result.state.mapping_review.items == ()
     assert model.exhausted
 
 

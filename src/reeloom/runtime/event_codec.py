@@ -22,6 +22,7 @@ from reeloom.kernel.mapping import (
     VideoMapping,
 )
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import (
     MovieIdentity,
     SeriesIdentity,
@@ -44,6 +45,7 @@ from reeloom.runtime.events import (
     ExecutionSettled,
     InteractionCompleted,
     MappingRejected,
+    MappingReviewCaptured,
     MappingSubmitted,
     MovieMappingSubmitted,
     MovieSelected,
@@ -539,6 +541,11 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "call_id": event.call_id,
             "issue": _issue_payload(event.issue),
         }
+    if isinstance(event, MappingReviewCaptured):
+        return "mapping_review_captured", {
+            "call_id": event.call_id,
+            "review": event.review.to_dict(),
+        }
     if isinstance(event, MappingSubmitted):
         return "mapping_submitted", {
             "call_id": event.call_id,
@@ -861,6 +868,16 @@ def _event_from_payload(
     if event_type == "mapping_rejected":
         p = _fields(value, {"call_id", "issue"}, field=event_type)
         return MappingRejected(_str(p["call_id"]), _issue(p["issue"]))
+    if event_type == "mapping_review_captured":
+        p = _fields(
+            value,
+            {"call_id", "review"},
+            field=event_type,
+        )
+        return MappingReviewCaptured(
+            _str(p["call_id"]),
+            PlanReview.from_dict(p["review"]),
+        )
     if event_type == "mapping_submitted":
         p = _fields(
             value,

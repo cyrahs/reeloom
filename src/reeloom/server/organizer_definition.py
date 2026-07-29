@@ -9,10 +9,12 @@ from reeloom.server.agent_definition import AgentDefinitionRevision
 
 ORGANIZER_NAME = "EpisodeOrganizerAgent"
 LEGACY_ORGANIZER_SCHEMA_VERSION = "episode-organizer-v1"
-ORGANIZER_SCHEMA_VERSION = "episode-organizer-v2"
+PREVIOUS_ORGANIZER_SCHEMA_VERSION = "episode-organizer-v2"
+ORGANIZER_SCHEMA_VERSION = "episode-organizer-v3"
 MOVIE_ORGANIZER_NAME = "MovieOrganizerAgent"
 LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v1"
-MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v2"
+PREVIOUS_MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v2"
+MOVIE_ORGANIZER_SCHEMA_VERSION = "movie-organizer-v3"
 LEGACY_EPISODE_ORGANIZER_TOOL_NAMES = (
     "list_candidates",
     "search_tmdb",
@@ -54,3 +56,47 @@ def organizer_definition(
             else ORGANIZER_SCHEMA_VERSION
         ),
     )
+
+
+def is_supported_organizer_definition(
+    definition: AgentDefinitionRevision,
+    work_type: TmdbWorkType,
+    *,
+    allow_v1: bool,
+) -> bool:
+    movie = work_type is TmdbWorkType.MOVIE
+    name = MOVIE_ORGANIZER_NAME if movie else ORGANIZER_NAME
+    tools = (
+        MOVIE_ORGANIZER_TOOL_NAMES
+        if movie
+        else EPISODE_ORGANIZER_TOOL_NAMES
+    )
+    versions = (
+        (
+            MOVIE_ORGANIZER_SCHEMA_VERSION,
+            PREVIOUS_MOVIE_ORGANIZER_SCHEMA_VERSION,
+        )
+        if movie
+        else (
+            ORGANIZER_SCHEMA_VERSION,
+            PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+        )
+    )
+    accepted = {(version, tools) for version in versions}
+    if allow_v1:
+        accepted.add(
+            (
+                (
+                    LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION
+                    if movie
+                    else LEGACY_ORGANIZER_SCHEMA_VERSION
+                ),
+                (
+                    LEGACY_MOVIE_ORGANIZER_TOOL_NAMES
+                    if movie
+                    else LEGACY_EPISODE_ORGANIZER_TOOL_NAMES
+                ),
+            )
+        )
+    expected = (definition.schema_version, definition.tools)
+    return definition.name == name and expected in accepted

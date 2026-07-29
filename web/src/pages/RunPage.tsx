@@ -48,6 +48,10 @@ import {
 import { workTypeLabel } from "../workTypes";
 
 type ActionKind = "question" | "revision" | "reapply";
+type PreviewExplanationValue = Extract<
+  Preview["items"][number],
+  { disposition: "unmapped" }
+>["explanation"];
 type ActionAttempt = {
   kind: ActionKind;
   message: string;
@@ -394,6 +398,10 @@ export function RunPage({ runId }: { runId: string }) {
   const selectedPlan = lineage.data?.items.find(
     (item) => item.version === effectiveVersion,
   );
+  const archiveReportIsCurrent = shouldShowArchiveReport(
+    selectedPlan?.plan_hash ?? null,
+    run.data.plan_hash,
+  );
   const canApprove =
     available.has("approve_apply") &&
     canApproveCurrentPlan(
@@ -497,8 +505,14 @@ export function RunPage({ runId }: { runId: string }) {
 
       <div className="run-layout">
         <div className="run-main">
-          {run.data.archive_report ? (
+          {run.data.archive_report && archiveReportIsCurrent ? (
             <ArchiveReportCard report={run.data.archive_report} />
+          ) : run.data.archive_report && selectedPlan ? (
+            <section className="panel">
+              <p className="muted">
+                历史计划版本不显示当前计划的媒体库参考。
+              </p>
+            </section>
           ) : null}
           <section className="panel">
             <div className="panel-heading">
@@ -535,6 +549,7 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {currentPreview ? (
               <>
+                <PlanReviewCard review={currentPreview.review} />
                 <div className="count-strip">
                   <Count label="移动" value={currentPreview.counts.move} />
                   <Count label="未映射" value={currentPreview.counts.unmapped} />
@@ -812,6 +827,17 @@ export function canApproveCurrentPlan(
   );
 }
 
+export function shouldShowArchiveReport(
+  selectedPlanHash: string | null,
+  currentPlanHash: string | null,
+) {
+  return (
+    selectedPlanHash !== null &&
+    currentPlanHash !== null &&
+    selectedPlanHash === currentPlanHash
+  );
+}
+
 function mergeEvents(current: RunEvent[], incoming: RunEvent[]) {
   const byId = new Map(current.map((event) => [event.event_id, event]));
   for (const event of incoming) byId.set(event.event_id, event);
@@ -843,7 +869,7 @@ function PreviewGroups({
 }) {
   const groups = useMemo(
     () =>
-      (["move", "unmapped", "unchanged"] as const).map((disposition) => ({
+      (["unmapped", "move", "unchanged"] as const).map((disposition) => ({
         disposition,
         items: items.filter((item) => item.disposition === disposition),
       })),
@@ -857,7 +883,15 @@ function PreviewGroups({
             <h3>{dispositionLabel(group.disposition)}</h3>
             <div className="path-list">
               {group.items.map((item) => (
-                <article key={item.index}>
+                <article
+                  key={item.index}
+                  className={
+                    item.disposition === "unmapped" &&
+                    item.explanation.related_video_id
+                      ? "related-preview"
+                      : undefined
+                  }
+                >
                   <span className={`kind-icon ${item.kind}`}>
                     {item.kind === "video" ? "V" : "S"}
                   </span>
@@ -869,6 +903,12 @@ function PreviewGroups({
                         <code className="destination">{item.destination}</code>
                       </>
                     ) : null}
+                    {item.disposition === "unmapped" ? (
+                      <PreviewExplanation
+                        explanation={item.explanation}
+                        items={items}
+                      />
+                    ) : null}
                   </div>
                 </article>
               ))}
@@ -876,6 +916,77 @@ function PreviewGroups({
           </section>
         ) : null,
       )}
+    </div>
+  );
+}
+
+export function PlanReviewCard({ review }: { review: Preview["review"] }) {
+  return (
+    <section className="plan-rationale" aria-label="计划说明">
+      <div className="plan-rationale-heading">
+        <div>
+          <p className="eyebrow">PLAN RATIONALE</p>
+          <h3>计划说明</h3>
+        </div>
+        <span className={`review-status ${review.status}`}>
+          {reviewStatusLabel(review.status)}
+        </span>
+      </div>
+      {review.agent_summary ? (
+        <div className="review-source">
+          <strong>Agent 判断（仅供审查）</strong>
+          <p>{review.agent_summary}</p>
+        </div>
+      ) : (
+        <p className="muted">Agent 原始说明不可用。</p>
+      )}
+      <div className="review-source">
+        <strong>系统核验</strong>
+        <p>
+          已核验 {review.coverage.system_verified} 项；Agent 说明{" "}
+          {review.coverage.agent_explained} 项；通用 fallback{" "}
+          {review.coverage.fallback} 项。说明仅供审查，执行仍以 exact
+          plan hash 和路径预览为准。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function PreviewExplanation({
+  explanation,
+  items,
+}: {
+  explanation: PreviewExplanationValue;
+  items: Preview["items"];
+}) {
+  const related = explanation.related_video_id
+    ? items.find(
+        (item) => item.candidate_id === explanation.related_video_id,
+      )
+    : null;
+  return (
+    <div className="preview-explanation">
+      <span className={`verification ${explanation.verification}`}>
+        {verificationLabel(explanation.verification)}
+      </span>
+      <strong>{reasonLabel(explanation.reason_code)}</strong>
+      {explanation.agent_detail ? (
+        <p>
+          <span>Agent：</span>
+          {explanation.agent_detail}
+        </p>
+      ) : null}
+      <p>
+        <span>系统：</span>
+        {systemExplanation(explanation)}
+      </p>
+      {related ? (
+        <p>
+          <span>关联正片：</span>
+          <code>{related.source}</code>
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1063,6 +1174,11 @@ function ApproveDialog({
           <Count label="未映射" value={preview.counts.unmapped} />
           <Count label="保持不变" value={preview.counts.unchanged} />
         </div>
+        <p className="review-coverage">
+          计划说明：{reviewStatusLabel(preview.review.status)} · 系统核验{" "}
+          {preview.review.coverage.system_verified} / 未映射{" "}
+          {preview.review.coverage.total_unmapped}
+        </p>
         {folderDisposition ? (
           <div className="exact-hash">
             <span>
@@ -1203,4 +1319,50 @@ function folderActionLabel(value: "archive" | "fail" | "remove_empty") {
     fail: "移入 fail",
     remove_empty: "删除空目录",
   }[value];
+}
+
+function reviewStatusLabel(value: Preview["review"]["status"]) {
+  return {
+    agent_and_system: "Agent + 系统",
+    system_only: "仅系统证据",
+    unavailable: "历史说明不可用",
+  }[value];
+}
+
+function verificationLabel(
+  value: PreviewExplanationValue["verification"],
+) {
+  return {
+    verified: "冲突记录已核验",
+    advisory: "Agent 判断",
+    fallback: "系统 fallback",
+  }[value];
+}
+
+function reasonLabel(value: PreviewExplanationValue["reason_code"]) {
+  return {
+    existing_episode: "媒体库中已存在对应集数",
+    possible_existing_movie: "可能已经归档",
+    extra_video: "额外视频",
+    ambiguous_mapping: "映射不确定",
+    unsupported_content: "不支持的内容",
+    duplicate_candidate: "重复候选",
+    not_selected: "未进入最终映射",
+    other: "其他原因",
+  }[value];
+}
+
+function systemExplanation(explanation: PreviewExplanationValue) {
+  if (
+    explanation.verification === "verified" &&
+    explanation.reason_code === "existing_episode" &&
+    explanation.season !== null &&
+    explanation.episode !== null
+  ) {
+    return `系统记录了该候选对 S${String(explanation.season).padStart(2, "0")}E${String(explanation.episode).padStart(2, "0")} 的 inventory_conflict，因此保持未映射。`;
+  }
+  if (explanation.verification === "advisory") {
+    return "该原因来自 Agent 的审查结论，未获得确定性系统核验。";
+  }
+  return "该候选未进入最终映射，原始具体原因不可用。";
 }

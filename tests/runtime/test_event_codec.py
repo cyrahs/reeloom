@@ -15,6 +15,7 @@ from reeloom.kernel.archive_directory import (
 from reeloom.kernel.candidates import Candidate, CandidateSnapshot
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import (
     MovieIdentity,
     SeriesIdentity,
@@ -40,6 +41,7 @@ from reeloom.runtime.events import (
     ExecutionSettled,
     InteractionCompleted,
     MappingRejected,
+    MappingReviewCaptured,
     MappingSubmitted,
     MovieMappingSubmitted,
     MovieSelected,
@@ -214,6 +216,10 @@ def _event_samples() -> tuple[object, ...]:
                 "invalid",
                 (("candidate_ids", ("video:1",)),),
             ),
+        ),
+        MappingReviewCaptured(
+            "call-5",
+            PlanReview.system_only(),
         ),
         MappingSubmitted("call-5", "snapshot:1", mapping),
         MovieMappingSubmitted(

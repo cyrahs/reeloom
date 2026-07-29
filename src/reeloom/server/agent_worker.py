@@ -36,7 +36,11 @@ from reeloom.server.config import (
     WatchConfig,
 )
 from reeloom.server.config_repository import PostgresConfigRepository
-from reeloom.server.organizer_definition import organizer_definition
+from reeloom.server.organizer_definition import (
+    is_supported_organizer_definition,
+    organizer_definition,
+)
+from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.provider import ModelLease
 from reeloom.server.runtime_store import PostgresEventStore
 from reeloom.server.scheduler import AgentJobContext
@@ -124,12 +128,30 @@ class InitialAgentWorker:
                     RunStopped(reason=StopReason.AWAITING_APPROVAL)
                 )
             return state.plan_hash
-        definition = organizer_definition(work_type)
-        self.definitions.register_and_bind(
-            run_id=run_id,
-            definition=definition,
-            session_id=session_id,
-        )
+        current_definition = organizer_definition(work_type)
+        try:
+            definition, bound_session_id = self.definitions.load_bound(
+                run_id=run_id
+            )
+        except ServerError as error:
+            if error.code is not ServerErrorCode.INTERACTION_CONFLICT:
+                raise
+            self.definitions.register_and_bind(
+                run_id=run_id,
+                definition=current_definition,
+                session_id=session_id,
+            )
+            definition = current_definition
+            bound_session_id = session_id
+        if (
+            not is_supported_organizer_definition(
+                definition,
+                work_type,
+                allow_v1=False,
+            )
+            or bound_session_id != session_id
+        ):
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         session = RepositoryAgentSession(
             repository=self.sessions,
             run_id=run_id,

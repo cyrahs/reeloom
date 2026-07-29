@@ -416,6 +416,7 @@ def build_application(
                 plans=plans,
                 model_factory=effective_model_factory,
                 tmdb_factory=effective_tmdb_factory,
+                queries=PostgresQueries(database.pool, plans=plans),
             )
         )
         interactions = InteractionService(

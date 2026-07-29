@@ -14,6 +14,17 @@ const preview = {
   plan_hash: "sha256:head",
   plan_kind: "initial",
   counts: { move: 1, unmapped: 0, unchanged: 0 },
+  review: {
+    status: "system_only",
+    agent_summary: null,
+    advisory_only: true,
+    coverage: {
+      total_unmapped: 0,
+      agent_explained: 0,
+      system_verified: 0,
+      fallback: 0,
+    },
+  },
   next_after: null,
 };
 
@@ -29,6 +40,7 @@ test("preview destination is bound to the move disposition", () => {
           kind: "video",
           source: "source.mkv",
           destination: null,
+          explanation: null,
         },
       ],
     }).success,
@@ -44,6 +56,14 @@ test("preview destination is bound to the move disposition", () => {
           kind: "video",
           source: "source.mkv",
           destination: "unexpected.mkv",
+          explanation: {
+            reason_code: "not_selected",
+            agent_detail: null,
+            verification: "fallback",
+            season: null,
+            episode: null,
+            related_video_id: null,
+          },
         },
       ],
     }).success,

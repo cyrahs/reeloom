@@ -191,6 +191,10 @@ def _model() -> ScriptedModel:
                         }
                     ],
                     "subtitles": [],
+                    "review": {
+                        "summary": "唯一视频已映射为 S01E01。",
+                        "unmapped_explanations": [],
+                    },
                 },
                 call_id="mapping",
             ),
@@ -322,19 +326,24 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
             row = connection.execute(
                 """
                 SELECT r.agent_definition_hash, r.session_id, s.revision,
-                       d.payload->>'instructions'
+                       d.payload->>'instructions', review.payload
                 FROM runs AS r
                 JOIN agent_sessions AS s ON s.run_id = r.run_id
                 JOIN agent_definitions AS d
                   ON d.definition_hash = r.agent_definition_hash
+                JOIN plan_reviews AS review
+                  ON review.run_id = r.run_id
+                 AND review.plan_hash = %s
                 WHERE r.run_id = %s
                 """,
-                (registration.run_id,),
+                (plan_hash, registration.run_id),
             ).fetchone()
         assert row is not None
         assert str(row[1]) == registration.run_id
         assert int(row[2]) > 0
         assert EPISODE_ORGANIZER_INSTRUCTIONS in str(row[3])
+        assert row[4]["status"] == "agent_and_system"
+        assert row[4]["agent_summary"] == "唯一视频已映射为 S01E01。"
 
         legacy = AgentDefinitionRevision.create(
             name=ORGANIZER_NAME,

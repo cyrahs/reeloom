@@ -177,6 +177,17 @@ class _Queries:
             "plan_hash": "sha256:" + "a" * 64,
             "plan_kind": "initial",
             "counts": {"move": 1, "unmapped": 0, "unchanged": 0},
+            "review": {
+                "status": "system_only",
+                "agent_summary": None,
+                "advisory_only": True,
+                "coverage": {
+                    "total_unmapped": 0,
+                    "agent_explained": 0,
+                    "system_verified": 0,
+                    "fallback": 0,
+                },
+            },
             "items": [
                 {
                     "index": 0,
@@ -185,6 +196,7 @@ class _Queries:
                     "kind": "video",
                     "source": "<script>alert(1)</script>.mkv",
                     "destination": "Series (2026)/Season 01/Series - S01E01.mkv",
+                    "explanation": None,
                 }
             ],
             "next_after": None,

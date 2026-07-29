@@ -19,6 +19,7 @@ from reeloom.runtime.state import Phase, RunState
 from reeloom.runtime.store import StoredEvent
 from reeloom.ports.plans import PlanStore
 from reeloom.kernel.initial_plan import InitialPlan, parse_initial_plan
+from reeloom.kernel.plan_review import PLAN_REVIEW_SCHEMA, PlanReview
 
 _MAX_PROJECTION_BYTES = 10 * 1024 * 1024
 
@@ -200,6 +201,10 @@ class PostgresEventStore:
                             self._append_plan_lineage(
                                 connection,
                                 plan_hash=event.plan.plan_hash,
+                                review=(
+                                    next_state.mapping_review
+                                    or PlanReview.system_only()
+                                ),
                             )
             except RuntimeDomainError:
                 raise
@@ -238,6 +243,7 @@ class PostgresEventStore:
             state = decode_state(
                 projection[14],
                 load_plan=self._load_plan,
+                schema_version=str(projection[13]),
             )
             if (
                 state.run_id != self.run_id
@@ -273,6 +279,7 @@ class PostgresEventStore:
         connection: object,
         *,
         plan_hash: str,
+        review: PlanReview,
     ) -> None:
         row = connection.execute(
             """
@@ -292,6 +299,20 @@ class PostgresEventStore:
             VALUES (%s, %s, %s, %s, 'initial')
             """,
             (self.run_id, version, plan_hash, parent),
+        )
+        connection.execute(
+            """
+            INSERT INTO plan_reviews
+                (run_id, version, plan_hash, schema_version, payload)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            """,
+            (
+                self.run_id,
+                version,
+                plan_hash,
+                PLAN_REVIEW_SCHEMA,
+                review.canonical_bytes().decode("ascii"),
+            ),
         )
         connection.execute(
             """

@@ -11,6 +11,16 @@ from reeloom.kernel.initial_plan import verify_initial_plan_bytes
 from reeloom.kernel.movie_amendment import (
     verify_movie_amendment_bytes,
 )
+from reeloom.kernel.candidates import CandidateId
+from reeloom.kernel.errors import DomainError
+from reeloom.kernel.plan_review import (
+    PLAN_REVIEW_SCHEMA,
+    PlanReview,
+    PlanReviewItem,
+    PlanReviewReason,
+    PlanReviewVerification,
+    merge_plan_reviews,
+)
 from reeloom.server.archive_report import archive_report_from_projection
 from reeloom.server.config import ConfigRevision
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -94,6 +104,26 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
         issue = payload.get("issue")
         return {
             "code": issue.get("code") if isinstance(issue, dict) else None
+        }
+    if event_type == "mapping_review_captured":
+        review = payload.get("review")
+        items = review.get("items") if isinstance(review, dict) else None
+        return {
+            "status": (
+                review.get("status")
+                if isinstance(review, dict)
+                else None
+            ),
+            "item_count": len(items) if isinstance(items, list) else 0,
+            "verified_count": (
+                sum(
+                    item.get("verification") == "verified"
+                    for item in items
+                    if isinstance(item, dict)
+                )
+                if isinstance(items, list)
+                else 0
+            ),
         }
     if event_type == "mapping_submitted":
         mapping = payload.get("mapping")
@@ -225,6 +255,8 @@ class PostgresQueries:
                                      ? 'archive_report'
                                  AND interaction.result->'archive_report'
                                      IS NOT NULL
+                                 AND interaction.result->>'plan_hash'
+                                     = s.plan_hash
                                ORDER BY interaction.finished_at DESC,
                                         interaction.interaction_id DESC
                                LIMIT 1
@@ -766,9 +798,15 @@ class PostgresQueries:
             with self._pool.connection() as connection:
                 row = connection.execute(
                     """
-                    SELECT plan_hash, plan_kind
-                    FROM plan_lineage
-                    WHERE run_id = %s AND version = %s
+                    SELECT lineage.plan_hash, lineage.plan_kind,
+                           review.schema_version, review.payload
+                    FROM plan_lineage AS lineage
+                    LEFT JOIN plan_reviews AS review
+                      ON review.run_id = lineage.run_id
+                     AND review.version = lineage.version
+                     AND review.plan_hash = lineage.plan_hash
+                    WHERE lineage.run_id = %s
+                      AND lineage.version = %s
                     """,
                     (run_id, version),
                 ).fetchone()
@@ -782,6 +820,7 @@ class PostgresQueries:
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         plan_hash = str(row[0])
         plan_kind = str(row[1])
+        stored_review = row[3]
         if plan_kind not in {"initial", "amendment"}:
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         try:
@@ -821,33 +860,110 @@ class PostgresQueries:
             source.candidate_id: source for source in manifest.sources
         }
         moved = {move.source_id for move in manifest.moves}
-        items: list[dict[str, object]] = []
-        for move in manifest.moves:
-            source = sources[move.source_id]
-            items.append(
-                {
-                    "disposition": "move",
-                    "candidate_id": str(source.candidate_id),
-                    "kind": source.kind.value,
-                    "source": source.relative_path.as_posix(),
-                    "destination": move.destination.as_posix(),
-                }
+        unmapped_ids = frozenset(
+            source.candidate_id
+            for source in manifest.sources
+            if source.candidate_id not in moved
+        )
+        review_candidate_ids = (
+            unmapped_ids if plan_kind == "initial" else frozenset()
+        )
+        try:
+            stored: PlanReview | None = None
+            if stored_review is not None:
+                if str(row[2]) != PLAN_REVIEW_SCHEMA:
+                    raise ValueError
+                payload = (
+                    stored_review
+                    if isinstance(stored_review, dict)
+                    else json.loads(str(stored_review))
+                )
+                stored = PlanReview.from_dict(payload)
+            system = (
+                self._historical_plan_review(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                    unmapped_ids=unmapped_ids,
+                )
+                if plan_kind == "initial"
+                else PlanReview.unavailable()
             )
+            review = merge_plan_reviews(stored, system)
+            agent_explained_ids = (
+                frozenset(item.candidate_id for item in stored.items)
+                if (
+                    stored is not None
+                    and stored.status.value == "agent_and_system"
+                )
+                else frozenset()
+            )
+            source_ids = frozenset(sources)
+            if any(
+                item.candidate_id not in source_ids
+                or (
+                    plan_kind == "initial"
+                    and item.candidate_id not in unmapped_ids
+                )
+                or (
+                    item.related_video_id is not None
+                    and (
+                        item.related_video_id not in source_ids
+                        or (
+                            plan_kind == "initial"
+                            and item.related_video_id not in unmapped_ids
+                        )
+                    )
+                )
+                for item in review.items
+            ):
+                raise ValueError
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.INTERACTION_CONFLICT
+            ) from None
+        explanations = {
+            item.candidate_id: item for item in review.items
+        }
         remaining_disposition = (
             "unmapped" if plan_kind == "initial" else "unchanged"
         )
-        for source in manifest.sources:
-            if source.candidate_id in moved:
-                continue
-            items.append(
-                {
-                    "disposition": remaining_disposition,
-                    "candidate_id": str(source.candidate_id),
-                    "kind": source.kind.value,
-                    "source": source.relative_path.as_posix(),
-                    "destination": None,
-                }
-            )
+        remaining = [
+            {
+                "disposition": remaining_disposition,
+                "candidate_id": str(source.candidate_id),
+                "kind": source.kind.value,
+                "source": source.relative_path.as_posix(),
+                "destination": None,
+                "explanation": (
+                    self._review_explanation(
+                        explanations.get(source.candidate_id)
+                    )
+                    if plan_kind == "initial"
+                    else None
+                ),
+            }
+            for source in manifest.sources
+            if source.candidate_id not in moved
+        ]
+        move_items = [
+            {
+                "disposition": "move",
+                "candidate_id": str(source.candidate_id),
+                "kind": source.kind.value,
+                "source": source.relative_path.as_posix(),
+                "destination": move.destination.as_posix(),
+                "explanation": None,
+            }
+            for move in manifest.moves
+            for source in (sources[move.source_id],)
+        ]
+        items = (
+            [*remaining, *move_items]
+            if plan_kind == "initial"
+            else [*move_items, *remaining]
+        )
         indexed = [
             {"index": index, **item}
             for index, item in enumerate(items)
@@ -873,9 +989,193 @@ class PostgresQueries:
             "plan_hash": plan_hash,
             "plan_kind": plan_kind,
             "counts": counts,
+            "review": {
+                "status": review.status.value,
+                "agent_summary": review.agent_summary,
+                "advisory_only": True,
+                "coverage": {
+                    "total_unmapped": counts["unmapped"],
+                    "agent_explained": (
+                        sum(
+                            candidate_id in review_candidate_ids
+                            for candidate_id in agent_explained_ids
+                        )
+                    ),
+                    "system_verified": sum(
+                        item.verification
+                        is PlanReviewVerification.VERIFIED
+                        for item in review.items
+                        if item.candidate_id in review_candidate_ids
+                    ),
+                    "fallback": max(
+                        0,
+                        counts["unmapped"]
+                        - sum(
+                            item.candidate_id in review_candidate_ids
+                            for item in review.items
+                        ),
+                    ),
+                },
+            },
             "items": page,
             "next_after": next_after if next_after < len(indexed) else None,
         }
+
+    @staticmethod
+    def _review_explanation(
+        item: PlanReviewItem | None,
+    ) -> dict[str, object]:
+        if item is None:
+            return {
+                "reason_code": PlanReviewReason.NOT_SELECTED.value,
+                "agent_detail": None,
+                "verification": PlanReviewVerification.FALLBACK.value,
+                "season": None,
+                "episode": None,
+                "related_video_id": None,
+            }
+        return {
+            "reason_code": item.reason.value,
+            "agent_detail": item.agent_detail,
+            "verification": item.verification.value,
+            "season": item.season,
+            "episode": item.episode,
+            "related_video_id": (
+                None
+                if item.related_video_id is None
+                else str(item.related_video_id)
+            ),
+        }
+
+    def _historical_plan_review(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+        unmapped_ids: frozenset[CandidateId],
+    ) -> PlanReview:
+        try:
+            with self._pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT event_type, payload
+                    FROM run_events
+                    WHERE run_id = %s
+                      AND event_type IN (
+                        'existing_inventory_observed',
+                        'archive_directory_listed',
+                        'mapping_rejected',
+                        'plan_built'
+                      )
+                    ORDER BY sequence
+                    """,
+                    (run_id,),
+                ).fetchall()
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+        decoded: list[tuple[str, dict[str, object]]] = []
+        for event_type, encoded in rows:
+            try:
+                envelope = json.loads(bytes(encoded))
+                payload = envelope["payload"]
+                if (
+                    not isinstance(payload, dict)
+                    or envelope["event_type"] != str(event_type)
+                ):
+                    raise ValueError
+            except Exception:
+                return PlanReview.unavailable()
+            decoded.append((str(event_type), payload))
+        plan_indexes = [
+            index
+            for index, (event_type, payload) in enumerate(decoded)
+            if event_type == "plan_built"
+            and payload.get("plan_hash") == plan_hash
+        ]
+        if len(plan_indexes) != 1:
+            return PlanReview.unavailable()
+        occupied: set[tuple[int, int]] = set()
+        conflicts: dict[CandidateId, set[tuple[int, int]]] = {}
+        for event_type, payload in decoded[: plan_indexes[0]]:
+            if event_type == "existing_inventory_observed":
+                values = payload.get("occupied")
+                if isinstance(values, list):
+                    occupied = {
+                        (item[0], item[1])
+                        for item in values
+                        if (
+                            isinstance(item, list)
+                            and len(item) == 2
+                            and type(item[0]) is int
+                            and type(item[1]) is int
+                        )
+                    }
+                continue
+            if event_type == "archive_directory_listed":
+                values = payload.get("occupied")
+                if isinstance(values, list):
+                    occupied.update(
+                        (item[0], item[1])
+                        for item in values
+                        if (
+                            isinstance(item, list)
+                            and len(item) == 2
+                            and type(item[0]) is int
+                            and type(item[1]) is int
+                        )
+                    )
+                continue
+            if event_type != "mapping_rejected":
+                continue
+            issue = payload.get("issue")
+            if (
+                not isinstance(issue, dict)
+                or issue.get("code") != "inventory_conflict"
+                or not isinstance(issue.get("context"), list)
+            ):
+                continue
+            context = {
+                item.get("key"): item.get("value")
+                for item in issue["context"]
+                if isinstance(item, dict)
+            }
+            try:
+                candidate_id = CandidateId.parse(context["video_id"])
+                season = context["season"]
+                episode = context["episode"]
+                if (
+                    candidate_id not in unmapped_ids
+                    or type(season) is not int
+                    or type(episode) is not int
+                    or (season, episode) not in occupied
+                ):
+                    continue
+            except (DomainError, KeyError, TypeError, ValueError):
+                continue
+            conflicts.setdefault(candidate_id, set()).add(
+                (season, episode)
+            )
+        items = tuple(
+            PlanReviewItem(
+                candidate_id=candidate_id,
+                reason=PlanReviewReason.EXISTING_EPISODE,
+                verification=PlanReviewVerification.VERIFIED,
+                season=next(iter(values))[0],
+                episode=next(iter(values))[1],
+            )
+            for candidate_id, values in sorted(
+                conflicts.items(),
+                key=lambda item: item[0].ordinal,
+            )
+            if len(values) == 1
+        )
+        return (
+            PlanReview.system_only(items=items)
+            if items
+            else PlanReview.unavailable()
+        )
 
     def list_interactions(
         self,

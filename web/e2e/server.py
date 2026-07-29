@@ -128,7 +128,11 @@ def _movie_model() -> ScriptedModel:
             ),
             ToolCallStep(
                 name="submit_mapping",
-                arguments={"video_id": "video:1", "subtitle_ids": []},
+                arguments={
+                    "video_id": "video:1",
+                    "subtitle_ids": [],
+                    "review": None,
+                },
                 call_id="mapping-movie",
             ),
         )
