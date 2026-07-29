@@ -11,7 +11,7 @@ class RunBudget:
 
     max_model_turns: int = 64
     max_tool_calls: int = 64
-    max_failures: int = 3
+    max_failures: int = 16
     max_total_tokens: int = 100_000
     max_elapsed_seconds: float = 600.0
 

@@ -83,6 +83,7 @@ def test_config_edit_retains_exact_revision_roots_and_secret(
     assert edit.draft.provider.secret_ref == "secret-existing"
     assert edit.replacement_api_key is None
     assert edit.draft.agent_budget.max_elapsed_seconds == 600
+    assert edit.draft.agent_budget.max_failures == 16
 
 
 def test_config_edit_accepts_explicit_agent_budget(tmp_path: Path) -> None:

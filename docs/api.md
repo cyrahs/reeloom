@@ -67,7 +67,7 @@ Config 还包含严格的 `agent_budget`：
 {
   "max_model_turns": 64,
   "max_tool_calls": 64,
-  "max_failures": 3,
+  "max_failures": 16,
   "max_total_tokens": 100000,
   "max_elapsed_seconds": 600
 }

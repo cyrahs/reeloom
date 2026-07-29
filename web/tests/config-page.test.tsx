@@ -6,6 +6,25 @@ import { TOKEN_STORAGE_KEY } from "../src/api";
 import { AuthGate } from "../src/auth";
 import { ConfigPage } from "../src/pages/ConfigPage";
 
+test("uses sixteen failures for a new configuration", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  vi.spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(jsonResponse({ api_version: "1.0.0", role: "admin" }))
+    .mockResolvedValueOnce(new Response(null, { status: 404 }));
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <AuthGate>
+        <ConfigPage />
+      </AuthGate>
+    </QueryClientProvider>,
+  );
+
+  expect(
+    await screen.findByLabelText("失败次数上限"),
+  ).toHaveValue(16);
+});
+
 test("keeps internal watch identity hidden and displays configured paths", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
   vi.spyOn(globalThis, "fetch")
