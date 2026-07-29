@@ -270,12 +270,14 @@ class BackgroundServices:
             execution_blocked = (
                 isinstance(error, ExecutorError)
                 and error.code
-                in {
-                    ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
-                    ExecutorErrorCode.RECOVERY_REQUIRED,
-                    ExecutorErrorCode.STATE_AMBIGUOUS,
-                    ExecutorErrorCode.TRANSIENT_IO,
+                not in {
+                    ExecutorErrorCode.DESTINATION_COLLISION,
+                    ExecutorErrorCode.SOURCE_DRIFT,
                 }
+            )
+            restart_generation = (
+                isinstance(error, ExecutorError)
+                and error.code is ExecutorErrorCode.SOURCE_DRIFT
             )
             if execution_blocked:
                 succeeded = True
@@ -294,9 +296,15 @@ class BackgroundServices:
                         database_error = disposition_error
                     else:
                         retry = folder_run
+                except ExecutorError:
+                    succeeded = True
                 except Exception:
                     retry = folder_run
-            elif folder_run and database_error is None:
+            elif (
+                folder_run
+                and restart_generation
+                and database_error is None
+            ):
                 try:
                     self.scheduler.restart_folder_generation(
                         run_id=run_id
@@ -310,10 +318,40 @@ class BackgroundServices:
                         database_error = restart_error
                     else:
                         retry = True
+            elif database_error is None:
+                try:
+                    self.scheduler.mark_run_failed(run_id=run_id)
+                    succeeded = True
+                except ServerError as failure_error:
+                    if (
+                        failure_error.code
+                        is ServerErrorCode.DATABASE_UNAVAILABLE
+                    ):
+                        database_error = failure_error
+                    elif (
+                        failure_error.code
+                        is ServerErrorCode.INTERACTION_CONFLICT
+                    ):
+                        succeeded = True
+                    else:
+                        retry = folder_run
             _LOG.error(
-                "agent_job_failed run_id=%s error_type=%s",
+                "agent_job_failed run_id=%s error_type=%s error_code=%s",
                 run_id,
                 type(error).__name__,
+                (
+                    error.code.value
+                    if isinstance(
+                        error,
+                        (
+                            DomainError,
+                            ExecutorError,
+                            RuntimeDomainError,
+                            ServerError,
+                        ),
+                    )
+                    else None
+                ),
             )
         finally:
             if restarted:

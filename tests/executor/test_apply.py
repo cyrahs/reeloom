@@ -267,6 +267,39 @@ def test_unsupported_atomic_move_resumes_with_same_transaction(
     assert _destination(environment, 0).is_file()
 
 
+def test_permission_denied_resumes_with_same_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+
+    def denied(*args: object) -> None:
+        del args
+        raise OSError(errno.EACCES, "untrusted backend text")
+
+    monkeypatch.setattr(
+        apply_module,
+        "_rename_noreplace",
+        denied,
+    )
+    with pytest.raises(ExecutorError) as raised:
+        _apply(environment)
+
+    assert raised.value.code is ExecutorErrorCode.PERMISSION_DENIED
+    assert (environment.source / "episode-1.mkv").is_file()
+    assert not _destination(environment, 0).exists()
+
+    monkeypatch.undo()
+    recovered = environment.executor().recover(
+        plan_hash=environment.plan.plan_hash,
+        approval_id=environment.approval.approval_id,
+    )
+
+    assert recovered.status is ApplyStatus.COMPLETED
+    assert recovered.failure_code is ExecutorErrorCode.PERMISSION_DENIED
+    assert _destination(environment, 0).is_file()
+
+
 def test_error_after_move_is_reconciled_without_duplicate_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

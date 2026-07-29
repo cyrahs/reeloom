@@ -9,6 +9,7 @@ from reeloom.executor.errors import (
     ExecutorError,
     ExecutorErrorCode,
     atomic_move_error_code,
+    filesystem_error_code,
 )
 from reeloom.executor.atomic_rename import rename_noreplace
 from reeloom.executor.manifest import (
@@ -134,6 +135,7 @@ class FilesystemExecutor:
                     ) from None
                 if error.code in {
                     ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                    ExecutorErrorCode.PERMISSION_DENIED,
                     ExecutorErrorCode.RECOVERY_REQUIRED,
                     ExecutorErrorCode.TRANSIENT_IO,
                 } and (
@@ -146,6 +148,7 @@ class FilesystemExecutor:
                         and error.code
                         in {
                             ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                            ExecutorErrorCode.PERMISSION_DENIED,
                             ExecutorErrorCode.TRANSIENT_IO,
                         }
                     ):
@@ -232,9 +235,9 @@ class FilesystemExecutor:
                 raise ExecutorError(
                     ExecutorErrorCode.DESTINATION_COLLISION
                 ) from None
-            except OSError:
+            except OSError as error:
                 raise ExecutorError(
-                    ExecutorErrorCode.MOVE_FAILED
+                    filesystem_error_code(error)
                 ) from None
             return FilesystemPreflightExecutor._open_existing_directory(
                 root_fd,
@@ -386,6 +389,7 @@ class FilesystemExecutor:
             and summary.failure_code
             in {
                 ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED,
+                ExecutorErrorCode.PERMISSION_DENIED,
                 ExecutorErrorCode.TRANSIENT_IO,
             }
         ):
@@ -852,9 +856,9 @@ class FilesystemExecutor:
                         os.fsync(current_fd)
                     except FileExistsError:
                         pass
-                    except OSError:
+                    except OSError as error:
                         raise ExecutorError(
-                            ExecutorErrorCode.MOVE_FAILED
+                            filesystem_error_code(error)
                         ) from None
                     next_fd = (
                         FilesystemPreflightExecutor

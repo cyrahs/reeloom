@@ -27,6 +27,7 @@ for function in (_RENAMEAT2, _RENAMEATX_NP):
 class AtomicRenameFailure(StrEnum):
     COLLISION = "collision"
     CROSS_FILESYSTEM = "cross_filesystem"
+    PERMISSION_DENIED = "permission_denied"
     TRANSIENT_IO = "transient_io"
     UNSUPPORTED = "unsupported"
     UNKNOWN = "unknown"
@@ -60,6 +61,8 @@ def classify_atomic_rename_error(
         return AtomicRenameFailure.COLLISION
     if error_number == errno.EXDEV:
         return AtomicRenameFailure.CROSS_FILESYSTEM
+    if error_number in {errno.EACCES, errno.EPERM, errno.EROFS}:
+        return AtomicRenameFailure.PERMISSION_DENIED
     if error_number in _UNSUPPORTED:
         return AtomicRenameFailure.UNSUPPORTED
     if error_number in _TRANSIENT:

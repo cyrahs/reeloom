@@ -10,6 +10,7 @@ from reeloom.executor.atomic_rename import rename_noreplace
 from reeloom.executor.errors import (
     ExecutorErrorCode,
     atomic_move_error_code,
+    filesystem_error_code,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
 
@@ -39,8 +40,8 @@ def probe_move_capability(
 ) -> MoveCapability:
     """Probe strict no-replace semantics using only owned empty directories."""
 
-    source_fd = _open_root(source_root)
-    destination_fd = _open_root(destination_root)
+    source_fd: int | None = None
+    destination_fd: int | None = None
     destination_parent_fd: int | None = None
     token = uuid.uuid4().hex
     source_name = f".reeloom-move-probe-source-{token}"
@@ -50,6 +51,8 @@ def probe_move_capability(
     collision_target = "occupied"
     owned: list[tuple[int, str, tuple[int, int]]] = []
     try:
+        source_fd = _open_root(source_root)
+        destination_fd = _open_root(destination_root)
         source_identity = _mkdir_owned(source_fd, source_name)
         owned.append((source_fd, source_name, source_identity))
         collision_source_identity = _mkdir_owned(
@@ -171,8 +174,8 @@ def probe_move_capability(
         os.fsync(destination_parent_fd)
         os.fsync(destination_fd)
         return MoveCapability(MoveCapabilityStatus.SUPPORTED)
-    except OSError:
-        return MoveCapability(MoveCapabilityStatus.UNCERTAIN)
+    except OSError as error:
+        return _failure(filesystem_error_code(error))
     finally:
         cleanup_failed = False
         for parent_fd, name, identity in reversed(owned):
@@ -182,8 +185,10 @@ def probe_move_capability(
                 cleanup_failed = True
         if destination_parent_fd is not None:
             os.close(destination_parent_fd)
-        os.close(destination_fd)
-        os.close(source_fd)
+        if destination_fd is not None:
+            os.close(destination_fd)
+        if source_fd is not None:
+            os.close(source_fd)
         if cleanup_failed:
             return MoveCapability(
                 MoveCapabilityStatus.UNCERTAIN,

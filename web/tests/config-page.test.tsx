@@ -207,8 +207,8 @@ test("shows bounded move capability below its watch", async () => {
       watch_id: "primary",
       move_backend: "native",
       folder_disposition: {
-        status: "unsupported",
-        failure_code: "atomic_move_unsupported",
+        status: "uncertain",
+        failure_code: "permission_denied",
       },
       media_apply: {
         status: "cross_filesystem",
@@ -229,7 +229,9 @@ test("shows bounded move capability below its watch", async () => {
     screen.getByRole("button", { name: "检测原子移动兼容性" }),
   );
 
-  expect(await screen.findByText(/文件夹收尾：挂载不支持/)).toBeVisible();
+  expect(await screen.findByText(/文件夹收尾：结果不确定/)).toBeVisible();
+  expect(screen.getByText(/目录不可写或挂载为只读/)).toBeVisible();
+  expect(screen.getByText("permission_denied")).toBeVisible();
   expect(screen.getByText(/媒体执行：跨文件系统/)).toBeVisible();
 });
 

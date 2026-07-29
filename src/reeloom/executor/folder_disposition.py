@@ -12,6 +12,7 @@ from reeloom.executor.errors import (
     ExecutorError,
     ExecutorErrorCode,
     atomic_move_error_code,
+    filesystem_error_code,
 )
 from reeloom.executor.atomic_rename import rename_noreplace
 from reeloom.executor.folder_transaction import FolderTransactionRecord
@@ -487,6 +488,8 @@ class FolderDispositionExecutor:
             os.fsync(root_fd)
         except FileExistsError:
             pass
+        except OSError as error:
+            raise ExecutorError(filesystem_error_code(error)) from None
         try:
             metadata = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
             if not stat.S_ISDIR(metadata.st_mode):
@@ -509,9 +512,9 @@ class FolderDispositionExecutor:
             return opened
         except ExecutorError:
             raise
-        except OSError:
+        except OSError as error:
             raise ExecutorError(
-                ExecutorErrorCode.DESTINATION_COLLISION
+                filesystem_error_code(error)
             ) from None
 
     @staticmethod

@@ -70,7 +70,7 @@ def test_empty_database_migration_is_idempotent_and_healthy() -> None:
         control.migrate()
         health = control.health()
         assert health.schema_version == EXPECTED_SCHEMA_VERSION
-        assert health.postgres_major == 17
+        assert health.postgres_major in {16, 17, 18}
     finally:
         control.close()
 

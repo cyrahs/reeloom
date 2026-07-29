@@ -7,11 +7,16 @@ import {
   canApproveCurrentPlan,
 } from "../src/pages/RunPage";
 import { DeleteRunDialog } from "../src/components/RunDeletion";
+import { errorMessage } from "../src/components/Status";
 
 test("only the current durable plan can be approved", () => {
   expect(canApproveCurrentPlan("sha256:head", "sha256:head")).toBe(true);
   expect(canApproveCurrentPlan("sha256:head", "sha256:old")).toBe(false);
   expect(canApproveCurrentPlan(null, "sha256:head")).toBe(false);
+});
+
+test("permission failures have actionable text", () => {
+  expect(errorMessage("permission_denied")).toMatch(/修复权限/);
 });
 
 test("run deletion requires explicit acknowledgement", async () => {

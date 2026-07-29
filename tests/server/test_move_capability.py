@@ -126,3 +126,26 @@ def test_probe_reports_uncertain_when_owned_cleanup_fails(
 
     assert result.status is MoveCapabilityStatus.UNCERTAIN
     assert result.failure_code == "probe_cleanup_failed"
+
+
+def test_probe_reports_permission_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+
+    def denied(*args: object) -> tuple[int, int]:
+        del args
+        raise OSError(errno.EACCES, "untrusted backend text")
+
+    monkeypatch.setattr(capability_module, "_mkdir_owned", denied)
+    result = probe_move_capability(
+        AuthorizedRoot.create(source),
+        AuthorizedRoot.create(destination),
+    )
+
+    assert result.status is MoveCapabilityStatus.UNCERTAIN
+    assert result.failure_code == "permission_denied"

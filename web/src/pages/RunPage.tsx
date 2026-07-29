@@ -455,6 +455,12 @@ export function RunPage({ runId }: { runId: string }) {
             <div><dt>已应用</dt><dd>{run.data.settlement.applied_count}</dd></div>
             <div><dt>已回滚</dt><dd>{run.data.settlement.rolled_back_count}</dd></div>
           </dl>
+          {run.data.settlement.failure_code ? (
+            <p className="notice danger" role="alert">
+              {errorMessage(run.data.settlement.failure_code)}{" "}
+              <code>{run.data.settlement.failure_code}</code>
+            </p>
+          ) : null}
         </section>
       ) : null}
 

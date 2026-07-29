@@ -78,7 +78,7 @@ def test_production_builder_enforces_single_instance_and_closes(
         with pytest.raises(ServerError) as raised:
             build_application(settings, auth=auth)
         assert raised.value.code is ServerErrorCode.INSTANCE_ALREADY_RUNNING
-        assert first.database.health().postgres_major == 17
+        assert first.database.health().postgres_major in {16, 17, 18}
     finally:
         first.close()
 

@@ -28,6 +28,15 @@ backup 边界。
 不要把 bucket 单独替换成跨设备 symlink。每个 watch 直接绑定的媒体库目录可使用
 另一个 mount，但单个媒体执行仍须满足既有的 rename 约束。
 
+启用 `automatic` 前，必须在配置页对每个 watch 运行移动能力检测，并确认文件夹
+收尾与媒体执行均为 `supported`。`permission_denied` 表示进程身份不能写入目录或
+mount 为只读；不要依赖 `fsGroup` 修复由 FUSE 合成的 `root:root 0755` 权限。
+如部署只能使用有 `default_permissions` 的统一 root-owned CloudDrive mount，可在
+保持非 root UID、只读 rootfs、禁提权、RuntimeDefault seccomp 和 `drop: ALL`
+的同时单独授予 `DAC_OVERRIDE`。这会扩大该进程对整个可见 mount 的 DAC 权限，
+应作为明确记录的部署残余风险；能由 storage backend 提供专用 UID/GID 或 ACL
+时应优先使用后者。
+
 `REELOOM_TMDB_API_KEY` 由 deployment secret manager 注入，仅构造唯一允许的业务
 网络 adapter；server 不读取 dotenv。模型 provider key 仍通过 admin config
 write-only 写入 filesystem SecretStore。

@@ -16,6 +16,7 @@ from reeloom.executor.errors import (
     ApprovalErrorCode,
     ExecutorError,
     ExecutorErrorCode,
+    filesystem_error_code,
 )
 from reeloom.executor.manifest import ExecutionManifest
 from reeloom.executor.folder_transaction import FolderTransactionRecord
@@ -950,16 +951,28 @@ class FolderDispositionPlanner:
                 os.fsync(root_fd)
             except FileExistsError:
                 pass
-            metadata = os.stat(bucket, dir_fd=root_fd, follow_symlinks=False)
+            except OSError as error:
+                raise ExecutorError(filesystem_error_code(error)) from None
+            try:
+                metadata = os.stat(
+                    bucket,
+                    dir_fd=root_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise ExecutorError(filesystem_error_code(error)) from None
             if not stat.S_ISDIR(metadata.st_mode):
                 raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
             bucket_fd = FilesystemScanner._open_directory(
                 bucket, parent_fd=root_fd
             )
-            names = {
-                filesystem_name_key(name)
-                for name in os.listdir(bucket_fd)
-            }
+            try:
+                names = {
+                    filesystem_name_key(name)
+                    for name in os.listdir(bucket_fd)
+                }
+            except OSError as error:
+                raise ExecutorError(filesystem_error_code(error)) from None
             names.update(
                 self._repository.reserved_target_keys(
                     root=root,

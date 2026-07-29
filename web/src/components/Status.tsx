@@ -40,6 +40,8 @@ export function errorMessage(code: string) {
   return {
     atomic_move_unsupported:
       "当前挂载不支持原子不覆盖移动；源内容保持原位。修复挂载后请使用原审批执行 exact recovery。",
+    permission_denied:
+      "目录不可写或挂载为只读；源内容保持原位。修复权限后请使用 exact recovery。",
     transient_io:
       "目录访问暂时失败；服务端没有自动重复移动，请稍后使用原事务恢复。",
     state_ambiguous:

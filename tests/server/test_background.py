@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.kernel.candidates import CandidateKind
 from reeloom.server.background import BackgroundServices
 from reeloom.server.config import ApplyPolicy
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -121,3 +122,104 @@ def test_only_deterministic_executor_collision_is_terminal() -> None:
         )
         is None
     )
+
+
+class _FolderScheduler:
+    def __init__(self) -> None:
+        self.settled: list[bool] = []
+        self.restarted = 0
+        self.failed = 0
+
+    def get_job_context(self, *, run_id: str) -> object:
+        del run_id
+        return SimpleNamespace(
+            registration=SimpleNamespace(config_revision=1),
+            discovery=SimpleNamespace(
+                folder_generation_id="generation-test",
+                snapshot=SimpleNamespace(
+                    files=(SimpleNamespace(kind=CandidateKind.VIDEO),)
+                ),
+            ),
+        )
+
+    def settle_job(self, **kwargs: object) -> None:
+        self.settled.append(bool(kwargs["succeeded"]))
+
+    def restart_folder_generation(self, *, run_id: str) -> None:
+        del run_id
+        self.restarted += 1
+
+    def mark_run_failed(self, *, run_id: str) -> None:
+        del run_id
+        self.failed += 1
+
+
+class _FailingWorker:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def run(self, *, run_id: str) -> str:
+        del run_id
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        ExecutorErrorCode.MOVE_FAILED,
+        ExecutorErrorCode.PERMISSION_DENIED,
+    ),
+)
+def test_executor_failure_does_not_restart_folder_generation(
+    code: ExecutorErrorCode,
+) -> None:
+    scheduler = _FolderScheduler()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=object(),  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_FailingWorker(ExecutorError(code)),  # type: ignore[arg-type]
+        apply=object(),  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert scheduler.settled == [True]
+    assert scheduler.restarted == 0
+    assert scheduler.failed == 0
+
+
+def test_only_source_drift_restarts_folder_generation() -> None:
+    scheduler = _FolderScheduler()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=object(),  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_FailingWorker(
+            ExecutorError(ExecutorErrorCode.SOURCE_DRIFT)
+        ),  # type: ignore[arg-type]
+        apply=object(),  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert scheduler.settled == []
+    assert scheduler.restarted == 1
+    assert scheduler.failed == 0
+
+
+def test_unclassified_failure_stops_without_restart() -> None:
+    scheduler = _FolderScheduler()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=object(),  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_FailingWorker(RuntimeError("provider unavailable")),  # type: ignore[arg-type]
+        apply=object(),  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert scheduler.settled == [True]
+    assert scheduler.restarted == 0
+    assert scheduler.failed == 1

@@ -307,6 +307,40 @@ def test_unsupported_atomic_move_stays_recoverable(
     assert (watch / "archive" / "Incoming" / "extra.txt").is_file()
 
 
+def test_bucket_permission_denied_stays_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    source = watch / "Incoming"
+    source.mkdir()
+    (source / "extra.txt").write_text("leftover")
+    executor, plans, approvals = _executor(tmp_path)
+    plan = _plan(
+        watch,
+        action=FolderDispositionAction.ARCHIVE,
+        target=PurePosixPath("archive/Incoming"),
+    )
+    plans.save_folder_disposition(plan)
+
+    def denied(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError(errno.EACCES, "untrusted backend text")
+
+    monkeypatch.setattr(folder_module.os, "mkdir", denied)
+    with pytest.raises(ExecutorError) as raised:
+        executor.apply(
+            plan_hash=plan.plan_hash,
+            approval_id="approval-test",
+        )
+
+    assert raised.value.code is ExecutorErrorCode.PERMISSION_DENIED
+    assert source.is_dir()
+    assert not (watch / "archive").exists()
+    assert approvals.statuses[-1] == "recovery_required"
+
+
 def test_error_after_atomic_move_converges_to_completed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

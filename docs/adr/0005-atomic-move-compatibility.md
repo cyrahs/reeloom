@@ -17,6 +17,12 @@ result Reeloom re-observes the exact source and destination identity:
 - absent source plus exact destination is a completed move;
 - every other combination requires recovery.
 
+`EACCES`, `EPERM`, and `EROFS` are reported as `permission_denied`. A
+zero-move permission failure keeps the claimed approval and exact transaction
+recoverable. Folder generations are recreated only for proven source drift;
+permission, unknown executor, provider, and mount failures remain in place
+for Admin review instead of starting a new Agent run.
+
 An unsupported primitive leaves the claimed transaction non-terminal. Exact
 recovery reuses the same plan, approval, transaction, and journal. Read-only
 REST reconciliation never invokes recovery.

@@ -34,7 +34,9 @@ def test_unsupported_atomic_rename_errors_are_bounded(
         (errno.ENOTEMPTY, AtomicRenameFailure.COLLISION),
         (errno.EXDEV, AtomicRenameFailure.CROSS_FILESYSTEM),
         (errno.EIO, AtomicRenameFailure.TRANSIENT_IO),
-        (errno.EPERM, AtomicRenameFailure.UNKNOWN),
+        (errno.EACCES, AtomicRenameFailure.PERMISSION_DENIED),
+        (errno.EPERM, AtomicRenameFailure.PERMISSION_DENIED),
+        (errno.EROFS, AtomicRenameFailure.PERMISSION_DENIED),
     ),
 )
 def test_atomic_rename_error_classes(

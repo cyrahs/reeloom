@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { ApiError, idempotencyKey, type ApiClient } from "../api";
 import { useAuth } from "../auth";
-import { PageError } from "../components/Status";
+import { errorMessage, PageError } from "../components/Status";
 import {
   configSchema,
   directoryListingSchema,
@@ -391,8 +391,30 @@ export function ConfigPage() {
                   {moveCapabilityLabel(
                     moveProbe.data.folder_disposition.status,
                   )}
+                  {moveProbe.data.folder_disposition.failure_code ? (
+                    <>
+                      {" "}
+                      {errorMessage(
+                        moveProbe.data.folder_disposition.failure_code,
+                      )}{" "}
+                      <code>
+                        {moveProbe.data.folder_disposition.failure_code}
+                      </code>
+                    </>
+                  ) : null}
                   ；媒体执行：
                   {moveCapabilityLabel(moveProbe.data.media_apply.status)}
+                  {moveProbe.data.media_apply.failure_code ? (
+                    <>
+                      {" "}
+                      {errorMessage(
+                        moveProbe.data.media_apply.failure_code,
+                      )}{" "}
+                      <code>
+                        {moveProbe.data.media_apply.failure_code}
+                      </code>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
               {moveProbe.error instanceof ApiError &&

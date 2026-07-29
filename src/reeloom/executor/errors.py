@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from enum import StrEnum
 from types import MappingProxyType
 
@@ -47,6 +48,7 @@ class ExecutorErrorCode(StrEnum):
     INVALID_JOURNAL = "invalid_journal"
     JOURNAL_FAILURE = "journal_failure"
     ATOMIC_MOVE_UNSUPPORTED = "atomic_move_unsupported"
+    PERMISSION_DENIED = "permission_denied"
     TRANSIENT_IO = "transient_io"
     STATE_AMBIGUOUS = "state_ambiguous"
     MOVE_FAILED = "move_failed"
@@ -74,9 +76,22 @@ def atomic_move_error_code(error: OSError) -> ExecutorErrorCode:
         AtomicRenameFailure.CROSS_FILESYSTEM: (
             ExecutorErrorCode.CROSS_FILESYSTEM
         ),
+        AtomicRenameFailure.PERMISSION_DENIED: (
+            ExecutorErrorCode.PERMISSION_DENIED
+        ),
         AtomicRenameFailure.TRANSIENT_IO: ExecutorErrorCode.TRANSIENT_IO,
         AtomicRenameFailure.UNSUPPORTED: (
             ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED
         ),
         AtomicRenameFailure.UNKNOWN: ExecutorErrorCode.MOVE_FAILED,
     }[failure]
+
+
+def filesystem_error_code(
+    error: OSError,
+    *,
+    default: ExecutorErrorCode = ExecutorErrorCode.MOVE_FAILED,
+) -> ExecutorErrorCode:
+    if error.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+        return ExecutorErrorCode.PERMISSION_DENIED
+    return default
