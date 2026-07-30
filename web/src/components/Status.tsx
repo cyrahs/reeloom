@@ -48,5 +48,7 @@ export function errorMessage(code: string) {
       "移动结果无法安全确认；请保持源和目标不变并执行 exact recovery。",
     recovery_required:
       "请求结果尚未安全结算，只能使用服务端返回的 exact approval ID 恢复。",
+    interaction_budget_exhausted:
+      "本次 Agent 操作超过时间上限，或此 run 的累计模型预算已耗尽。单次超时可重试；累计预算只能为后续新 run 提高。",
   }[code] ?? "请求未完成：";
 }

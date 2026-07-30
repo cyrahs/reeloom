@@ -18,9 +18,10 @@ filesystem safety boundary 保持不变。
 - terminal journal summary 只按 manifest 中的 bounded candidate IDs 读取 immutable
   move/rollback/failure markers；重复 recovery 保留原 applied、rolled-back 和
   failure facts。
-- logical run 的 turns、tokens、tool calls、failures、limits 和 deadline 全部持久化；
-  interaction reserve 使用剩余额度，finalize 在同一事务结算 session、event、
-  projection、budget 和 lineage。
+- logical run 的 turns、tokens、tool calls、failures 和 limits 全部持久化；
+  interaction reserve 使用剩余累计额度，但每个 operation 从 run 绑定的 exact
+  config 获得新的时间窗口。finalize 在同一事务结算 session、event、projection、
+  budget 和 lineage。
 - `PostgresEventStore` 启动只读取 versioned full-state projection；`run_events`
   仅用于 immutable history/API，不参与恢复或普通查询。
 - interaction 按 run 绑定的 content-addressed `AgentDefinitionRevision` 读取并验证

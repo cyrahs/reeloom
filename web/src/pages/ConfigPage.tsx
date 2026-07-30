@@ -526,12 +526,12 @@ export function ConfigPage() {
 
         <ConfigSection number="03" title="Agent 预算">
           <p className="section-help">
-            每个新 run 固定使用保存时的预算；修改配置不会改变已创建的任务。
-            任一预算耗尽都会安全停止，不会据此推断文件移动成功。
+            每个新 run 固定使用保存时的累计预算；每次问答或修订会获得新的单次时间窗口。
+            修改配置不会改变已创建的任务，任一限制触发都会安全停止。
           </p>
           <div className="form-grid">
             <BudgetField
-              label="总时间上限（秒）"
+              label="单次操作时间上限（秒）"
               value={form.agent_budget.max_elapsed_seconds}
               min={1}
               max={3600}

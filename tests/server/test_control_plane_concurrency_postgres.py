@@ -356,7 +356,7 @@ def test_concurrent_idempotency_reservation_reports_busy_not_database_error(
 
 
 @pytest.mark.postgres
-def test_same_run_interaction_reservation_has_one_winner() -> None:
+def test_expired_run_deadline_still_allows_one_interaction_winner() -> None:
     control = PostgresControlPlane(_dsn())
     try:
         control.open()
@@ -448,7 +448,7 @@ def test_same_run_interaction_reservation_has_one_winner() -> None:
                     (
                         run_id,
                         plan_hash,
-                        datetime.now(UTC) + timedelta(minutes=5),
+                        datetime.now(UTC) - timedelta(minutes=5),
                     ),
                 )
         repository = PostgresInteractionRepository(control.pool)

@@ -823,6 +823,7 @@ def create_api(
                 ServerErrorCode.JOB_NOT_FOUND: 404,
                 ServerErrorCode.INTERACTION_NOT_FOUND: 404,
                 ServerErrorCode.INTERACTION_CONFLICT: 409,
+                ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED: 409,
                 ServerErrorCode.RUN_BUSY: 409,
                 ServerErrorCode.RUN_NOT_FOUND: 404,
                 ServerErrorCode.RUN_DELETE_CONFLICT: 409,

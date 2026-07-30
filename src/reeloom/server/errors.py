@@ -29,6 +29,7 @@ class ServerErrorCode(StrEnum):
     JOB_NOT_FOUND = "job_not_found"
     INTERACTION_NOT_FOUND = "interaction_not_found"
     INTERACTION_CONFLICT = "interaction_conflict"
+    INTERACTION_BUDGET_EXHAUSTED = "interaction_budget_exhausted"
     INTERACTION_INVALID_RESULT = "interaction_invalid_result"
     FRESH_MAPPING_REQUIRED = "fresh_mapping_required"
     RUN_BUSY = "run_busy"

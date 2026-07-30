@@ -38,6 +38,37 @@ def _result(value: object) -> InteractionResult:
     )
 
 
+def _fresh_interaction_budget(
+    *,
+    model_tokens: int,
+    model_turns: int,
+    tool_calls: int,
+    failures: int,
+    max_model_turns: int,
+    max_tool_calls: int,
+    max_failures: int,
+    max_total_tokens: int,
+    max_elapsed_seconds: float,
+) -> RunBudget:
+    remaining = (
+        max_model_turns - model_turns,
+        max_tool_calls - tool_calls,
+        max_failures - failures,
+        max_total_tokens - model_tokens,
+    )
+    if min(remaining) < 1:
+        raise ServerError(
+            ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED
+        )
+    return RunBudget(
+        max_model_turns=remaining[0],
+        max_tool_calls=remaining[1],
+        max_failures=remaining[2],
+        max_total_tokens=remaining[3],
+        max_elapsed_seconds=max_elapsed_seconds,
+    )
+
+
 class PostgresInteractionRepository:
     def __init__(self, pool: ConnectionPool) -> None:
         self._pool = pool
@@ -128,40 +159,41 @@ class PostgresInteractionRepository:
                         )
                     state = connection.execute(
                         """
-                        SELECT model_tokens, phase, model_turns,
-                               tool_calls, failures, max_model_turns,
-                               max_tool_calls, max_failures,
-                               max_total_tokens,
-                               EXTRACT(
-                                   EPOCH FROM
-                                   deadline_at - clock_timestamp()
+                        SELECT state.model_tokens, state.phase,
+                               state.model_turns, state.tool_calls,
+                               state.failures, state.max_model_turns,
+                               state.max_tool_calls, state.max_failures,
+                               state.max_total_tokens,
+                               COALESCE(
+                                   (
+                                       config.payload
+                                       -> 'agent_budget'
+                                       ->> 'max_elapsed_seconds'
+                                   )::double precision,
+                                   %s
                                )
-                        FROM run_states
-                        WHERE run_id = %s
+                        FROM run_states AS state
+                        JOIN runs AS run USING (run_id)
+                        JOIN config_revisions AS config
+                          ON config.revision = run.config_revision
+                        WHERE state.run_id = %s
                         """,
-                        (run_id,),
+                        (RunBudget().max_elapsed_seconds, run_id),
                     ).fetchone()
                     if state is None:
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
                         )
-                    remaining = (
-                        int(state[5]) - int(state[2]),
-                        int(state[6]) - int(state[3]),
-                        int(state[7]) - int(state[4]),
-                        int(state[8]) - int(state[0]),
-                    )
-                    elapsed = float(state[9])
-                    if min(*remaining) < 1 or elapsed <= 0:
-                        raise ServerError(
-                            ServerErrorCode.INTERACTION_CONFLICT
-                        )
-                    budget = RunBudget(
-                        max_model_turns=remaining[0],
-                        max_tool_calls=remaining[1],
-                        max_failures=remaining[2],
-                        max_total_tokens=remaining[3],
-                        max_elapsed_seconds=min(elapsed, 3_600.0),
+                    budget = _fresh_interaction_budget(
+                        model_tokens=int(state[0]),
+                        model_turns=int(state[2]),
+                        tool_calls=int(state[3]),
+                        failures=int(state[4]),
+                        max_model_turns=int(state[5]),
+                        max_tool_calls=int(state[6]),
+                        max_failures=int(state[7]),
+                        max_total_tokens=int(state[8]),
+                        max_elapsed_seconds=float(state[9]),
                     )
                     if kind is InteractionKind.REVISION:
                         forbidden = connection.execute(
@@ -327,15 +359,25 @@ class PostgresInteractionRepository:
                 with connection.transaction():
                     row = connection.execute(
                         """
-                        SELECT status FROM interactions
+                        SELECT status,
+                               created_at + make_interval(secs => %s)
+                                   >= clock_timestamp()
+                        FROM interactions
                         WHERE interaction_id = %s
                         FOR UPDATE
                         """,
-                        (reservation.interaction_id,),
+                        (
+                            reservation.budget.max_elapsed_seconds,
+                            reservation.interaction_id,
+                        ),
                     ).fetchone()
                     if row is None or str(row[0]) != "active":
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    if not bool(row[1]):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED
                         )
                     session = connection.execute(
                         """
@@ -363,7 +405,6 @@ class PostgresInteractionRepository:
                                tool_calls, failures, max_model_turns,
                                max_tool_calls, max_failures,
                                max_total_tokens,
-                               deadline_at >= clock_timestamp(),
                                projection_schema, projection_payload
                         FROM run_states
                         WHERE run_id = %s
@@ -374,11 +415,15 @@ class PostgresInteractionRepository:
                     if (
                         runtime is None
                         or str(runtime[3]) != "stopped"
-                        or not bool(runtime[12])
                         or not is_supported_projection_schema(
-                            str(runtime[13])
+                            str(runtime[12])
                         )
-                        or int(runtime[1]) + execution.model_tokens
+                    ):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    if (
+                        int(runtime[1]) + execution.model_tokens
                         > int(runtime[11])
                         or int(runtime[5]) + execution.model_turns
                         > int(runtime[8])
@@ -396,7 +441,7 @@ class PostgresInteractionRepository:
                         > reservation.budget.max_failures
                     ):
                         raise ServerError(
-                            ServerErrorCode.INTERACTION_CONFLICT
+                            ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED
                         )
                     final_plan_hash = (
                         execution.plan_hash or reservation.plan_hash
@@ -538,8 +583,8 @@ class PostgresInteractionRepository:
                             reduced_plan_hash,
                             STATE_PROJECTION_SCHEMA,
                             patch_state(
-                                runtime[14],
-                                schema_version=str(runtime[13]),
+                                runtime[13],
+                                schema_version=str(runtime[12]),
                                 event_count=int(runtime[0]) + 1,
                                 failures=(
                                     int(runtime[7])
@@ -565,7 +610,7 @@ class PostgresInteractionRepository:
                                     )
                                     if reservation.kind
                                     is not InteractionKind.QUESTION
-                                    else runtime[14]["stop_reason"]
+                                    else runtime[13]["stop_reason"]
                                 ),
                                 tool_calls=(
                                     int(runtime[6])

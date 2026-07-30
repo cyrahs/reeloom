@@ -35,6 +35,8 @@ from reeloom.kernel.rename_plan import compile_plan_draft
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.runtime.budget import RunBudget
+from reeloom.runtime.errors import BudgetExceeded
 from reeloom.runtime.events import (
     MappingSubmitted,
     MovieMappingSubmitted,
@@ -59,6 +61,7 @@ from reeloom.server.completed_layout import (
 )
 from reeloom.server.config import ConfigRevision, ServerWorkType
 from reeloom.server.config_repository import PostgresConfigRepository
+from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.interactions import (
     InteractionExecution,
     InteractionKind,
@@ -89,6 +92,10 @@ _MAPPING_PROMPT = (
 _QUESTION_TIMEOUT_SECONDS = 60.0
 
 
+def _question_timeout_seconds(budget: RunBudget) -> float:
+    return min(_QUESTION_TIMEOUT_SECONDS, budget.max_elapsed_seconds)
+
+
 @dataclass(frozen=True, slots=True)
 class AgentInteractionExecutor:
     scheduler: PostgresSchedulerRepository
@@ -103,7 +110,12 @@ class AgentInteractionExecutor:
     queries: PostgresQueries
 
     def __call__(self, request: InteractionRequest) -> InteractionExecution:
-        return asyncio.run(self._execute(request))
+        try:
+            return asyncio.run(self._execute(request))
+        except BudgetExceeded:
+            raise ServerError(
+                ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED
+            ) from None
 
     async def _execute(
         self,
@@ -180,20 +192,27 @@ class AgentInteractionExecutor:
         execution_schema_version: str,
         review_context: str,
     ) -> InteractionExecution:
-        async with asyncio.timeout(_QUESTION_TIMEOUT_SECONDS):
-            result = await Runner.run(
-                Agent(
-                    name=definition_name,
-                    instructions=instructions,
-                    model=model.model,
-                    model_settings=self._settings(model.model_settings),
-                    tools=[],
-                ),
-                review_context + "\n\nUser question:\n" + request.message,
-                max_turns=1,
-                session=session,
-                run_config=self._run_config(),
-            )
+        try:
+            async with asyncio.timeout(
+                _question_timeout_seconds(request.reservation.budget)
+            ):
+                result = await Runner.run(
+                    Agent(
+                        name=definition_name,
+                        instructions=instructions,
+                        model=model.model,
+                        model_settings=self._settings(model.model_settings),
+                        tools=[],
+                    ),
+                    review_context + "\n\nUser question:\n" + request.message,
+                    max_turns=1,
+                    session=session,
+                    run_config=self._run_config(),
+                )
+        except TimeoutError:
+            raise ServerError(
+                ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED
+            ) from None
         if not isinstance(result.final_output, str):
             raise TypeError("question reply must be text")
         tokens = sum(
