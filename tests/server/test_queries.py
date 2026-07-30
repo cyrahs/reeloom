@@ -89,9 +89,11 @@ class _Plans:
 
 
 def _completed_run_row(
-    *, layout_matches_current_plan: bool
+    *,
+    layout_matches_current_plan: bool,
+    interaction_budget_available: bool = True,
 ) -> tuple[object, ...]:
-    row: list[object] = [None] * 36
+    row: list[object] = [None] * 37
     row[:14] = (
         "run-1",
         "completed",
@@ -110,6 +112,7 @@ def _completed_run_row(
     )
     row[32] = False
     row[35] = layout_matches_current_plan
+    row[36] = interaction_budget_available
     return tuple(row)
 
 
@@ -141,6 +144,45 @@ def test_completed_run_exposes_reapply_only_for_current_layout(
     assert (
         "reapply" in run["available_actions"]
     ) is layout_matches_current_plan
+
+
+def test_completed_run_hides_interactions_when_budget_is_exhausted() -> None:
+    queries = PostgresQueries(
+        cast(
+            ConnectionPool,
+            _Pool(
+                _completed_run_row(
+                    layout_matches_current_plan=True,
+                    interaction_budget_available=False,
+                )
+            ),
+        )
+    )
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert "question" not in run["available_actions"]
+    assert "reapply" not in run["available_actions"]
+
+
+def test_exhausted_interaction_budget_does_not_hide_apply() -> None:
+    row = list(
+        _completed_run_row(
+            layout_matches_current_plan=False,
+            interaction_budget_available=False,
+        )
+    )
+    row[1] = "awaiting_approval"
+    row[3] = "awaiting_approval"
+    queries = PostgresQueries(
+        cast(ConnectionPool, _Pool(tuple(row)))
+    )
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["available_actions"] == ["approve_apply"]
 
 
 def _amendment() -> tuple[str, bytes]:

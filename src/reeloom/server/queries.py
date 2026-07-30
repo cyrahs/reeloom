@@ -266,7 +266,14 @@ class PostgresQueries:
                                FROM completed_layout_heads AS layout
                                WHERE layout.run_id = r.run_id
                                  AND layout.plan_hash = s.plan_hash
-                           ) AS has_completed_layout
+                           ) AS has_completed_layout,
+                           COALESCE(
+                               s.model_turns < s.max_model_turns
+                               AND s.model_tokens < s.max_total_tokens
+                               AND s.tool_calls < s.max_tool_calls
+                               AND s.failures < s.max_failures,
+                               false
+                           ) AS interaction_budget_available
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -357,11 +364,12 @@ class PostgresQueries:
         recovery_approval_id = row[11]
         apply_policy = str(row[12])
         busy = bool(row[13])
+        interaction_budget_available = bool(row[36])
         folder_status = None if row[28] is None else str(row[28])
         folder_action = None if row[24] is None else str(row[24])
         actions: list[str] = []
         if not busy and plan_hash is not None:
-            if status in {
+            if interaction_budget_available and status in {
                 "awaiting_approval",
                 "completed",
                 "rolled_back",
@@ -372,10 +380,15 @@ class PostgresQueries:
                 and phase == "awaiting_approval"
                 and recovery_approval_id is None
             ):
-                actions.append("revision")
+                if interaction_budget_available:
+                    actions.append("revision")
                 if apply_policy != "plan_only":
                     actions.append("approve_apply")
-            if status == "completed" and bool(row[35]):
+            if (
+                interaction_budget_available
+                and status == "completed"
+                and bool(row[35])
+            ):
                 actions.append("reapply")
             if recovery_approval_id is not None:
                 actions.append("recover")

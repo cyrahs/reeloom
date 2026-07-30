@@ -83,8 +83,15 @@ Config 还包含严格的 `agent_budget`：
 ```
 
 预算绑定创建 run 时的 exact config revision；后续配置修改不会增加已有 run
-或 interaction 的剩余预算。时间上限范围为 1–3600 秒，其余字段也有 OpenAPI
-声明的有界上限。旧 config revision 缺少该字段时使用上述默认值。
+的累计 turns、tokens、tool calls 或 failures。`max_elapsed_seconds` 是单次
+Agent operation 的时间上限：初始规划使用一次，之后每个 question、revision
+或 reapply reservation 都获得新的有界时间窗口；人工等待不消耗该窗口。question
+另有 60 秒上限。时间上限范围为 1–3600 秒，其余字段也有 OpenAPI 声明的有界
+上限。旧 config revision 缺少该字段时使用上述默认值。
+
+单次 operation 超时或累计预算耗尽时，interaction mutation 返回
+`interaction_budget_exhausted`。只有累计预算耗尽时，run read model 才不再暴露
+question、revision 或 reapply；这不影响已生成 exact plan 的审批与执行。
 
 目录选择接口只枚举当前 Reeloom Pod 从 `/` 可见的真实目录，并返回所选目录的
 absolute path 供结构化配置表单使用。它不读取或返回文件，不跟随 symlink，并

@@ -53,6 +53,12 @@ test("permission failures have actionable text", () => {
   expect(errorMessage("permission_denied")).toMatch(/修复权限/);
 });
 
+test("interaction budget failures distinguish retryable timeouts", () => {
+  expect(errorMessage("interaction_budget_exhausted")).toMatch(
+    /单次超时可重试/,
+  );
+});
+
 test("run deletion requires explicit acknowledgement", async () => {
   const onConfirm = vi.fn();
   render(createElement(DeleteRunDialog, {

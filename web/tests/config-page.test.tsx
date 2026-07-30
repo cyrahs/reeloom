@@ -69,7 +69,7 @@ test("keeps internal watch identity hidden and displays configured paths", async
   await screen.findByText("/media/incoming/anime");
   expect(screen.getByText("/media/library/anime")).toBeVisible();
   expect(screen.queryByLabelText("Watch ID")).not.toBeInTheDocument();
-  expect(screen.getByLabelText("总时间上限（秒）")).toHaveValue(600);
+  expect(screen.getByLabelText("单次操作时间上限（秒）")).toHaveValue(600);
   expect(screen.getByLabelText("Token 总上限")).toHaveValue(100_000);
 
   const workTypes = screen.getAllByLabelText("内容类型");
