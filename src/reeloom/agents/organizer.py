@@ -26,6 +26,7 @@ from agents import (
     function_tool,
     tool_input_guardrail,
 )
+from agents.agent import AgentBase
 from agents.items import ModelResponse, TResponseInputItem
 from agents.lifecycle import RunHooksBase
 from agents.model_settings import ModelSettings
@@ -152,6 +153,9 @@ MOVIE_ORGANIZER_TOOL_NAMES = (
     "detect_subtitle_variant",
     "submit_mapping",
 )
+_ORGANIZER_TOOL_NAMES = frozenset(
+    EPISODE_ORGANIZER_TOOL_NAMES + MOVIE_ORGANIZER_TOOL_NAMES
+)
 _WORK_TYPE_VALUES = frozenset(
     work_type.value for work_type in TmdbWorkType
 )
@@ -173,6 +177,33 @@ class OrganizerContext:
     plan_store: PlanStore | None = None
     agent_session: Session | None = None
     clock: Callable[[], datetime] = _utc_now
+
+
+def _enabled_by_phase(
+    tool_name: str,
+) -> Callable[
+    [RunContextWrapper[OrganizerContext], AgentBase[OrganizerContext]],
+    bool,
+]:
+    """Hide phase-invalid tools from the model without granting authority."""
+
+    def enabled(
+        context: RunContextWrapper[OrganizerContext],
+        _agent: AgentBase[OrganizerContext],
+    ) -> bool:
+        organizer = context.context
+        if not isinstance(organizer, OrganizerContext):
+            return False
+        state = organizer.runtime.state
+        return (
+            state.status is RunStatus.RUNNING
+            and organizer.runtime.policy.is_allowed(
+                tool_name,
+                state.phase,
+            )
+        )
+
+    return enabled
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +465,7 @@ def _list_candidates_input_guardrail(
     name_override="list_candidates",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("list_candidates"),
     tool_input_guardrails=[_list_candidates_input_guardrail],
 )
 async def _list_candidates_tool(
@@ -475,6 +507,7 @@ def _search_tmdb_input_guardrail(
     name_override="search_tmdb",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("search_tmdb"),
     tool_input_guardrails=[_search_tmdb_input_guardrail],
 )
 async def _search_tmdb_tool(
@@ -518,6 +551,7 @@ def _get_tmdb_series_input_guardrail(
     name_override="get_tmdb_series",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("get_tmdb_series"),
     tool_input_guardrails=[_get_tmdb_series_input_guardrail],
 )
 async def _get_tmdb_series_tool(
@@ -563,6 +597,7 @@ def _get_tmdb_season_input_guardrail(
     name_override="get_tmdb_season",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("get_tmdb_season"),
     tool_input_guardrails=[_get_tmdb_season_input_guardrail],
 )
 async def _get_tmdb_season_tool(
@@ -607,6 +642,7 @@ def _select_series_input_guardrail(
     name_override="select_series",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("select_series"),
     tool_input_guardrails=[_select_series_input_guardrail],
 )
 async def _select_series_tool(
@@ -645,6 +681,7 @@ def _get_tmdb_movie_input_guardrail(
     name_override="get_tmdb_movie",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("get_tmdb_movie"),
     tool_input_guardrails=[_get_tmdb_movie_input_guardrail],
 )
 async def _get_tmdb_movie_tool(
@@ -679,6 +716,7 @@ def _select_movie_input_guardrail(
     name_override="select_movie",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("select_movie"),
     tool_input_guardrails=[_select_movie_input_guardrail],
 )
 async def _select_movie_tool(
@@ -727,6 +765,7 @@ def _search_dir_input_guardrail(
     name_override="search_dir",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("search_dir"),
     tool_input_guardrails=[_search_dir_input_guardrail],
 )
 async def _search_dir_tool(
@@ -783,6 +822,7 @@ def _list_dir_input_guardrail(
     name_override="list_dir",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("list_dir"),
     tool_input_guardrails=[_list_dir_input_guardrail],
 )
 async def _list_dir_tool(
@@ -826,6 +866,7 @@ def _detect_subtitle_variant_input_guardrail(
     name_override="detect_subtitle_variant",
     strict_mode=True,
     failure_error_function=None,
+    is_enabled=_enabled_by_phase("detect_subtitle_variant"),
     tool_input_guardrails=[_detect_subtitle_variant_input_guardrail],
 )
 async def _detect_subtitle_variant_tool(
@@ -1027,6 +1068,7 @@ def _submit_function_tool(
             params_json_schema=input_model.model_json_schema(),
             on_invoke_tool=invoke,
             strict_json_schema=True,
+            is_enabled=_enabled_by_phase("submit_mapping"),
             tool_input_guardrails=[guardrail],
         ),
         None,
@@ -1050,14 +1092,26 @@ _submit_movie_mapping_tool = _submit_function_tool(
 def _unknown_tool_error(
     args: ToolErrorFormatterArgs[OrganizerContext],
 ) -> str:
-    args.run_context.context.runtime.record_rejection(
+    runtime = args.run_context.context.runtime
+    code = (
+        RuntimeErrorCode.TOOL_NOT_ALLOWED
+        if (
+            args.tool_name in _ORGANIZER_TOOL_NAMES
+            and not runtime.policy.is_allowed(
+                args.tool_name,
+                runtime.state.phase,
+            )
+        )
+        else RuntimeErrorCode.UNKNOWN_TOOL
+    )
+    runtime.record_rejection(
         call_id=args.call_id,
         tool_name=args.tool_name,
-        code=RuntimeErrorCode.UNKNOWN_TOOL,
+        code=code,
         retryable=True,
     )
     return _error_observation(
-        RuntimeErrorCode.UNKNOWN_TOOL,
+        code,
         retryable=True,
     )
 

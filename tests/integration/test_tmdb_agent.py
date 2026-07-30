@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
+from reeloom.adapters.agent_session import FilesystemAgentSession
 from reeloom.agents.organizer import (
     create_organizer_context,
     run_episode_organizer,
@@ -22,11 +24,15 @@ from reeloom.kernel.tmdb import (
     TmdbSeriesDetails,
     TmdbWorkType,
 )
+from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.state import Phase
 from reeloom.tools.candidates import SnapshotCandidateSource
 
 
 class _FakeTmdb:
+    def __init__(self) -> None:
+        self.season_calls = 0
+
     async def search_titles(
         self,
         *,
@@ -89,6 +95,7 @@ class _FakeTmdb:
         season_number: int,
         language: TmdbLanguage,
     ) -> TmdbSeasonDetails:
+        self.season_calls += 1
         assert tmdb_id == 200
         return TmdbSeasonDetails(
             tmdb_id=tmdb_id,
@@ -107,19 +114,40 @@ class _FakeTmdb:
         )
 
 
-def _context():
+class _ToolCapturingModel(ScriptedModel):
+    def __init__(self, steps) -> None:
+        super().__init__(steps)
+        self.tool_names_by_turn: list[tuple[str, ...]] = []
+
+    async def get_response(self, *args, **kwargs):
+        tools = kwargs.get("tools")
+        if tools is None:
+            tools = args[3]
+        self.tool_names_by_turn.append(
+            tuple(tool.name for tool in tools)
+        )
+        return await super().get_response(*args, **kwargs)
+
+
+def _context(
+    *,
+    work_type: TmdbWorkType = TmdbWorkType.ANIME,
+    provider: _FakeTmdb | None = None,
+    agent_session: FilesystemAgentSession | None = None,
+):
     return create_organizer_context(
         run_id="run-1",
         candidate_source=SnapshotCandidateSource(
             CandidateSnapshot.create([])
         ),
-        work_type=TmdbWorkType.ANIME,
-        tmdb_provider=_FakeTmdb(),
+        work_type=work_type,
+        tmdb_provider=provider or _FakeTmdb(),
+        agent_session=agent_session,
     )
 
 
 def test_fake_agent_identifies_series_and_enters_mapping_phase() -> None:
-    model = ScriptedModel(
+    model = _ToolCapturingModel(
         (
             ToolCallStep(
                 name="search_tmdb",
@@ -175,6 +203,144 @@ def test_fake_agent_identifies_series_and_enters_mapping_phase() -> None:
     assert result.state.selected_series is not None
     assert result.state.selected_series.tmdb_id == 200
     assert result.state.selected_series.title_zh_cn == "正确动画"
+    identify_tools = (
+        "list_candidates",
+        "search_tmdb",
+        "get_tmdb_series",
+        "select_series",
+    )
+    mapping_tools = (
+        "list_candidates",
+        "get_tmdb_series",
+        "get_tmdb_season",
+        "search_dir",
+        "list_dir",
+        "detect_subtitle_variant",
+        "submit_mapping",
+    )
+    assert model.tool_names_by_turn[:3] == [identify_tools] * 3
+    assert model.tool_names_by_turn[3:] == [mapping_tools] * 2
+
+
+def test_hidden_known_tool_is_rejected_before_provider() -> None:
+    provider = _FakeTmdb()
+    model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="get_tmdb_season",
+                arguments={
+                    "tmdb_id": 200,
+                    "work_type": "anime",
+                    "season_number": 1,
+                    "language": "zh-CN",
+                },
+                call_id="call-season-too-early",
+            ),
+            FinalStep(
+                text="The phase must change first.",
+                expect_input_contains="tool_not_allowed",
+            ),
+        )
+    )
+
+    result = asyncio.run(
+        run_episode_organizer(
+            context=_context(provider=provider),
+            model=model,
+            prompt="Inspect season one.",
+        )
+    )
+
+    assert provider.season_calls == 0
+    assert result.state.phase is Phase.IDENTIFY_SERIES
+    assert result.state.tool_calls == 1
+    assert result.state.failures == 1
+
+
+def test_movie_identification_hides_mapping_tools() -> None:
+    model = _ToolCapturingModel((FinalStep(text="No selection yet."),))
+
+    result = asyncio.run(
+        run_episode_organizer(
+            context=_context(work_type=TmdbWorkType.MOVIE),
+            model=model,
+            prompt="Inspect the Movie candidates.",
+        )
+    )
+
+    assert result.state.phase is Phase.IDENTIFY_MOVIE
+    assert model.tool_names_by_turn == [
+        (
+            "list_candidates",
+            "search_tmdb",
+            "get_tmdb_movie",
+            "select_movie",
+        )
+    ]
+
+
+def test_fresh_runtime_hides_mapping_tools_despite_old_session(
+    tmp_path: Path,
+) -> None:
+    session_root = tmp_path / "session"
+    session_root.mkdir()
+    session = FilesystemAgentSession(
+        AuthorizedRoot.create(session_root),
+        session_id="run-1",
+    )
+    first_model = ScriptedModel(
+        (
+            ToolCallStep(
+                name="search_tmdb",
+                arguments={
+                    "query": "Correct Anime",
+                    "work_type": "anime",
+                },
+                call_id="old-search",
+            ),
+            ToolCallStep(
+                name="select_series",
+                arguments={"tmdb_id": 200, "work_type": "anime"},
+                call_id="old-select",
+            ),
+            FinalStep(text="Old run selected the series."),
+        )
+    )
+    first_context = _context(agent_session=session)
+    asyncio.run(
+        run_episode_organizer(
+            context=first_context,
+            model=first_model,
+            prompt="Select the series.",
+        )
+    )
+
+    recovered_session = FilesystemAgentSession(
+        AuthorizedRoot.create(session_root),
+        session_id="run-1",
+    )
+    fresh_context = _context(agent_session=recovered_session)
+    fresh_model = _ToolCapturingModel(
+        (FinalStep(text="Fresh runtime must identify again."),)
+    )
+
+    result = asyncio.run(
+        run_episode_organizer(
+            context=fresh_context,
+            model=fresh_model,
+            prompt="Revise the mapping.",
+        )
+    )
+
+    assert result.state.phase is Phase.IDENTIFY_SERIES
+    assert fresh_model.tool_names_by_turn == [
+        (
+            "list_candidates",
+            "search_tmdb",
+            "get_tmdb_series",
+            "select_series",
+        )
+    ]
 
 
 def test_tmdb_tool_rejects_extra_url_field_before_provider() -> None:
