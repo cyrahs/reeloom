@@ -547,6 +547,14 @@ def test_openapi_uses_named_strict_ui_contracts() -> None:
     assert "library_root" in components["ConfigWatchRequest"]["properties"]
     assert "root" in components["ConfigWatchResponse"]["properties"]
     assert "library_root" in components["ConfigWatchResponse"]["properties"]
+    folder_summary = components["FolderObservationSummary"]
+    assert "retry_count" in folder_summary["required"]
+    assert folder_summary["properties"]["retry_count"] == {
+        "maximum": 3.0,
+        "minimum": 0.0,
+        "title": "Retry Count",
+        "type": "integer",
+    }
 
 
 def test_list_read_models_serialize_query_tuples() -> None:

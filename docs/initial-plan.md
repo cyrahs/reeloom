@@ -582,7 +582,12 @@ recovery 和 Web 页面。
 当前状态：M11 已完成。每个 watch 根的直接子文件夹独立稳定并创建一个 run；
 媒体仍由 M0-M10 immutable plan 执行，随后由独立
 `FolderDispositionPlan v1` 将残留归入 watch-local `archive`、安全移除已验证
-空目录，或将 eligible deterministic failure 归入 `fail`。
+空目录，或将 eligible deterministic failure 归入 `fail`。其他 Agent/Provider
+失败先保留源目录并最多重试三个新 generation；第四次失败才以
+`agent_retry_exhausted` 归入 `fail`。终态 generation 的源目录持续缺失且没有
+未结算 effect 时，observation 收敛为 `blocked/source_folder_missing`。目标名
+只由当前活动计划或未结算事务占用；脱离 generation 的不可变历史计划不再制造
+虚假的 `.1`、`.2` 后缀。
 
 `archive`、`fail`、顶层隐藏目录、散落文件和顶层 symlink 不参与发现；嵌套
 symlink 只作为不透明残留，任意 `.env*` 会阻断整个文件夹。Folder disposition

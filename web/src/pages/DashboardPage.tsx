@@ -128,6 +128,9 @@ export function DashboardPage() {
                 <span>
                   {item.watch_id}
                   {item.reason_code ? ` · ${item.reason_code}` : ""}
+                  {item.retry_count
+                    ? ` · 重试 ${item.retry_count}/3`
+                    : ""}
                 </span>
               </div>
               {item.run_id ? (

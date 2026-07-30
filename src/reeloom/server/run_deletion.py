@@ -5,6 +5,7 @@ from datetime import datetime
 
 from psycopg_pool import ConnectionPool
 
+from reeloom.server.config_repository import CONFIG_LOCK_ID
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.run_deletion_policy import RUN_DELETION_READY_SQL
 
@@ -17,6 +18,10 @@ class PostgresRunDeletionService:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
                     row = connection.execute(
                         f"""
                         SELECT deletion.deleted_at,
@@ -39,6 +44,23 @@ class PostgresRunDeletionService:
                         raise ServerError(
                             ServerErrorCode.RUN_DELETE_CONFLICT
                         )
+                    connection.execute(
+                        """
+                        DELETE FROM watch_folder_observations AS observed
+                        USING discoveries AS discovery
+                        WHERE discovery.discovery_id =
+                              observed.discovery_id
+                          AND discovery.discovery_id = (
+                              SELECT r.discovery_id
+                              FROM runs AS r
+                              WHERE r.run_id = %s
+                          )
+                          AND observed.status = 'blocked'
+                          AND observed.blocked_reason =
+                              'source_folder_missing'
+                        """,
+                        (run_id,),
+                    )
                     inserted = connection.execute(
                         """
                         INSERT INTO run_operations

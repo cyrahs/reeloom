@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from psycopg_pool import ConnectionPool
 
@@ -89,6 +89,28 @@ def _inventory_json(folder: FolderSnapshot) -> str:
     )
 
 
+def _missing_folder_action(
+    *,
+    status: str,
+    has_discovery: bool,
+    terminal_ready: bool,
+    elapsed_seconds: float,
+    settle_interval_seconds: int,
+) -> Literal["keep", "remove", "start_missing", "confirm_missing"]:
+    if not has_discovery or status == "settled":
+        return "remove"
+    if not terminal_ready:
+        return "keep"
+    if status == "active":
+        return "start_missing"
+    if (
+        status == "settling"
+        and elapsed_seconds >= settle_interval_seconds
+    ):
+        return "confirm_missing"
+    return "keep"
+
+
 def _invalidate_unclaimed(
     connection: Any, *, discovery_id: str
 ) -> bool:
@@ -165,6 +187,51 @@ def _invalidate_unclaimed(
         ).fetchone()
         is not None
     )
+
+
+def _terminal_missing_ready(
+    connection: Any, *, discovery_id: str
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM runs AS r
+        JOIN jobs AS j ON j.run_id = r.run_id
+        WHERE r.discovery_id = %s
+          AND r.status IN ('failed', 'rolled_back')
+          AND j.status IN ('completed', 'failed')
+          AND NOT EXISTS (
+              SELECT 1 FROM run_operations AS operation
+              WHERE operation.run_id = r.run_id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM interactions AS interaction
+              WHERE interaction.run_id = r.run_id
+                AND interaction.status = 'active'
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM approval_claims AS claim
+              LEFT JOIN approval_settlements AS settled
+                ON settled.approval_id = claim.approval_id
+              WHERE claim.run_id = r.run_id
+                AND settled.approval_id IS NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM folder_disposition_approvals AS approval
+              JOIN folder_disposition_claims AS claim
+                ON claim.approval_id = approval.approval_id
+              LEFT JOIN folder_disposition_settlements AS settled
+                ON settled.approval_id = claim.approval_id
+              WHERE approval.run_id = r.run_id
+                AND settled.approval_id IS NULL
+          )
+        FOR UPDATE OF r, j
+        """,
+        (discovery_id,),
+    ).fetchone()
+    return row is not None
 
 
 class PostgresSchedulerRepository:
@@ -511,6 +578,7 @@ class PostgresSchedulerRepository:
                     current_names = {
                         item.name for item in scan.folders
                     } | {item.name for item in scan.blocked}
+                    threshold = timedelta(seconds=int(state[3]))
                     removable = [
                         name
                         for name, row in previous.items()
@@ -528,6 +596,82 @@ class PostgresSchedulerRepository:
                             (watch_id, removable),
                         )
                         mutated = True
+                    for name, row in previous.items():
+                        if (
+                            name in current_names
+                            or name in removable
+                            or row[8] is None
+                        ):
+                            continue
+                        terminal_ready = _terminal_missing_ready(
+                            connection,
+                            discovery_id=str(row[8]),
+                        )
+                        action = _missing_folder_action(
+                            status=str(row[9]),
+                            has_discovery=True,
+                            terminal_ready=terminal_ready,
+                            elapsed_seconds=(
+                                observed_at - row[6]
+                            ).total_seconds(),
+                            settle_interval_seconds=int(state[3]),
+                        )
+                        if action == "start_missing":
+                            connection.execute(
+                                """
+                                UPDATE watch_folder_observations
+                                SET status = 'settling',
+                                    first_observed_at = %s,
+                                    stable_at = NULL
+                                WHERE watch_id = %s
+                                  AND folder_name = %s
+                                  AND discovery_id = %s
+                                  AND status = 'active'
+                                """,
+                                (
+                                    observed_at,
+                                    watch_id,
+                                    name,
+                                    str(row[8]),
+                                ),
+                            )
+                            mutated = True
+                        elif action == "confirm_missing":
+                            confirmed = connection.execute(
+                                """
+                                UPDATE watch_folder_observations
+                                SET status = 'blocked',
+                                    blocked_reason =
+                                        'source_folder_missing',
+                                    stable_at = %s
+                                WHERE watch_id = %s
+                                  AND folder_name = %s
+                                  AND discovery_id = %s
+                                  AND status = 'settling'
+                                RETURNING discovery_id
+                                """,
+                                (
+                                    observed_at,
+                                    watch_id,
+                                    name,
+                                    str(row[8]),
+                                ),
+                            ).fetchone()
+                            if confirmed is not None:
+                                connection.execute(
+                                    """
+                                    INSERT INTO scheduler_audit
+                                        (event_type, subject_id)
+                                    VALUES (
+                                        'folder_source_missing', %s
+                                    )
+                                    ON CONFLICT (
+                                        event_type, subject_id
+                                    ) DO NOTHING
+                                    """,
+                                    (str(confirmed[0]),),
+                                )
+                                mutated = True
                     for blocked in scan.blocked:
                         row = previous.get(blocked.name)
                         if row is not None and row[8] is not None:
@@ -568,7 +712,8 @@ class PostgresSchedulerRepository:
                                 stable_at = NULL,
                                 discovery_id = NULL,
                                 status = 'blocked',
-                                blocked_reason = EXCLUDED.blocked_reason
+                                blocked_reason = EXCLUDED.blocked_reason,
+                                retry_count = 0
                             WHERE
                                 watch_folder_observations.discovery_id IS NULL
                                 OR watch_folder_observations.status = 'settled'
@@ -597,13 +742,47 @@ class PostgresSchedulerRepository:
                         """,
                         (watch_id,),
                     ).fetchone() is not None
-                    threshold = timedelta(seconds=int(state[3]))
                     discoveries: list[Discovery] = []
                     disposition_runs: list[str] = []
                     for folder in scan.folders:
                         row = previous.get(folder.name)
                         if row is not None and row[8] is not None:
-                            if str(row[9]) == "settled":
+                            if (
+                                str(row[9]) == "blocked"
+                                and str(row[10])
+                                == "source_folder_missing"
+                            ):
+                                if not _invalidate_unclaimed(
+                                    connection,
+                                    discovery_id=str(row[8]),
+                                ):
+                                    continue
+                                connection.execute(
+                                    """
+                                    UPDATE watch_folder_observations
+                                    SET discovery_id = NULL,
+                                        status = 'settling',
+                                        blocked_reason = NULL,
+                                        first_observed_at = %s,
+                                        stable_at = NULL,
+                                        retry_count = 0
+                                    WHERE watch_id = %s
+                                      AND folder_name = %s
+                                      AND discovery_id = %s
+                                      AND status = 'blocked'
+                                      AND blocked_reason =
+                                          'source_folder_missing'
+                                    """,
+                                    (
+                                        observed_at,
+                                        watch_id,
+                                        folder.name,
+                                        str(row[8]),
+                                    ),
+                                )
+                                row = None
+                                mutated = True
+                            elif str(row[9]) == "settled":
                                 connection.execute(
                                     """
                                     UPDATE watch_folder_observations
@@ -731,7 +910,8 @@ class PostgresSchedulerRepository:
                                             snapshot_payload = %s::jsonb,
                                             first_observed_at = %s,
                                             stable_at = NULL,
-                                            status = 'settling'
+                                            status = 'settling',
+                                            retry_count = 0
                                         WHERE watch_id = %s
                                           AND folder_name = %s
                                           AND discovery_id = %s
@@ -811,7 +991,8 @@ class PostgresSchedulerRepository:
                                     stable_at = NULL,
                                     discovery_id = NULL,
                                     status = 'settling',
-                                    blocked_reason = NULL
+                                    blocked_reason = NULL,
+                                    retry_count = 0
                                 WHERE
                                     watch_folder_observations.discovery_id
                                         IS NULL
@@ -1398,6 +1579,10 @@ class PostgresSchedulerRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
                     row = connection.execute(
                         """
                         SELECT d.discovery_id, d.watch_id, d.source_folder
@@ -1445,6 +1630,94 @@ class PostgresSchedulerRepository:
                             """,
                             (audit_event, run_id),
                         )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
+    def retry_folder_generation(
+        self,
+        *,
+        run_id: str,
+        max_retries: int,
+    ) -> int | None:
+        """Retire one failed generation while preserving a bounded retry count."""
+
+        if (
+            type(max_retries) is not int
+            or max_retries < 1
+            or max_retries > 3
+        ):
+            raise ValueError("invalid folder retry limit")
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    row = connection.execute(
+                        """
+                        SELECT d.discovery_id, d.watch_id, d.source_folder,
+                               o.retry_count
+                        FROM runs AS r
+                        JOIN discoveries AS d
+                          ON d.discovery_id = r.discovery_id
+                        JOIN watch_folder_observations AS o
+                          ON o.discovery_id = d.discovery_id
+                        WHERE r.run_id = %s
+                          AND d.folder_generation_id IS NOT NULL
+                          AND o.status = 'active'
+                        FOR UPDATE OF o
+                        """,
+                        (run_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    retry_count = int(row[3])
+                    if retry_count >= max_retries:
+                        return None
+                    if not _invalidate_unclaimed(
+                        connection,
+                        discovery_id=str(row[0]),
+                    ):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    updated = connection.execute(
+                        """
+                        UPDATE watch_folder_observations
+                        SET discovery_id = NULL,
+                            status = 'settling',
+                            first_observed_at = clock_timestamp(),
+                            stable_at = NULL,
+                            retry_count = retry_count + 1
+                        WHERE watch_id = %s
+                          AND folder_name = %s
+                          AND discovery_id = %s
+                          AND status = 'active'
+                        RETURNING retry_count
+                        """,
+                        (str(row[1]), str(row[2]), str(row[0])),
+                    ).fetchone()
+                    if updated is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit
+                            (event_type, subject_id)
+                        VALUES ('folder_generation_retry', %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (run_id,),
+                    )
+                    return int(updated[0])
         except ServerError:
             raise
         except Exception:
