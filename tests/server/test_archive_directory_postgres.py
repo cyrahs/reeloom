@@ -14,6 +14,7 @@ from reeloom.kernel.folder_disposition import (
     FolderDispositionAction,
     FolderDispositionPlan,
 )
+from reeloom.kernel.naming import filesystem_name_key
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
@@ -440,6 +441,75 @@ def test_retired_folder_run_preserves_durable_work(
         assert case.scheduler.retired_unplanned_folder_runs(
             schema_versions=(PREVIOUS_ORGANIZER_SCHEMA_VERSION,)
         ) == ()
+    finally:
+        case.control.close()
+
+
+@pytest.mark.postgres
+def test_detached_plan_history_does_not_reserve_archive_suffix(
+    tmp_path: Path,
+) -> None:
+    case = _folder_run(tmp_path)
+    run_id = case.registration.run_id
+    folder = case.watcher.scan_folders(
+        AuthorizedRoot.create(case.watch_root)
+    ).folders[0]
+    generation_id = case.discovery.folder_generation_id
+    assert generation_id is not None
+    root = AuthorizedRoot.create(case.watch_root)
+    repository = PostgresFolderDispositionRepository(case.control.pool)
+
+    def disposition(reason_code: str) -> FolderDispositionPlan:
+        return FolderDispositionPlan.create(
+            run_id=run_id,
+            folder_generation_id=generation_id,
+            created_at=datetime.now(UTC),
+            source_root=RootBinding(
+                PurePosixPath(root.path.as_posix()),
+                root.device,
+                root.inode,
+            ),
+            source_folder=folder.name,
+            folder_device=folder.device,
+            folder_inode=folder.inode,
+            inventory_id=folder.disposition_inventory_id,
+            action=FolderDispositionAction.ARCHIVE,
+            target_relative=PurePosixPath("archive") / folder.name,
+            media_plan_hash=None,
+            file_count=1,
+            reason_code=reason_code,
+        )
+
+    try:
+        first = disposition("first")
+        assert repository.append_plan(first)
+        assert repository.reserved_target_keys(
+            root=root,
+            action=FolderDispositionAction.ARCHIVE,
+        ) == {filesystem_name_key(folder.name)}
+        assert not repository.reserved_target_keys(
+            root=root,
+            action=FolderDispositionAction.ARCHIVE,
+            exclude_run_id=run_id,
+        )
+
+        replacement = disposition("replacement")
+        assert repository.append_plan(replacement)
+        with case.control.pool.connection() as connection:
+            connection.execute(
+                """
+                UPDATE watch_folder_observations
+                SET discovery_id = NULL, status = 'settling',
+                    first_observed_at = clock_timestamp(),
+                    stable_at = NULL
+                WHERE discovery_id = %s
+                """,
+                (case.discovery.discovery_id,),
+            )
+        assert not repository.reserved_target_keys(
+            root=root,
+            action=FolderDispositionAction.ARCHIVE,
+        )
     finally:
         case.control.close()
 

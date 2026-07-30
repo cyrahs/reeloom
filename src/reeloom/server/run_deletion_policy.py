@@ -36,7 +36,14 @@ RUN_DELETION_READY_SQL = """
             SELECT 1
             FROM watch_folder_observations AS observed
             WHERE observed.discovery_id = d.discovery_id
-              AND observed.status <> 'settled'
+              AND NOT (
+                  observed.status = 'settled'
+                  OR (
+                      observed.status = 'blocked'
+                      AND observed.blocked_reason =
+                          'source_folder_missing'
+                  )
+              )
         )
     )
 """

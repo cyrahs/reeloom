@@ -125,9 +125,13 @@ def test_only_deterministic_executor_collision_is_terminal() -> None:
 
 
 class _FolderScheduler:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, retry_results: list[int | None] | None = None
+    ) -> None:
         self.settled: list[bool] = []
         self.restarted = 0
+        self.retry_results = list(retry_results or [])
+        self.retry_calls: list[tuple[str, int]] = []
         self.failed = 0
 
     def get_job_context(self, *, run_id: str) -> object:
@@ -149,6 +153,15 @@ class _FolderScheduler:
         del run_id
         self.restarted += 1
 
+    def retry_folder_generation(
+        self,
+        *,
+        run_id: str,
+        max_retries: int,
+    ) -> int | None:
+        self.retry_calls.append((run_id, max_retries))
+        return self.retry_results.pop(0)
+
     def mark_run_failed(self, *, run_id: str) -> None:
         del run_id
         self.failed += 1
@@ -161,6 +174,23 @@ class _FailingWorker:
     async def run(self, *, run_id: str) -> str:
         del run_id
         raise self.error
+
+
+class _ManualConfigs:
+    def get(self, revision: int) -> object:
+        del revision
+        return SimpleNamespace(apply_policy=ApplyPolicy.PLAN_ONLY)
+
+
+class _FolderDispositions:
+    def __init__(self) -> None:
+        self.failures: list[tuple[str, str]] = []
+
+    def prepare_failure(
+        self, *, run_id: str, reason_code: str
+    ) -> object:
+        self.failures.append((run_id, reason_code))
+        return SimpleNamespace(plan_hash="sha256:" + "f" * 64)
 
 
 @pytest.mark.parametrize(
@@ -208,8 +238,8 @@ def test_only_source_drift_restarts_folder_generation() -> None:
     assert scheduler.failed == 0
 
 
-def test_unclassified_failure_stops_without_restart() -> None:
-    scheduler = _FolderScheduler()
+def test_unclassified_failure_retries_folder_generation() -> None:
+    scheduler = _FolderScheduler(retry_results=[1])
     background = BackgroundServices(
         boot_id="boot-test",
         configs=object(),  # type: ignore[arg-type]
@@ -220,6 +250,29 @@ def test_unclassified_failure_stops_without_restart() -> None:
 
     background._execute_job("job-test", "run-test")
 
-    assert scheduler.settled == [True]
+    assert scheduler.settled == []
     assert scheduler.restarted == 0
+    assert scheduler.retry_calls == [("run-test", 3)]
+    assert scheduler.failed == 0
+
+
+def test_unclassified_failure_moves_to_fail_after_three_retries() -> None:
+    scheduler = _FolderScheduler(retry_results=[None])
+    dispositions = _FolderDispositions()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=_ManualConfigs(),  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_FailingWorker(RuntimeError("provider unavailable")),  # type: ignore[arg-type]
+        apply=object(),  # type: ignore[arg-type]
+        folder_dispositions=dispositions,  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert scheduler.retry_calls == [("run-test", 3)]
+    assert dispositions.failures == [
+        ("run-test", "agent_retry_exhausted")
+    ]
     assert scheduler.failed == 1
+    assert scheduler.settled == [True]

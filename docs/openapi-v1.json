@@ -1016,6 +1016,12 @@
             ],
             "title": "Reason Code"
           },
+          "retry_count": {
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Retry Count",
+            "type": "integer"
+          },
           "run_id": {
             "anyOf": [
               {
@@ -1063,7 +1069,8 @@
           "status",
           "reason_code",
           "stable_at",
-          "run_id"
+          "run_id",
+          "retry_count"
         ],
         "title": "FolderObservationSummary",
         "type": "object"

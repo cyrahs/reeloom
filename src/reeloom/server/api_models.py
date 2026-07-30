@@ -83,6 +83,7 @@ class FolderObservationSummary(_StrictModel):
     reason_code: str | None
     stable_at: str | None
     run_id: str | None
+    retry_count: int = Field(ge=0, le=3)
 
 
 class FolderObservationsResponse(_StrictModel):
