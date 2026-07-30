@@ -1149,7 +1149,7 @@ class PostgresSchedulerRepository:
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
 
-    def legacy_active_folder_runs(
+    def retired_unplanned_folder_runs(
         self,
         *,
         schema_versions: tuple[str, ...],
@@ -1168,19 +1168,55 @@ class PostgresSchedulerRepository:
                     JOIN agent_definitions AS definition
                       ON definition.definition_hash =
                          r.agent_definition_hash
-                    LEFT JOIN run_states AS state ON state.run_id = r.run_id
+                    JOIN watch_folder_observations AS observed
+                      ON observed.watch_id = discovery.watch_id
+                     AND observed.folder_name = discovery.source_folder
+                     AND observed.discovery_id = discovery.discovery_id
                     LEFT JOIN plan_heads AS head ON head.run_id = r.run_id
+                    LEFT JOIN completed_layout_heads AS layout
+                      ON layout.run_id = r.run_id
                     WHERE discovery.folder_generation_id IS NOT NULL
-                      AND job.status = 'pending'
-                      AND (
-                          r.status IN ('registered', 'running')
-                          OR (
-                              r.status = 'failed'
-                              AND state.projection_payload->>'failure_code'
-                                  = 'retired_tool_call'
-                          )
+                      AND observed.status = 'active'
+                      AND job.status IN (
+                          'pending', 'running', 'completed', 'failed'
+                      )
+                      AND r.status IN (
+                          'registered', 'running', 'failed'
                       )
                       AND head.run_id IS NULL
+                      AND layout.run_id IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM folder_disposition_plans AS disposition
+                          WHERE disposition.run_id = r.run_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM run_operations AS operation
+                          WHERE operation.run_id = r.run_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM approval_claims AS claim
+                          JOIN approvals AS approval USING (approval_id)
+                          LEFT JOIN approval_settlements AS settlement
+                            USING (approval_id)
+                          WHERE approval.run_id = r.run_id
+                            AND settlement.approval_id IS NULL
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM folder_disposition_claims AS claim
+                          JOIN folder_disposition_approvals AS approval
+                            USING (approval_id)
+                          LEFT JOIN folder_disposition_transactions AS txn
+                            USING (approval_id)
+                          WHERE approval.run_id = r.run_id
+                            AND (
+                                txn.status IS NULL
+                                OR txn.status <> 'blocked'
+                            )
+                      )
                       AND definition.payload->>'schema_version'
                           = ANY(%s)
                     ORDER BY r.run_id
@@ -1351,7 +1387,12 @@ class PostgresSchedulerRepository:
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
 
-    def restart_folder_generation(self, *, run_id: str) -> None:
+    def restart_folder_generation(
+        self,
+        *,
+        run_id: str,
+        audit_event: str | None = None,
+    ) -> None:
         """Retire a transiently failed run without moving its source folder."""
 
         try:
@@ -1393,6 +1434,16 @@ class PostgresSchedulerRepository:
                     if updated is None:
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    if audit_event is not None:
+                        connection.execute(
+                            """
+                            INSERT INTO scheduler_audit
+                                (event_type, subject_id)
+                            VALUES (%s, %s)
+                            ON CONFLICT (event_type, subject_id) DO NOTHING
+                            """,
+                            (audit_event, run_id),
                         )
         except ServerError:
             raise

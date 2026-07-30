@@ -312,6 +312,10 @@ def _correcting_mapping_model() -> ScriptedModel:
                             "video_id": "video:1",
                         }
                     ],
+                    "review": {
+                        "summary": {"invalid": True},
+                        "unmapped_explanations": "invalid",
+                    },
                 },
                 call_id="mapping-good",
                 expect_input_contains="episode_out_of_bounds",
@@ -482,6 +486,9 @@ def test_agent_corrects_mapping_from_structured_validation_feedback(
     )
     assert result.state.mapping_draft is not None
     assert result.state.mapping_draft.videos[0].span.episode_start == 2
+    assert result.state.mapping_review is not None
+    assert result.state.mapping_review.agent_summary is None
+    assert result.state.mapping_review.items == ()
     assert result.state.failures == 1
     assert result.state.validation_issues == ()
     assert result.model_turns == 9

@@ -4,13 +4,14 @@ import asyncio
 import json
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from agents import (
     Agent,
+    FunctionTool,
     MaxTurnsExceeded,
     Model,
     RunConfig,
@@ -18,6 +19,7 @@ from agents import (
     Session,
     ToolExecutionConfig,
     ToolGuardrailFunctionOutput,
+    ToolInputGuardrail,
     ToolInputGuardrailData,
     ToolErrorFormatterArgs,
     ToolsToFinalOutputResult,
@@ -28,14 +30,24 @@ from agents.items import ModelResponse, TResponseInputItem
 from agents.lifecycle import RunHooksBase
 from agents.model_settings import ModelSettings
 from agents.run_context import RunContextWrapper
-from agents.tool import FunctionToolResult
+from agents.tool import (
+    FunctionToolResult,
+    set_function_tool_failure_error_function,
+)
 from agents.tool_context import ToolContext
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field
 
 from reeloom.kernel.candidates import CandidateKind
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.plan_review import (
+    MAX_REVIEW_BYTES,
+    MAX_REVIEW_DETAIL_BYTES,
+    MAX_REVIEW_ITEMS,
+    MAX_REVIEW_SUMMARY_BYTES,
+    PlanReviewReason,
+)
 from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.kernel.tmdb import TmdbLanguage, TmdbWorkType
 from reeloom.ports.subtitles import SubtitleSampleProvider
@@ -194,6 +206,58 @@ class _MovieMappingInput(BaseModel):
     subtitle_ids: list[str] = Field(max_length=10_000)
 
 
+class _UnmappedExplanationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    candidate_id: str = Field(min_length=1, max_length=32)
+    reason: PlanReviewReason
+    detail: str | None = Field(
+        default=None,
+        max_length=MAX_REVIEW_DETAIL_BYTES,
+    )
+    season: int | None = Field(default=None, strict=True, ge=0, le=999)
+    episode: int | None = Field(
+        default=None,
+        strict=True,
+        ge=1,
+        le=100_000,
+    )
+    related_video_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32,
+    )
+
+
+class _PlanReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    summary: str | None = Field(
+        default=None,
+        max_length=MAX_REVIEW_SUMMARY_BYTES,
+    )
+    unmapped_explanations: list[_UnmappedExplanationInput] = Field(
+        default_factory=list,
+        max_length=MAX_REVIEW_ITEMS,
+    )
+
+
+class _EpisodeSubmitMappingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    videos: list[_VideoMappingInput]
+    subtitles: list[_SubtitleMappingInput]
+    review: _PlanReviewInput | None = None
+
+
+class _MovieSubmitMappingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    video_id: str = Field(min_length=1, max_length=32)
+    subtitle_ids: list[str] = Field(max_length=10_000)
+    review: _PlanReviewInput | None = None
+
+
 class _BudgetHooks(RunHooksBase[OrganizerContext, Agent]):
     async def on_llm_start(
         self,
@@ -267,16 +331,56 @@ def _input_payload(
     raw_arguments = data.context.tool_arguments
     try:
         payload = (
-            json.loads(raw_arguments)
+            json.loads(
+                raw_arguments,
+                object_pairs_hook=_reject_duplicate_input_keys,
+            )
             if len(raw_arguments.encode("utf-8")) <= max_bytes
             else None
         )
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
         return None
     if (
         not isinstance(payload, dict)
         or not all(isinstance(key, str) for key in payload)
         or frozenset(payload) != fields
+    ):
+        return None
+    return payload
+
+
+def _reject_duplicate_input_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate tool input key")
+        value[key] = item
+    return value
+
+
+def _submit_input_payload(
+    raw_arguments: str,
+    *,
+    mapping_fields: frozenset[str],
+) -> dict[str, object] | None:
+    try:
+        payload = (
+            json.loads(
+                raw_arguments,
+                object_pairs_hook=_reject_duplicate_input_keys,
+            )
+            if len(raw_arguments.encode("utf-8")) <= MAX_REVIEW_BYTES
+            else None
+        )
+    except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or not all(isinstance(key, str) for key in payload)
+        or frozenset(payload)
+        not in {mapping_fields, mapping_fields | {"review"}}
     ):
         return None
     return payload
@@ -744,83 +848,95 @@ async def _detect_subtitle_variant_tool(
     )
 
 
-def _valid_mapping_list(
+def _validated_mapping_list(
     value: object,
     *,
     schema: type[BaseModel],
     candidate_count: int,
-) -> bool:
+) -> list[dict[str, object]] | None:
     if not isinstance(value, list) or len(value) > candidate_count:
-        return False
+        return None
     try:
-        for item in value:
-            schema.model_validate(item)
+        return [
+            schema.model_validate(item).model_dump()
+            for item in value
+        ]
     except ValueError:
-        return False
-    return True
+        return None
 
 
 @tool_input_guardrail
 def _submit_mapping_input_guardrail(
     data: ToolInputGuardrailData,
 ) -> ToolGuardrailFunctionOutput:
-    payload = _input_payload(
-        data,
-        fields=frozenset({"videos", "subtitles"}),
-        max_bytes=64 * 1024,
-    )
-    if payload is None:
-        payload = _input_payload(
-            data,
-            fields=frozenset({"review", "videos", "subtitles"}),
-            max_bytes=64 * 1024,
-        )
     context = data.context.context
     if not isinstance(context, OrganizerContext):
         raise TypeError("organizer tools require OrganizerContext")
-    valid = (
-        isinstance(payload, dict)
-        and _valid_mapping_list(
-            payload["videos"],
-            schema=_VideoMappingInput,
-            candidate_count=context.runtime.state.candidate_count,
-        )
-        and _valid_mapping_list(
-            payload["subtitles"],
-            schema=_SubtitleMappingInput,
-            candidate_count=context.runtime.state.candidate_count,
-        )
+    parsed = _episode_submit_payload(
+        data.context.tool_arguments,
+        candidate_count=context.runtime.state.candidate_count,
     )
-    return _guard_result(data, valid=valid)
+    return _guard_result(data, valid=parsed is not None)
 
 
-@function_tool(
-    name_override="submit_mapping",
-    strict_mode=True,
-    failure_error_function=None,
-    tool_input_guardrails=[_submit_mapping_input_guardrail],
-)
-async def _submit_mapping_tool(
+def _episode_submit_payload(
+    raw_arguments: str,
+    *,
+    candidate_count: int,
+) -> tuple[dict[str, object], object] | None:
+    payload = _submit_input_payload(
+        raw_arguments,
+        mapping_fields=frozenset({"videos", "subtitles"}),
+    )
+    if payload is None:
+        return None
+    videos = _validated_mapping_list(
+        payload["videos"],
+        schema=_VideoMappingInput,
+        candidate_count=candidate_count,
+    )
+    subtitles = _validated_mapping_list(
+        payload["subtitles"],
+        schema=_SubtitleMappingInput,
+        candidate_count=candidate_count,
+    )
+    if videos is None or subtitles is None:
+        return None
+    return (
+        {
+            "videos": videos,
+            "subtitles": subtitles,
+        },
+        payload.get("review"),
+    )
+
+
+async def _invoke_submit_mapping_tool(
     context: ToolContext[OrganizerContext],
-    videos: list[_VideoMappingInput],
-    subtitles: list[_SubtitleMappingInput],
-    review: JsonValue | None = None,
+    raw_arguments: str,
 ) -> str:
+    organizer = context.context
+    if not isinstance(organizer, OrganizerContext):
+        raise TypeError("organizer tools require OrganizerContext")
+    parsed = _episode_submit_payload(
+        raw_arguments,
+        candidate_count=organizer.runtime.state.candidate_count,
+    )
+    if parsed is None:
+        raise ValueError("invalid submit_mapping arguments")
+    payload, review = parsed
     return await submit_mapping(
-        context.context.runtime,
+        organizer.runtime,
         (
-            context.context.candidate_source
+            organizer.candidate_source
             if isinstance(
-                context.context.candidate_source,
+                organizer.candidate_source,
                 SnapshotCandidateSource,
             )
             else None
         ),
         call_id=context.tool_call_id,
-        payload={
-            "videos": [item.model_dump() for item in videos],
-            "subtitles": [item.model_dump() for item in subtitles],
-        },
+        payload=payload,
         review=review,
     )
 
@@ -829,68 +945,106 @@ async def _submit_mapping_tool(
 def _submit_movie_mapping_input_guardrail(
     data: ToolInputGuardrailData,
 ) -> ToolGuardrailFunctionOutput:
-    payload = _input_payload(
-        data,
-        fields=frozenset({"video_id", "subtitle_ids"}),
-        max_bytes=64 * 1024,
+    context = data.context.context
+    if not isinstance(context, OrganizerContext):
+        raise TypeError("organizer tools require OrganizerContext")
+    parsed = _movie_submit_payload(
+        data.context.tool_arguments,
+        candidate_count=context.runtime.state.candidate_count,
+    )
+    return _guard_result(data, valid=parsed is not None)
+
+
+def _movie_submit_payload(
+    raw_arguments: str,
+    *,
+    candidate_count: int,
+) -> tuple[dict[str, object], object] | None:
+    payload = _submit_input_payload(
+        raw_arguments,
+        mapping_fields=frozenset({"video_id", "subtitle_ids"}),
     )
     if payload is None:
-        payload = _input_payload(
-            data,
-            fields=frozenset(
-                {"review", "video_id", "subtitle_ids"}
-            ),
-            max_bytes=64 * 1024,
+        return None
+    try:
+        mapping = _MovieMappingInput.model_validate(
+            {
+                "subtitle_ids": payload["subtitle_ids"],
+                "video_id": payload["video_id"],
+            }
         )
-    context = data.context.context
-    valid = isinstance(payload, dict)
-    if valid:
-        try:
-            _MovieMappingInput.model_validate(
-                {
-                    "subtitle_ids": payload["subtitle_ids"],
-                    "video_id": payload["video_id"],
-                }
-            )
-        except ValueError:
-            valid = False
-    valid = bool(
-        valid
-        and isinstance(context, OrganizerContext)
-        and len(payload["subtitle_ids"]) <= context.runtime.state.candidate_count
-    )
-    return _guard_result(data, valid=valid)
+    except ValueError:
+        return None
+    if len(mapping.subtitle_ids) > candidate_count:
+        return None
+    return mapping.model_dump(), payload.get("review")
 
 
-@function_tool(
-    name_override="submit_mapping",
-    strict_mode=True,
-    failure_error_function=None,
-    tool_input_guardrails=[_submit_movie_mapping_input_guardrail],
-)
-async def _submit_movie_mapping_tool(
+async def _invoke_submit_movie_mapping_tool(
     context: ToolContext[OrganizerContext],
-    video_id: Annotated[str, Field(min_length=1, max_length=32)],
-    subtitle_ids: list[str],
-    review: JsonValue | None = None,
+    raw_arguments: str,
 ) -> str:
+    organizer = context.context
+    if not isinstance(organizer, OrganizerContext):
+        raise TypeError("organizer tools require OrganizerContext")
+    parsed = _movie_submit_payload(
+        raw_arguments,
+        candidate_count=organizer.runtime.state.candidate_count,
+    )
+    if parsed is None:
+        raise ValueError("invalid submit_mapping arguments")
+    payload, review = parsed
     return await submit_movie_mapping(
-        context.context.runtime,
+        organizer.runtime,
         (
-            context.context.candidate_source
+            organizer.candidate_source
             if isinstance(
-                context.context.candidate_source,
+                organizer.candidate_source,
                 SnapshotCandidateSource,
             )
             else None
         ),
         call_id=context.tool_call_id,
-        payload={
-            "subtitle_ids": subtitle_ids,
-            "video_id": video_id,
-        },
+        payload=payload,
         review=review,
     )
+
+
+def _submit_function_tool(
+    *,
+    description: str,
+    input_model: type[BaseModel],
+    invoke: Callable[
+        [ToolContext[OrganizerContext], str],
+        Awaitable[str],
+    ],
+    guardrail: ToolInputGuardrail[OrganizerContext],
+) -> FunctionTool:
+    return set_function_tool_failure_error_function(
+        FunctionTool(
+            name="submit_mapping",
+            description=description,
+            params_json_schema=input_model.model_json_schema(),
+            on_invoke_tool=invoke,
+            strict_json_schema=True,
+            tool_input_guardrails=[guardrail],
+        ),
+        None,
+    )
+
+
+_submit_mapping_tool = _submit_function_tool(
+    description="Submit the complete episode mapping and bounded review.",
+    input_model=_EpisodeSubmitMappingInput,
+    invoke=_invoke_submit_mapping_tool,
+    guardrail=_submit_mapping_input_guardrail,
+)
+_submit_movie_mapping_tool = _submit_function_tool(
+    description="Submit the selected Movie mapping and bounded review.",
+    input_model=_MovieSubmitMappingInput,
+    invoke=_invoke_submit_movie_mapping_tool,
+    guardrail=_submit_movie_mapping_input_guardrail,
+)
 
 
 def _unknown_tool_error(

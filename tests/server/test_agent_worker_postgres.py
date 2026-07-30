@@ -326,7 +326,8 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
             row = connection.execute(
                 """
                 SELECT r.agent_definition_hash, r.session_id, s.revision,
-                       d.payload->>'instructions', review.payload
+                       d.payload->>'instructions',
+                       d.payload->>'schema_version', review.payload
                 FROM runs AS r
                 JOIN agent_sessions AS s ON s.run_id = r.run_id
                 JOIN agent_definitions AS d
@@ -342,8 +343,9 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
         assert str(row[1]) == registration.run_id
         assert int(row[2]) > 0
         assert EPISODE_ORGANIZER_INSTRUCTIONS in str(row[3])
-        assert row[4]["status"] == "agent_and_system"
-        assert row[4]["agent_summary"] == "唯一视频已映射为 S01E01。"
+        assert row[4] == "episode-organizer-v4"
+        assert row[5]["status"] == "agent_and_system"
+        assert row[5]["agent_summary"] == "唯一视频已映射为 S01E01。"
 
         legacy = AgentDefinitionRevision.create(
             name=ORGANIZER_NAME,

@@ -3,7 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 
+from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.server.agent_definition import AgentDefinitionRevision
+from reeloom.server.organizer_definition import (
+    EPISODE_ORGANIZER_TOOL_NAMES,
+    LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
+    LEGACY_ORGANIZER_SCHEMA_VERSION,
+    MOVIE_ORGANIZER_SCHEMA_VERSION,
+    ORGANIZER_NAME,
+    ORGANIZER_SCHEMA_VERSION,
+    PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+    V2_ORGANIZER_SCHEMA_VERSION,
+    is_supported_organizer_definition,
+    organizer_definition,
+)
 from reeloom.server.session import InMemorySessionRepository, RepositoryAgentSession
 
 
@@ -33,6 +46,42 @@ def test_agent_definition_is_content_addressed() -> None:
     ) == first
     assert first.definition_hash.startswith("sha256:")
     assert changed.definition_hash != first.definition_hash
+
+
+def test_v4_is_current_while_historical_definitions_remain_readable() -> None:
+    current = organizer_definition(TmdbWorkType.ANIME)
+
+    assert current.schema_version == ORGANIZER_SCHEMA_VERSION
+    assert current.schema_version == "episode-organizer-v4"
+    assert (
+        organizer_definition(TmdbWorkType.MOVIE).schema_version
+        == MOVIE_ORGANIZER_SCHEMA_VERSION
+        == "movie-organizer-v4"
+    )
+    for version, tools, allow_v1 in (
+        (
+            LEGACY_ORGANIZER_SCHEMA_VERSION,
+            LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
+            True,
+        ),
+        (V2_ORGANIZER_SCHEMA_VERSION, EPISODE_ORGANIZER_TOOL_NAMES, False),
+        (
+            PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+            EPISODE_ORGANIZER_TOOL_NAMES,
+            False,
+        ),
+    ):
+        historical = AgentDefinitionRevision.create(
+            name=ORGANIZER_NAME,
+            instructions="Historical organizer.",
+            tools=tools,
+            schema_version=version,
+        )
+        assert is_supported_organizer_definition(
+            historical,
+            TmdbWorkType.ANIME,
+            allow_v1=allow_v1,
+        )
 
 
 def test_repository_session_has_cas_batches_and_restart_projection() -> None:

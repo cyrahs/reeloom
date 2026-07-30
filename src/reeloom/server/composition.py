@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import stat
 import uuid
@@ -68,6 +69,10 @@ from reeloom.runtime.state import RunStatus
 from reeloom.server.organizer_definition import (
     LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
     LEGACY_ORGANIZER_SCHEMA_VERSION,
+    PREVIOUS_MOVIE_ORGANIZER_SCHEMA_VERSION,
+    PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+    V2_MOVIE_ORGANIZER_SCHEMA_VERSION,
+    V2_ORGANIZER_SCHEMA_VERSION,
 )
 from reeloom.server.secrets import FilesystemSecretStore
 from reeloom.server.config import (
@@ -84,6 +89,8 @@ from reeloom.server.session import PostgresSessionRepository
 from reeloom.server.tmdb_provider import TmdbHttpLease
 from reeloom.server.settings import DeploymentSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
+
+_LOG = logging.getLogger(__name__)
 
 
 def _state_subdirectory(root: Path, name: str) -> AuthorizedRoot:
@@ -148,29 +155,59 @@ class ServerApplication:
             raise errors[0]
 
 
-def _retire_legacy_folder_runs(
+def _retire_unplanned_folder_runs(
     *,
     database: PostgresControlPlane,
     plans: FilesystemPlanStore,
     scheduler: PostgresSchedulerRepository,
 ) -> None:
-    for run_id in scheduler.legacy_active_folder_runs(
-        schema_versions=(
-            LEGACY_ORGANIZER_SCHEMA_VERSION,
-            LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
-        )
-    ):
-        event_store = PostgresEventStore(
-            database.pool,
-            run_id=run_id,
-            plans=plans,
-        )
-        if (
-            event_store.state is not None
-            and event_store.state.status is not RunStatus.FAILED
+    retired = (
+        (
+            (
+                LEGACY_ORGANIZER_SCHEMA_VERSION,
+                LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
+            ),
+            "retired_tool_call",
+        ),
+        (
+            (
+                V2_ORGANIZER_SCHEMA_VERSION,
+                V2_MOVIE_ORGANIZER_SCHEMA_VERSION,
+            ),
+            "retired_agent_definition",
+        ),
+        (
+            (
+                PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+                PREVIOUS_MOVIE_ORGANIZER_SCHEMA_VERSION,
+            ),
+            "retired_invalid_tool_schema",
+        ),
+    )
+    for schema_versions, failure_code in retired:
+        for run_id in scheduler.retired_unplanned_folder_runs(
+            schema_versions=schema_versions
         ):
-            event_store.append(RunFailed(code="retired_tool_call"))
-        scheduler.restart_folder_generation(run_id=run_id)
+            event_store = PostgresEventStore(
+                database.pool,
+                run_id=run_id,
+                plans=plans,
+            )
+            if (
+                event_store.state is not None
+                and event_store.state.status is not RunStatus.FAILED
+            ):
+                event_store.append(RunFailed(code=failure_code))
+            scheduler.restart_folder_generation(
+                run_id=run_id,
+                audit_event=failure_code,
+            )
+            _LOG.warning(
+                "retired_folder_agent_definition run_id=%s "
+                "failure_code=%s",
+                run_id,
+                failure_code,
+            )
 
 
 def build_application(
@@ -253,7 +290,7 @@ def build_application(
         run_deletions = PostgresRunDeletionService(database.pool)
         scheduler = PostgresSchedulerRepository(database.pool)
         scheduler.reconcile_boot(current_boot_id=boot_id)
-        _retire_legacy_folder_runs(
+        _retire_unplanned_folder_runs(
             database=database,
             plans=plans,
             scheduler=scheduler,

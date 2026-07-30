@@ -36,10 +36,7 @@ from reeloom.server.config import (
     WatchConfig,
 )
 from reeloom.server.config_repository import PostgresConfigRepository
-from reeloom.server.organizer_definition import (
-    is_supported_organizer_definition,
-    organizer_definition,
-)
+from reeloom.server.organizer_definition import organizer_definition
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.provider import ModelLease
 from reeloom.server.runtime_store import PostgresEventStore
@@ -144,11 +141,7 @@ class InitialAgentWorker:
             definition = current_definition
             bound_session_id = session_id
         if (
-            not is_supported_organizer_definition(
-                definition,
-                work_type,
-                allow_v1=False,
-            )
+            definition != current_definition
             or bound_session_id != session_id
         ):
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
