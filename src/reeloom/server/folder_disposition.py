@@ -33,6 +33,7 @@ from reeloom.kernel.naming import filesystem_name_key
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.config import ConfigRevision
+from reeloom.server.config_repository import CONFIG_LOCK_ID
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.scheduler_repository import _snapshot_from_json
 from reeloom.server.watcher import (
@@ -191,6 +192,130 @@ class PostgresFolderDispositionRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    if plan.target_relative is not None:
+                        reserved = connection.execute(
+                            """
+                            SELECT 1
+                            FROM folder_disposition_plans AS p
+                            WHERE p.source_root_device = %s
+                              AND p.source_root_inode = %s
+                              AND p.action = %s
+                              AND p.target_name_key = %s
+                              AND (
+                                  p.run_id <> %s
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM folder_disposition_approvals
+                                           AS own_approval
+                                      JOIN folder_disposition_claims
+                                           AS own_claim
+                                        ON own_claim.approval_id =
+                                           own_approval.approval_id
+                                      LEFT JOIN
+                                           folder_disposition_settlements
+                                           AS own_settlement
+                                        ON own_settlement.approval_id =
+                                           own_claim.approval_id
+                                      LEFT JOIN
+                                           folder_disposition_transactions
+                                           AS own_transaction
+                                        ON own_transaction.approval_id =
+                                           own_claim.approval_id
+                                      WHERE own_approval.run_id = p.run_id
+                                        AND own_approval.plan_hash =
+                                            p.plan_hash
+                                        AND own_settlement.approval_id IS NULL
+                                        AND (
+                                            own_transaction.approval_id
+                                                IS NULL
+                                            OR own_transaction.status <>
+                                               'blocked'
+                                        )
+                                  )
+                              )
+                              AND (
+                                  (
+                                      EXISTS (
+                                          SELECT 1
+                                          FROM runs AS r
+                                          JOIN discoveries AS d
+                                            ON d.discovery_id =
+                                               r.discovery_id
+                                          JOIN watch_folder_observations AS o
+                                            ON o.discovery_id =
+                                               d.discovery_id
+                                          WHERE r.run_id = p.run_id
+                                            AND o.status = 'active'
+                                      )
+                                      AND p.plan_hash = (
+                                          SELECT current.plan_hash
+                                          FROM folder_disposition_plans
+                                               AS current
+                                          WHERE current.run_id = p.run_id
+                                          ORDER BY current.created_at DESC,
+                                                   current.plan_hash DESC
+                                          LIMIT 1
+                                      )
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM folder_disposition_approvals
+                                               AS approval
+                                          JOIN folder_disposition_transactions
+                                               AS transaction
+                                            ON transaction.approval_id =
+                                               approval.approval_id
+                                          WHERE approval.run_id = p.run_id
+                                            AND approval.plan_hash =
+                                                p.plan_hash
+                                            AND transaction.status =
+                                                'blocked'
+                                      )
+                                  )
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM folder_disposition_approvals
+                                           AS approval
+                                      JOIN folder_disposition_claims AS claim
+                                        ON claim.approval_id =
+                                           approval.approval_id
+                                      LEFT JOIN
+                                           folder_disposition_settlements
+                                           AS settlement
+                                        ON settlement.approval_id =
+                                           claim.approval_id
+                                      LEFT JOIN
+                                           folder_disposition_transactions
+                                           AS transaction
+                                        ON transaction.approval_id =
+                                           claim.approval_id
+                                      WHERE approval.run_id = p.run_id
+                                        AND approval.plan_hash = p.plan_hash
+                                        AND settlement.approval_id IS NULL
+                                        AND (
+                                            transaction.approval_id IS NULL
+                                            OR transaction.status <>
+                                               'blocked'
+                                        )
+                                  )
+                              )
+                            LIMIT 1
+                            """,
+                            (
+                                plan.source_root.device,
+                                plan.source_root.inode,
+                                plan.action.value,
+                                filesystem_name_key(
+                                    plan.target_relative.name
+                                ),
+                                plan.run_id,
+                            ),
+                        ).fetchone()
+                        if reserved is not None:
+                            return False
                     inserted = connection.execute(
                         """
                         INSERT INTO folder_disposition_plans
@@ -242,19 +367,106 @@ class PostgresFolderDispositionRepository:
         *,
         root: AuthorizedRoot,
         action: FolderDispositionAction,
+        exclude_run_id: str | None = None,
     ) -> frozenset[str]:
         try:
             with self._pool.connection() as connection:
                 rows = connection.execute(
                     """
-                    SELECT target_name_key
-                    FROM folder_disposition_plans
-                    WHERE source_root_device = %s
-                      AND source_root_inode = %s
-                      AND action = %s
-                      AND target_name_key IS NOT NULL
+                    SELECT p.target_name_key
+                    FROM folder_disposition_plans AS p
+                    WHERE p.source_root_device = %s
+                      AND p.source_root_inode = %s
+                      AND p.action = %s
+                      AND p.target_name_key IS NOT NULL
+                      AND (
+                          %s::text IS NULL
+                          OR p.run_id <> %s
+                          OR EXISTS (
+                              SELECT 1
+                              FROM folder_disposition_approvals
+                                   AS own_approval
+                              JOIN folder_disposition_claims AS own_claim
+                                ON own_claim.approval_id =
+                                   own_approval.approval_id
+                              LEFT JOIN folder_disposition_settlements
+                                   AS own_settlement
+                                ON own_settlement.approval_id =
+                                   own_claim.approval_id
+                              LEFT JOIN folder_disposition_transactions
+                                   AS own_transaction
+                                ON own_transaction.approval_id =
+                                   own_claim.approval_id
+                              WHERE own_approval.run_id = p.run_id
+                                AND own_approval.plan_hash = p.plan_hash
+                                AND own_settlement.approval_id IS NULL
+                                AND (
+                                    own_transaction.approval_id IS NULL
+                                    OR own_transaction.status <> 'blocked'
+                                )
+                          )
+                      )
+                      AND (
+                          (
+                              EXISTS (
+                                  SELECT 1
+                                  FROM runs AS r
+                                  JOIN discoveries AS d
+                                    ON d.discovery_id = r.discovery_id
+                                  JOIN watch_folder_observations AS o
+                                    ON o.discovery_id = d.discovery_id
+                                  WHERE r.run_id = p.run_id
+                                    AND o.status = 'active'
+                              )
+                              AND p.plan_hash = (
+                                  SELECT current.plan_hash
+                                  FROM folder_disposition_plans AS current
+                                  WHERE current.run_id = p.run_id
+                                  ORDER BY current.created_at DESC,
+                                           current.plan_hash DESC
+                                  LIMIT 1
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM folder_disposition_approvals AS approval
+                                  JOIN folder_disposition_transactions
+                                       AS transaction
+                                    ON transaction.approval_id =
+                                       approval.approval_id
+                                  WHERE approval.run_id = p.run_id
+                                    AND approval.plan_hash = p.plan_hash
+                                    AND transaction.status = 'blocked'
+                              )
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM folder_disposition_approvals AS approval
+                              JOIN folder_disposition_claims AS claim
+                                ON claim.approval_id = approval.approval_id
+                              LEFT JOIN folder_disposition_settlements
+                                   AS settlement
+                                ON settlement.approval_id = claim.approval_id
+                              LEFT JOIN folder_disposition_transactions
+                                   AS transaction
+                                ON transaction.approval_id =
+                                   claim.approval_id
+                              WHERE approval.run_id = p.run_id
+                                AND approval.plan_hash = p.plan_hash
+                                AND settlement.approval_id IS NULL
+                                AND (
+                                    transaction.approval_id IS NULL
+                                    OR transaction.status <> 'blocked'
+                                )
+                          )
+                      )
                     """,
-                    (root.device, root.inode, action.value),
+                    (
+                        root.device,
+                        root.inode,
+                        action.value,
+                        exclude_run_id,
+                        exclude_run_id,
+                    ),
                 ).fetchall()
         except Exception:
             raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
@@ -342,6 +554,30 @@ class PostgresFolderDispositionRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    active = connection.execute(
+                        """
+                        SELECT 1
+                        FROM folder_disposition_plans AS p
+                        JOIN runs AS r ON r.run_id = p.run_id
+                        JOIN discoveries AS d
+                          ON d.discovery_id = r.discovery_id
+                        JOIN watch_folder_observations AS o
+                          ON o.discovery_id = d.discovery_id
+                        WHERE p.run_id = %s
+                          AND p.plan_hash = %s
+                          AND o.status = 'active'
+                        FOR UPDATE OF o, r
+                        """,
+                        (run_id, plan_hash),
+                    ).fetchone()
+                    if active is None:
+                        raise ApprovalError(
+                            ApprovalErrorCode.BINDING_MISMATCH
+                        )
                     row = connection.execute(
                         """
                         SELECT canonical_record
@@ -666,7 +902,7 @@ class FolderDispositionPlanner:
         target = (
             None
             if action is FolderDispositionAction.REMOVE_EMPTY
-            else self._target(root, action, source_folder)
+            else self._target(root, action, source_folder, run_id=run_id)
         )
         plan = FolderDispositionPlan.create(
             run_id=run_id,
@@ -751,7 +987,10 @@ class FolderDispositionPlanner:
             inventory_id=inventory_id,
             action=FolderDispositionAction.FAIL,
             target_relative=self._target(
-                root, FolderDispositionAction.FAIL, source_folder
+                root,
+                FolderDispositionAction.FAIL,
+                source_folder,
+                run_id=run_id,
             ),
             media_plan_hash=None,
             file_count=sum(
@@ -849,7 +1088,12 @@ class FolderDispositionPlanner:
             target_relative=(
                 None
                 if action is FolderDispositionAction.REMOVE_EMPTY
-                else self._target(root, action, source_folder)
+                else self._target(
+                    root,
+                    action,
+                    source_folder,
+                    run_id=run_id,
+                )
             ),
             media_plan_hash=media_plan_hash,
             file_count=sum(
@@ -860,15 +1104,7 @@ class FolderDispositionPlanner:
         )
         if self._persist(plan):
             return plan
-        existing = self._repository.plan_for_media(
-            run_id=run_id,
-            media_plan_hash=media_plan_hash,
-        )
-        return (
-            existing
-            if existing is not None
-            else self.prepare_late(run_id=run_id)
-        )
+        return self.prepare_late(run_id=run_id)
 
     def issue(self, plan: FolderDispositionPlan) -> ApprovalRecord:
         return self._repository.issue(
@@ -941,6 +1177,8 @@ class FolderDispositionPlanner:
         root: AuthorizedRoot,
         action: FolderDispositionAction,
         source_folder: str,
+        *,
+        run_id: str,
     ) -> PurePosixPath:
         bucket = action.value
         root_fd = FilesystemScanner._open_root(root)
@@ -977,6 +1215,7 @@ class FolderDispositionPlanner:
                 self._repository.reserved_target_keys(
                     root=root,
                     action=action,
+                    exclude_run_id=run_id,
                 )
             )
             candidate = source_folder

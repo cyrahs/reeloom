@@ -61,6 +61,7 @@ export const foldersSchema = z
           reason_code: z.string().nullable(),
           stable_at: z.string().nullable(),
           run_id: z.string().nullable(),
+          retry_count: z.number().int().min(0).max(3),
         })
         .strict(),
     ),

@@ -64,7 +64,19 @@ test("offers deletion for eligible runs directly from the dashboard", async () =
       return jsonResponse({ items: [] });
     }
     if (path.startsWith("/api/v1/folders?")) {
-      return jsonResponse({ items: [] });
+      return jsonResponse({
+        items: [
+          {
+            watch_id: "watch-anime",
+            source_folder: "folder-retrying",
+            status: "settling",
+            reason_code: null,
+            stable_at: null,
+            run_id: null,
+            retry_count: 2,
+          },
+        ],
+      });
     }
     if (path === "/api/v1/admin/config") {
       return jsonResponse(
@@ -96,6 +108,7 @@ test("offers deletion for eligible runs directly from the dashboard", async () =
   expect(
     within(activeRow!).queryByRole("button", { name: "删除记录" }),
   ).toBeNull();
+  expect(await screen.findByText("重试 2/3", { exact: false })).toBeVisible();
 
   await user.click(
     within(deletableRow!).getByRole("button", { name: "删除记录" }),

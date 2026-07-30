@@ -27,6 +27,7 @@ from reeloom.server.scheduler_repository import (
 from reeloom.server.watcher import NoFollowWatcher
 
 _LOG = logging.getLogger(__name__)
+_MAX_FOLDER_FAILURE_RETRIES = 3
 
 
 @dataclass(slots=True)
@@ -318,6 +319,47 @@ class BackgroundServices:
                         database_error = restart_error
                     else:
                         retry = True
+            elif folder_run and database_error is None:
+                try:
+                    retry_count = self.scheduler.retry_folder_generation(
+                        run_id=run_id,
+                        max_retries=_MAX_FOLDER_FAILURE_RETRIES,
+                    )
+                    if retry_count is not None:
+                        restarted = True
+                    else:
+                        self._prepare_terminal_failure(
+                            run_id=run_id,
+                            reason_code="agent_retry_exhausted",
+                        )
+                        succeeded = True
+                except ServerError as retry_error:
+                    if (
+                        retry_error.code
+                        is ServerErrorCode.DATABASE_UNAVAILABLE
+                    ):
+                        database_error = retry_error
+                    else:
+                        try:
+                            self.scheduler.mark_run_failed(run_id=run_id)
+                            succeeded = True
+                        except ServerError as failure_error:
+                            if (
+                                failure_error.code
+                                is ServerErrorCode.DATABASE_UNAVAILABLE
+                            ):
+                                database_error = failure_error
+                            elif (
+                                failure_error.code
+                                is ServerErrorCode.INTERACTION_CONFLICT
+                            ):
+                                succeeded = True
+                            else:
+                                retry = True
+                except ExecutorError:
+                    succeeded = True
+                except Exception:
+                    retry = True
             elif database_error is None:
                 try:
                     self.scheduler.mark_run_failed(run_id=run_id)
@@ -334,7 +376,7 @@ class BackgroundServices:
                     ):
                         succeeded = True
                     else:
-                        retry = folder_run
+                        retry = False
             _LOG.error(
                 "agent_job_failed run_id=%s error_type=%s error_code=%s",
                 run_id,

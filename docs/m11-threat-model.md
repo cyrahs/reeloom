@@ -16,7 +16,9 @@ force.
 | Read or SSE retry repeats a move | settlement resolution is read-only; only the explicit recovery mutation can resume a claimed transaction |
 | Capability probe touches media | probe uses random, identity-bound empty directories on the single-slot I/O lane and removes only those empty directories |
 | Late file is silently absorbed | post-media drift settles again and creates a new immutable disposition hash |
-| Temporary provider failure moves input to fail | only allowlisted deterministic failures produce a fail plan |
+| Temporary provider failure immediately moves input to fail | non-deterministic Agent or Provider failures retire the current generation and preserve the source for at most three retries; only the fourth failed generation may produce the bounded `agent_retry_exhausted` fail plan |
+| A failed run remains attached after its source disappears | a successful watch scan starts a missing settle window; sustained absence becomes the exact `blocked/source_folder_missing` terminal projection only when no media or folder effect is claimed |
+| An immutable historical plan permanently forces `.1`, `.2`, ... | name lookup ignores detached, superseded, blocked, and settled plan history; plan insertion serializes and rechecks live reservations before accepting the target |
 
 Residual risk: a same-filesystem directory rename is atomic, but storage
 durability still depends on the mounted filesystem honoring directory fsync.

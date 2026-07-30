@@ -597,7 +597,8 @@ class PostgresQueries:
                 rows = connection.execute(
                     """
                     SELECT o.watch_id, o.folder_name, o.status,
-                           o.blocked_reason, o.stable_at, r.run_id
+                           o.blocked_reason, o.stable_at, r.run_id,
+                           o.retry_count
                     FROM watch_folder_observations AS o
                     LEFT JOIN runs AS r
                       ON r.discovery_id = o.discovery_id
@@ -625,6 +626,7 @@ class PostgresQueries:
                     None if row[4] is None else row[4].isoformat()
                 ),
                 "run_id": None if row[5] is None else str(row[5]),
+                "retry_count": int(row[6]),
             }
             for row in rows
         )

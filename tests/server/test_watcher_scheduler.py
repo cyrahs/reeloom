@@ -11,6 +11,7 @@ from reeloom.adapters.filesystem import FilesystemScanner
 from reeloom.server.config import ServerWorkType
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.scheduler import InMemorySchedulerRepository
+from reeloom.server.scheduler_repository import _missing_folder_action
 from reeloom.server.watcher import NoFollowWatcher
 
 
@@ -261,6 +262,37 @@ def test_empty_folder_settles_for_no_video_disposition(
 
     assert stable.discoveries[0].source_folder == "Empty"
     assert stable.discoveries[0].snapshot.files == ()  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("status", "has_discovery", "terminal_ready", "elapsed", "expected"),
+    (
+        ("active", True, True, 0, "start_missing"),
+        ("active", True, False, 100, "keep"),
+        ("settling", True, True, 9, "keep"),
+        ("settling", True, True, 10, "confirm_missing"),
+        ("blocked", True, True, 100, "keep"),
+        ("settling", False, True, 100, "remove"),
+        ("settled", True, True, 100, "remove"),
+    ),
+)
+def test_missing_folder_transition_is_bounded(
+    status: str,
+    has_discovery: bool,
+    terminal_ready: bool,
+    elapsed: int,
+    expected: str,
+) -> None:
+    assert (
+        _missing_folder_action(
+            status=status,
+            has_discovery=has_discovery,
+            terminal_ready=terminal_ready,
+            elapsed_seconds=elapsed,
+            settle_interval_seconds=10,
+        )
+        == expected
+    )
 
 
 def test_unchanged_poll_does_not_grow_history(tmp_path: Path) -> None:
