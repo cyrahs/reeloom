@@ -773,11 +773,51 @@ button:disabled {
   margin-bottom: 34px;
 }
 
+.run-heading > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
 .run-heading h1 {
   margin: 12px 0;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: clamp(1.6rem, 4vw, 3.2rem);
-  overflow-wrap: anywhere;
+  font-size: clamp(2.2rem, 4vw, 3.8rem);
+}
+
+.run-id-row {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: 12px;
+  flex-wrap: nowrap;
+}
+
+.run-id-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.run-id-row code {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 0.86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-id-button {
+  flex: 0 0 auto;
+  min-height: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  color: var(--green);
+  background: transparent;
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 .heading-status {
