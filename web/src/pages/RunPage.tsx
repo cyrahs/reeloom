@@ -58,6 +58,12 @@ type ActionAttempt = {
   planHash: string;
   key: string;
 };
+type ImmediateInteraction = {
+  interaction_id: string;
+  kind: ActionKind;
+  request_message: string;
+  assistant_reply: string;
+};
 type ApplyAttempt = {
   planHash: string;
   folderDispositionPlanHash: string | null;
@@ -89,6 +95,8 @@ export function RunPage({ runId }: { runId: string }) {
   const [approveOpen, setApproveOpen] = useState(false);
   const [folderConfirmOpen, setFolderConfirmOpen] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
+  const [immediateInteraction, setImmediateInteraction] =
+    useState<ImmediateInteraction | null>(null);
   const [uncertainAttempt, setUncertainAttempt] =
     useState<UncertainAttempt | null>(null);
   const [resyncing, setResyncing] = useState(false);
@@ -144,6 +152,22 @@ export function RunPage({ runId }: { runId: string }) {
   const allPreviewItems =
     preview.data?.pages.flatMap((page) => page.items) ?? [];
   const currentPreview = preview.data?.pages[0];
+  const persistedInteractions =
+    interactions.data?.pages.flatMap((page) => page.items) ?? [];
+  const displayedInteractions =
+    immediateInteraction &&
+    !persistedInteractions.some(
+      (item) => item.interaction_id === immediateInteraction.interaction_id,
+    )
+      ? [
+          {
+            ...immediateInteraction,
+            status: "completed" as const,
+            content_available: true as const,
+          },
+          ...persistedInteractions,
+        ]
+      : persistedInteractions;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -247,8 +271,14 @@ export function RunPage({ runId }: { runId: string }) {
         { method: "POST", headers, body: { kind, message } },
       );
     },
-    onSuccess: async (result) => {
+    onSuccess: async (result, attempt) => {
       setUncertainAttempt(null);
+      setImmediateInteraction({
+        interaction_id: result.interaction_id,
+        kind: attempt.kind,
+        request_message: attempt.message,
+        assistant_reply: result.assistant_reply,
+      });
       if ("no_op" in result && result.no_op) {
         setActionNotice("布局没有变化；服务端保留原 head，未创建空 amendment。");
       } else if (result.plan_hash) {
@@ -433,7 +463,8 @@ export function RunPage({ runId }: { runId: string }) {
             <span>{workTypeLabel(run.data.work_type)}</span>
             <span>{run.data.phase ?? "无活动阶段"}</span>
           </div>
-          <h1>{run.data.run_id}</h1>
+          <h1>运行详情</h1>
+          <RunIdentity runId={run.data.run_id} />
           <ShortHash value={run.data.plan_hash} />
           {run.data.source_folder ? (
             <p className="muted">入站文件夹：{run.data.source_folder}</p>
@@ -505,6 +536,53 @@ export function RunPage({ runId }: { runId: string }) {
 
       <div className="run-layout">
         <div className="run-main">
+          {displayedInteractions.length ? (
+            <section className="panel interaction-history">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">AGENT HISTORY</p>
+                  <h2>交互历史</h2>
+                </div>
+              </div>
+              <div className="interaction-list">
+                {displayedInteractions.map((item) => (
+                  <article key={item.interaction_id}>
+                    <header>
+                      <strong>{interactionLabel(item.kind)}</strong>
+                      <Status value={item.status} />
+                    </header>
+                    {item.content_available ? (
+                      <>
+                        <div className="message user-message">
+                          <span>你</span>
+                          <p>{item.request_message}</p>
+                        </div>
+                        {item.assistant_reply ? (
+                          <div className="message assistant-message">
+                            <span>Agent</span>
+                            <p>{item.assistant_reply}</p>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <p className="muted">
+                        这条 M8 历史没有保存显式消息内容。
+                      </p>
+                    )}
+                  </article>
+                ))}
+              </div>
+              {interactions.hasNextPage ? (
+                <button
+                  className="secondary"
+                  onClick={() => interactions.fetchNextPage()}
+                >
+                  加载更早记录
+                </button>
+              ) : null}
+            </section>
+          ) : null}
+
           {run.data.archive_report && archiveReportIsCurrent ? (
             <ArchiveReportCard report={run.data.archive_report} />
           ) : run.data.archive_report && selectedPlan ? (
@@ -571,55 +649,6 @@ export function RunPage({ runId }: { runId: string }) {
             )}
           </section>
 
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">AGENT HISTORY</p>
-                <h2>交互历史</h2>
-              </div>
-            </div>
-            <div className="interaction-list">
-              {interactions.data?.pages.flatMap((page) =>
-                page.items.map((item) => (
-                  <article key={item.interaction_id}>
-                    <header>
-                      <strong>{interactionLabel(item.kind)}</strong>
-                      <Status value={item.status} />
-                    </header>
-                    {item.content_available ? (
-                      <>
-                        <div className="message user-message">
-                          <span>你</span>
-                          <p>{item.request_message}</p>
-                        </div>
-                        {item.assistant_reply ? (
-                          <div className="message assistant-message">
-                            <span>Agent</span>
-                            <p>{item.assistant_reply}</p>
-                          </div>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p className="muted">
-                        这条 M8 历史没有保存显式消息内容。
-                      </p>
-                    )}
-                  </article>
-                )),
-              )}
-              {!interactions.data?.pages[0].items.length ? (
-                <div className="empty-inline"><p>还没有显式交互。</p></div>
-              ) : null}
-            </div>
-            {interactions.hasNextPage ? (
-              <button
-                className="secondary"
-                onClick={() => interactions.fetchNextPage()}
-              >
-                加载更早记录
-              </button>
-            ) : null}
-          </section>
         </div>
 
         <aside className="run-aside">
@@ -835,6 +864,54 @@ export function shouldShowArchiveReport(
     selectedPlanHash !== null &&
     currentPlanHash !== null &&
     selectedPlanHash === currentPlanHash
+  );
+}
+
+export function compactRunId(value: string): string {
+  const characters = Array.from(value);
+  if (characters.length <= 24) return value;
+  return [
+    ...characters.slice(0, 12),
+    "…",
+    ...characters.slice(-8),
+  ].join("");
+}
+
+export function RunIdentity({ runId }: { runId: string }) {
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(runId);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  };
+  return (
+    <div className="run-id-row">
+      <span className="run-id-label">运行 ID</span>
+      <code
+        title={runId}
+        aria-label={`完整运行 ID：${runId}`}
+      >
+        {compactRunId(runId)}
+      </code>
+      <button
+        type="button"
+        className="copy-id-button"
+        aria-live="polite"
+        onClick={copy}
+      >
+        {copyStatus === "copied"
+          ? "已复制"
+          : copyStatus === "failed"
+            ? "重试复制"
+            : "复制"}
+      </button>
+    </div>
   );
 }
 

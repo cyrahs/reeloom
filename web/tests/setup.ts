@@ -21,4 +21,5 @@ if (window.localStorage === undefined) {
 afterEach(() => {
   window.localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });

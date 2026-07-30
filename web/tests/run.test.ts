@@ -5,7 +5,9 @@ import { createElement } from "react";
 import {
   ArchiveReportCard,
   PlanReviewCard,
+  RunIdentity,
   canApproveCurrentPlan,
+  compactRunId,
   shouldShowArchiveReport,
 } from "../src/pages/RunPage";
 import { DeleteRunDialog } from "../src/components/RunDeletion";
@@ -21,6 +23,30 @@ test("archive reference is only shown for the exact current plan", () => {
   expect(shouldShowArchiveReport("sha256:head", "sha256:head")).toBe(true);
   expect(shouldShowArchiveReport("sha256:old", "sha256:head")).toBe(false);
   expect(shouldShowArchiveReport(null, "sha256:head")).toBe(false);
+});
+
+test("run identity is compact, accessible, and copies the full value", async () => {
+  const runId = "run-0dae51fc45a8db238e0b901e8f420272";
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", {
+    clipboard: { writeText },
+  });
+
+  expect(compactRunId(runId)).toBe("run-0dae51fc…8f420272");
+  expect(compactRunId("run-short")).toBe("run-short");
+  expect(compactRunId("运行-一二三四五六七八九十一二三四五六七八九十二三四五六七")).toContain(
+    "…",
+  );
+
+  render(createElement(RunIdentity, { runId }));
+  expect(
+    screen.getByLabelText(`完整运行 ID：${runId}`),
+  ).toHaveAttribute("title", runId);
+  expect(screen.getByText("run-0dae51fc…8f420272")).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "复制" }));
+  expect(writeText).toHaveBeenCalledWith(runId);
+  expect(screen.getByRole("button", { name: "已复制" })).toBeVisible();
 });
 
 test("permission failures have actionable text", () => {
