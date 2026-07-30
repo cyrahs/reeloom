@@ -4,11 +4,17 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from reeloom.adapters.plan_store import FilesystemPlanStore
+from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
+from reeloom.kernel.folder_disposition import (
+    FolderDispositionAction,
+    FolderDispositionPlan,
+)
+from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.events import RunFailed, RunStarted
@@ -27,6 +33,9 @@ from reeloom.server.config import (
 )
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.database import PostgresControlPlane
+from reeloom.server.folder_disposition import (
+    PostgresFolderDispositionRepository,
+)
 from reeloom.server.organizer_definition import (
     EPISODE_ORGANIZER_TOOL_NAMES,
     LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
@@ -431,5 +440,133 @@ def test_retired_folder_run_preserves_durable_work(
         assert case.scheduler.retired_unplanned_folder_runs(
             schema_versions=(PREVIOUS_ORGANIZER_SCHEMA_VERSION,)
         ) == ()
+    finally:
+        case.control.close()
+
+
+@pytest.mark.postgres
+def test_completed_zero_move_run_remains_disposition_ready(
+    tmp_path: Path,
+) -> None:
+    case = _folder_run(tmp_path)
+    run_id = case.registration.run_id
+    plan_hash = "sha256:" + uuid.uuid4().hex * 2
+    approval = ApprovalRecord.create(
+        run_id=run_id,
+        plan_hash=plan_hash,
+        scope=ApprovalScope.APPLY,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        nonce=uuid.uuid4().hex,
+    )
+    scan = case.watcher.scan_folders(
+        AuthorizedRoot.create(case.watch_root)
+    )
+    folder = scan.folders[0]
+    generation_id = case.discovery.folder_generation_id
+    assert generation_id is not None
+    disposition = FolderDispositionPlan.create(
+        run_id=run_id,
+        folder_generation_id=generation_id,
+        created_at=datetime.now(UTC),
+        source_root=RootBinding(
+            PurePosixPath(case.watch_root.as_posix()),
+            case.watch_root.stat().st_dev,
+            case.watch_root.stat().st_ino,
+        ),
+        source_folder=folder.name,
+        folder_device=folder.device,
+        folder_inode=folder.inode,
+        inventory_id=folder.disposition_inventory_id,
+        action=FolderDispositionAction.ARCHIVE,
+        target_relative=PurePosixPath("archive") / folder.name,
+        media_plan_hash=plan_hash,
+        file_count=1,
+        reason_code="media_completed",
+    )
+    dispositions = PostgresFolderDispositionRepository(case.control.pool)
+    try:
+        with case.control.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    INSERT INTO plan_lineage
+                        (run_id, version, plan_hash, plan_kind)
+                    VALUES (%s, 1, %s, 'initial')
+                    """,
+                    (run_id, plan_hash),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO plan_heads (run_id, version, plan_hash)
+                    VALUES (%s, 1, %s)
+                    """,
+                    (run_id, plan_hash),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO approvals
+                        (approval_id, run_id, plan_hash, scope,
+                         expires_at, canonical_record)
+                    VALUES (%s, %s, %s, 'apply', %s, %s)
+                    """,
+                    (
+                        approval.approval_id,
+                        run_id,
+                        plan_hash,
+                        approval.expires_at,
+                        approval.canonical_bytes(),
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO approval_claims
+                        (approval_id, run_id, plan_hash)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (approval.approval_id, run_id, plan_hash),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO approval_settlements
+                        (approval_id, transaction_id, status,
+                         applied_count, rolled_back_count)
+                    VALUES (%s, %s, 'completed', 0, 0)
+                    """,
+                    (
+                        approval.approval_id,
+                        "txn-v1-" + uuid.uuid4().hex * 2,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE runs SET status = 'completed' WHERE run_id = %s",
+                    (run_id,),
+                )
+        assert dispositions.append_plan(disposition)
+
+        reconciled = case.scheduler.reconcile_folders(
+            watch_id=case.watch_id,
+            config_revision=case.config.revision,
+            fence=case.config.revision,
+            observed_at=datetime.now(UTC) + timedelta(seconds=2),
+            scan=scan,
+        )
+
+        assert reconciled.disposition_run_ids == (run_id,)
+        assert dispositions.current_plan(run_id=run_id) == disposition
+        with case.control.pool.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT observation.status,
+                       EXISTS (
+                           SELECT 1 FROM completed_layout_heads
+                           WHERE run_id = %s
+                       )
+                FROM watch_folder_observations AS observation
+                WHERE observation.discovery_id = %s
+                """,
+                (run_id, case.discovery.discovery_id),
+            ).fetchone()
+        assert row is not None
+        assert tuple(row) == ("active", False)
     finally:
         case.control.close()

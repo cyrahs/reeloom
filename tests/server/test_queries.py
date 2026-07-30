@@ -41,8 +41,13 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, row: tuple[object, ...]) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...],
+        required_query_fragment: str | None = None,
+    ) -> None:
         self._row = row
+        self._required_query_fragment = required_query_fragment
 
     def __enter__(self) -> _Connection:
         return self
@@ -55,16 +60,23 @@ class _Connection:
         query: object,
         parameters: object,
     ) -> _Cursor:
+        if self._required_query_fragment is not None:
+            assert self._required_query_fragment in str(query)
         del query, parameters
         return _Cursor(self._row)
 
 
 class _Pool:
-    def __init__(self, row: tuple[object, ...]) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...],
+        required_query_fragment: str | None = None,
+    ) -> None:
         self._row = row
+        self._required_query_fragment = required_query_fragment
 
     def connection(self) -> _Connection:
-        return _Connection(self._row)
+        return _Connection(self._row, self._required_query_fragment)
 
 
 class _Plans:
@@ -74,6 +86,61 @@ class _Plans:
     def load(self, plan_hash: str) -> bytes:
         del plan_hash
         return self._content
+
+
+def _completed_run_row(
+    *, layout_matches_current_plan: bool
+) -> tuple[object, ...]:
+    row: list[object] = [None] * 36
+    row[:14] = (
+        "run-1",
+        "completed",
+        "anime",
+        "completed",
+        "completed",
+        1,
+        0,
+        0,
+        0,
+        0,
+        "sha256:" + "a" * 64,
+        None,
+        "manual",
+        False,
+    )
+    row[32] = False
+    row[35] = layout_matches_current_plan
+    return tuple(row)
+
+
+@pytest.mark.parametrize(
+    "layout_matches_current_plan",
+    (False, True),
+    ids=("missing-or-mismatched", "matching"),
+)
+def test_completed_run_exposes_reapply_only_for_current_layout(
+    layout_matches_current_plan: bool,
+) -> None:
+    queries = PostgresQueries(
+        cast(
+            ConnectionPool,
+            _Pool(
+                _completed_run_row(
+                    layout_matches_current_plan=(
+                        layout_matches_current_plan
+                    )
+                ),
+                "layout.plan_hash = s.plan_hash",
+            ),
+        )
+    )
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert (
+        "reapply" in run["available_actions"]
+    ) is layout_matches_current_plan
 
 
 def _amendment() -> tuple[str, bytes]:

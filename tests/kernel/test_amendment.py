@@ -39,6 +39,19 @@ def _layout() -> CompletedLayout:
     )
 
 
+def test_completed_layout_rejects_an_empty_file_set() -> None:
+    layout = _layout()
+
+    with pytest.raises(DomainError):
+        CompletedLayout(
+            run_id=layout.run_id,
+            original_plan_hash=layout.original_plan_hash,
+            transaction_id=layout.transaction_id,
+            root=layout.root,
+            files=(),
+        )
+
+
 def test_noop_reapply_produces_no_plan() -> None:
     layout = _layout()
     desired = (

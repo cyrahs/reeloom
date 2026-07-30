@@ -456,10 +456,11 @@ class ApplyCoordinator:
                 content,
                 plan_hash=result.plan_hash,
             )
-            layout = capture_completed_layout(
-                manifest,
-                transaction_id=result.transaction_id,
-            )
+            if manifest.source_root == manifest.output_root or manifest.moves:
+                layout = capture_completed_layout(
+                    manifest,
+                    transaction_id=result.transaction_id,
+                )
         self._completed_layouts.settle_and_append(
             result=result,
             layout=layout,

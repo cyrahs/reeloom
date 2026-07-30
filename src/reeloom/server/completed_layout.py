@@ -206,7 +206,18 @@ class PostgresCompletedLayoutRepository:
         result: ApplyResult,
         layout: CompletedLayout | None,
     ) -> int | None:
-        if (result.status is ApplyStatus.COMPLETED) != (layout is not None):
+        if (
+            result.status is ApplyStatus.ROLLED_BACK
+            and layout is not None
+        ) or (
+            result.status is ApplyStatus.COMPLETED
+            and layout is None
+            and (
+                result.applied_count != 0
+                or result.rolled_back_count != 0
+                or result.failure_code is not None
+            )
+        ):
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         try:
             with self._pool.connection() as connection:

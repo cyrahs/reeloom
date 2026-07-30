@@ -260,7 +260,13 @@ class PostgresQueries:
                                ORDER BY interaction.finished_at DESC,
                                         interaction.interaction_id DESC
                                LIMIT 1
-                           )
+                           ),
+                           EXISTS (
+                               SELECT 1
+                               FROM completed_layout_heads AS layout
+                               WHERE layout.run_id = r.run_id
+                                 AND layout.plan_hash = s.plan_hash
+                           ) AS has_completed_layout
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -369,7 +375,7 @@ class PostgresQueries:
                 actions.append("revision")
                 if apply_policy != "plan_only":
                     actions.append("approve_apply")
-            if status == "completed":
+            if status == "completed" and bool(row[35]):
                 actions.append("reapply")
             if recovery_approval_id is not None:
                 actions.append("recover")
