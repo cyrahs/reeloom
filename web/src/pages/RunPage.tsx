@@ -25,6 +25,7 @@ import {
   Status,
 } from "../components/Status";
 import { RunDeletionAction } from "../components/RunDeletion";
+import { compactRunId, compactValue, statusLabel } from "../labels";
 import { HashLink } from "../router";
 import {
   applyResultSchema,
@@ -280,9 +281,9 @@ export function RunPage({ runId }: { runId: string }) {
         assistant_reply: result.assistant_reply,
       });
       if ("no_op" in result && result.no_op) {
-        setActionNotice("布局没有变化；服务端保留原 head，未创建空 amendment。");
+        setActionNotice("布局没有变化；服务端保留了原有计划，未生成空的修订版本。");
       } else if (result.plan_hash) {
-        setActionNotice("已生成新的 immutable plan，正在切换到最新版本。");
+        setActionNotice("已生成新的不可变计划，正在切换到最新版本。");
       } else {
         setActionNotice("问答已完成；当前 plan 未改变。");
       }
@@ -291,7 +292,7 @@ export function RunPage({ runId }: { runId: string }) {
     onError: async (error, attempt) => {
       if (error instanceof ApiError && error.code === "network_uncertain") {
         setActionNotice(
-          "结果不确定，已重新读取 durable state；如需重放，只会复用原请求键。",
+          "结果不确定，已重新读取服务端持久化状态；如需重试，只会复用原请求键。",
         );
         await reconcileUncertain({ type: "action", value: attempt });
       } else {
@@ -331,7 +332,7 @@ export function RunPage({ runId }: { runId: string }) {
       closeApprove();
       if (error instanceof ApiError && error.code === "network_uncertain") {
         setActionNotice(
-          "执行结果不确定；页面只显示服务端 durable settlement，可用原请求键安全重放。",
+          "执行结果不确定；页面只显示服务端已结算的结果，可用原请求键安全重试。",
         );
         await reconcileUncertain({ type: "apply", value: attempt });
       } else {
@@ -371,7 +372,7 @@ export function RunPage({ runId }: { runId: string }) {
       setFolderConfirmOpen(false);
       if (error instanceof ApiError && error.code === "network_uncertain") {
         setActionNotice(
-          "文件夹事务结果不确定；已读取 durable state，只允许复用原请求键。",
+          "文件夹事务结果不确定；已读取服务端持久化状态，只允许复用原请求键。",
         );
         await reconcileUncertain({ type: "folder", value: attempt });
       } else {
@@ -407,7 +408,7 @@ export function RunPage({ runId }: { runId: string }) {
     onError: async (error, attempt) => {
       if (error instanceof ApiError && error.code === "network_uncertain") {
         setActionNotice(
-          "恢复结果不确定；已读取 durable state，只允许复用原请求键。",
+          "恢复结果不确定；已读取服务端持久化状态，只允许复用原请求键。",
         );
         await reconcileUncertain({ type: "recover", value: attempt });
       } else {
@@ -461,14 +462,20 @@ export function RunPage({ runId }: { runId: string }) {
           <div className="heading-status">
             <Status value={run.data.status} />
             <span>{workTypeLabel(run.data.work_type)}</span>
-            <span>{run.data.phase ?? "无活动阶段"}</span>
+            <span>
+              {run.data.phase
+                ? statusLabel("phase", run.data.phase)
+                : "无活动阶段"}
+            </span>
           </div>
-          <h1>运行详情</h1>
+          <p className="eyebrow">
+            {run.data.source_folder ? "运行详情 · 入站文件夹" : "运行详情"}
+          </p>
+          <h1 title={run.data.source_folder ?? undefined}>
+            {run.data.source_folder ?? "运行详情"}
+          </h1>
           <RunIdentity runId={run.data.run_id} />
-          <ShortHash value={run.data.plan_hash} />
-          {run.data.source_folder ? (
-            <p className="muted">入站文件夹：{run.data.source_folder}</p>
-          ) : null}
+          <ShortHash value={run.data.plan_hash} label="当前计划" />
         </div>
         <div className="stream-indicator">
           <span className="pulse online" />
@@ -487,7 +494,10 @@ export function RunPage({ runId }: { runId: string }) {
         <section className="settlement" aria-live="polite">
           <div>
             <p className="eyebrow">DURABLE SETTLEMENT</p>
-            <h2>执行状态：{run.data.settlement.status}</h2>
+            <h2>
+              执行状态：
+              {statusLabel("settlement", run.data.settlement.status)}
+            </h2>
           </div>
           <dl>
             <div><dt>Transaction</dt><dd>{run.data.settlement.transaction_id}</dd></div>
@@ -508,7 +518,11 @@ export function RunPage({ runId }: { runId: string }) {
           <div>
             <p className="eyebrow">FOLDER DISPOSITION</p>
             <h2>
-              文件夹收尾：{run.data.folder_disposition.status}
+              文件夹收尾：
+              {statusLabel(
+                "disposition",
+                run.data.folder_disposition.status,
+              )}
             </h2>
           </div>
           <dl>
@@ -549,7 +563,7 @@ export function RunPage({ runId }: { runId: string }) {
                   <article key={item.interaction_id}>
                     <header>
                       <strong>{interactionLabel(item.kind)}</strong>
-                      <Status value={item.status} />
+                      <Status value={item.status} kind="interaction" />
                     </header>
                     {item.content_available ? (
                       <>
@@ -566,7 +580,7 @@ export function RunPage({ runId }: { runId: string }) {
                       </>
                     ) : (
                       <p className="muted">
-                        这条 M8 历史没有保存显式消息内容。
+                        这条早期历史没有保存消息内容。
                       </p>
                     )}
                   </article>
@@ -659,8 +673,7 @@ export function RunPage({ runId }: { runId: string }) {
               <div className="recovery-box">
                 <strong>请求结果尚未确认</strong>
                 <p>
-                  已完成 REST 对账。再次提交会复用原 idempotency key，
-                  不会创建新的副作用请求。
+                  已完成服务端对账。再次提交会复用原请求键，不会产生新的副作用请求。
                 </p>
                 <button
                   className="secondary wide"
@@ -673,7 +686,7 @@ export function RunPage({ runId }: { runId: string }) {
                   }
                   onClick={retryUncertain}
                 >
-                  {resyncing ? "正在读取 durable state…" : "使用原请求安全重放"}
+                  {resyncing ? "正在读取服务端状态…" : "使用原请求安全重试"}
                 </button>
               </div>
             ) : null}
@@ -681,8 +694,7 @@ export function RunPage({ runId }: { runId: string }) {
               <div className="recovery-box">
                 <strong>需要恢复</strong>
                 <p>
-                  普通执行已隐藏。只能使用服务端返回的 exact approval ID
-                  继续恢复。
+                  普通执行已隐藏。只能使用服务端返回的指定审批 ID 继续恢复。
                 </p>
                 <button
                   className="danger-button wide"
@@ -695,7 +707,7 @@ export function RunPage({ runId }: { runId: string }) {
                     })
                   }
                 >
-                  {recover.isPending ? "正在恢复…" : "执行 exact recovery"}
+                  {recover.isPending ? "正在恢复…" : "执行定向恢复"}
                 </button>
               </div>
             ) : (
@@ -725,7 +737,7 @@ export function RunPage({ runId }: { runId: string }) {
                     disabled={blocked}
                     onClick={() => setApproveOpen(true)}
                   >
-                    审批并执行此 exact plan
+                    审批并执行此计划
                   </button>
                 ) : null}
                 {run.data.folder_disposition &&
@@ -763,12 +775,17 @@ export function RunPage({ runId }: { runId: string }) {
                   </button>
                 ) : null}
                 {available.has("delete_run") ? (
-                  <RunDeletionAction
-                    runId={runId}
-                    disabled={blocked}
-                    redirectOnSuccess
-                    className="danger-button wide"
-                  />
+                  <div className="danger-zone">
+                    <p className="danger-zone-note">
+                      仅隐藏控制台记录，不会改动任何媒体文件。
+                    </p>
+                    <RunDeletionAction
+                      runId={runId}
+                      disabled={blocked}
+                      redirectOnSuccess
+                      className="danger-outline wide"
+                    />
+                  </div>
                 ) : null}
               </>
             )}
@@ -867,15 +884,7 @@ export function shouldShowArchiveReport(
   );
 }
 
-export function compactRunId(value: string): string {
-  const characters = Array.from(value);
-  if (characters.length <= 24) return value;
-  return [
-    ...characters.slice(0, 12),
-    "…",
-    ...characters.slice(-8),
-  ].join("");
-}
+export { compactRunId };
 
 export function RunIdentity({ runId }: { runId: string }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
@@ -946,7 +955,7 @@ function PreviewGroups({
 }) {
   const groups = useMemo(
     () =>
-      (["unmapped", "move", "unchanged"] as const).map((disposition) => ({
+      (["move", "unmapped", "unchanged"] as const).map((disposition) => ({
         disposition,
         items: items.filter((item) => item.disposition === disposition),
       })),
@@ -1022,8 +1031,7 @@ export function PlanReviewCard({ review }: { review: Preview["review"] }) {
         <p>
           已核验 {review.coverage.system_verified} 项；Agent 说明{" "}
           {review.coverage.agent_explained} 项；通用 fallback{" "}
-          {review.coverage.fallback} 项。说明仅供审查，执行仍以 exact
-          plan hash 和路径预览为准。
+          {review.coverage.fallback} 项。说明仅供审查，执行仍以计划哈希和路径预览为准。
         </p>
       </div>
     </section>
@@ -1080,7 +1088,7 @@ export function ArchiveReportCard({
           <p className="eyebrow">ARCHIVE REFERENCE</p>
           <h2>历史媒体库参考</h2>
         </div>
-        <Status value={report.status} />
+        <Status value={report.status} kind="archive" />
       </div>
       <p className="section-help">
         这些结果仅供 Agent 判断已有内容；实际写入位置始终以计划预览为准，
@@ -1243,7 +1251,7 @@ function ApproveDialog({
           hash、审批、源文件 identity、collision 和目标不存在。
         </p>
         <div className="exact-hash">
-          <span>Exact plan hash</span>
+          <span>计划哈希</span>
           <code>{preview.plan_hash}</code>
         </div>
         <div className="count-strip">
@@ -1278,7 +1286,7 @@ function ApproveDialog({
             autoFocus
           />
           <span>
-            我已审查 exact hash 与路径预览，并理解文件移动可能需要 recovery。
+            我已审查计划哈希与路径预览，并理解文件移动可能需要恢复操作。
           </span>
         </label>
         <div className="button-row end">
@@ -1340,7 +1348,7 @@ function FolderDispositionDialog({
             onChange={(event) => setConfirmed(event.target.checked)}
             autoFocus
           />
-          <span>我已核对 exact hash、目标和文件数量。</span>
+          <span>我已核对计划哈希、目标和文件数量。</span>
         </label>
         <div className="button-row end">
           <button className="ghost" disabled={pending} onClick={onCancel}>
@@ -1367,9 +1375,17 @@ function SafeEventData({ value }: { value: Record<string, unknown> }) {
       typeof item === "number" ||
       typeof item === "boolean",
   );
-  return entries.length ? (
-    <p>{entries.map(([key, item]) => `${key}: ${String(item)}`).join(" · ")}</p>
-  ) : null;
+  if (!entries.length) return null;
+  const full = entries
+    .map(([key, item]) => `${key}: ${String(item)}`)
+    .join(" · ");
+  return (
+    <p title={full}>
+      {entries
+        .map(([key, item]) => `${key}: ${compactValue(String(item))}`)
+        .join(" · ")}
+    </p>
+  );
 }
 
 function interactionLabel(kind: string) {

@@ -1,9 +1,11 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { ApiError } from "../api";
 import { useAuth } from "../auth";
 import { RunDeletionAction } from "../components/RunDeletion";
 import { PageError, ShortHash, Status } from "../components/Status";
+import { compactRunId, statusLabel } from "../labels";
 import { HashLink } from "../router";
 import {
   configSchema,
@@ -14,9 +16,11 @@ import {
 } from "../schemas";
 import { workTypeLabel } from "../workTypes";
 
+const PAGE_LIMIT = 50;
+
 export function DashboardPage() {
   const { api } = useAuth();
-  const visible = document.visibilityState === "visible";
+  const visible = useDocumentVisible();
   const health = useQuery({
     queryKey: ["health"],
     queryFn: () => api.request("/health", healthSchema),
@@ -24,13 +28,17 @@ export function DashboardPage() {
   });
   const runs = useQuery({
     queryKey: ["runs"],
-    queryFn: () => api.request("/api/v1/runs?limit=50", runsSchema),
+    queryFn: () =>
+      api.request(`/api/v1/runs?limit=${PAGE_LIMIT}`, runsSchema),
     refetchInterval: visible ? 10_000 : false,
   });
   const discoveries = useQuery({
     queryKey: ["discoveries"],
     queryFn: () =>
-      api.request("/api/v1/discoveries?limit=50", discoveriesSchema),
+      api.request(
+        `/api/v1/discoveries?limit=${PAGE_LIMIT}`,
+        discoveriesSchema,
+      ),
     refetchInterval: visible ? 10_000 : false,
   });
   const folders = useQuery({
@@ -46,6 +54,8 @@ export function DashboardPage() {
   });
   const noConfig =
     config.error instanceof ApiError && config.error.status === 404;
+  const runItems = runs.data?.items ?? [];
+  const truncated = runItems.length >= PAGE_LIMIT;
 
   return (
     <main className="page">
@@ -86,23 +96,43 @@ export function DashboardPage() {
       <section className="metric-grid" aria-label="关键指标">
         <Metric
           label="最近运行"
-          value={String(runs.data?.items.length ?? "—")}
-          detail="当前页最多 50 条"
+          value={
+            runs.isSuccess
+              ? `${runItems.length}${truncated ? "+" : ""}`
+              : "—"
+          }
+          detail={
+            truncated
+              ? `仅统计最新 ${PAGE_LIMIT} 条，实际更多`
+              : "服务端现有全部运行"
+          }
         />
         <Metric
           label="等待审批"
-          value={String(
-            runs.data?.items.filter(
-              (item) => item.status === "awaiting_approval",
-            ).length ?? "—",
-          )}
-          detail="需要人工确认"
+          value={
+            runs.isSuccess
+              ? String(
+                  runItems.filter(
+                    (item) => item.status === "awaiting_approval",
+                  ).length,
+                )
+              : "—"
+          }
+          detail={
+            truncated
+              ? `最新 ${PAGE_LIMIT} 条中需人工确认`
+              : "需要人工确认"
+          }
           accent
         />
         <Metric
           label="最新发现"
-          value={String(discoveries.data?.items.length ?? "—")}
-          detail="页面可见时每 10 秒刷新"
+          value={
+            discoveries.isSuccess
+              ? String(discoveries.data.items.length)
+              : "—"
+          }
+          detail={`最新 ${PAGE_LIMIT} 条 · 页面可见时每 10 秒刷新`}
         />
       </section>
 
@@ -115,7 +145,7 @@ export function DashboardPage() {
             <p className="eyebrow">INBOUND FOLDERS</p>
             <h2>入站文件夹</h2>
           </div>
-          <span className="muted">稳定中、活动与阻断状态</span>
+          <span className="muted">稳定中、处理中与阻断状态</span>
         </div>
         {folders.error instanceof ApiError ? (
           <PageError code={folders.error.code} />
@@ -124,7 +154,9 @@ export function DashboardPage() {
           {folders.data?.items.map((item) => (
             <article key={`${item.watch_id}:${item.source_folder}`}>
               <div>
-                <strong>{item.source_folder}</strong>
+                <strong title={item.source_folder}>
+                  {item.source_folder}
+                </strong>
                 <span>
                   {item.watch_id}
                   {item.reason_code ? ` · ${item.reason_code}` : ""}
@@ -135,10 +167,10 @@ export function DashboardPage() {
               </div>
               {item.run_id ? (
                 <HashLink to={`/runs/${encodeURIComponent(item.run_id)}`}>
-                  <Status value={item.status} />
+                  <Status value={item.status} kind="folder" />
                 </HashLink>
               ) : (
-                <Status value={item.status} />
+                <Status value={item.status} kind="folder" />
               )}
             </article>
           ))}
@@ -156,9 +188,9 @@ export function DashboardPage() {
           </div>
           <span className="muted">按创建时间倒序</span>
         </div>
-        {runs.data?.items.length ? (
+        {runItems.length ? (
           <div className="table-wrap">
-            <table>
+            <table className="runs-table">
               <thead>
                 <tr>
                   <th>运行</th>
@@ -171,21 +203,39 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {runs.data.items.map((run) => (
+                {runItems.map((run) => (
                   <tr key={run.run_id}>
-                    <td>
-                      <HashLink to={`/runs/${encodeURIComponent(run.run_id)}`}>
-                        {run.run_id}
+                    <td data-label="运行" className="run-cell">
+                      <HashLink
+                        to={`/runs/${encodeURIComponent(run.run_id)}`}
+                        title={run.run_id}
+                      >
+                        {compactRunId(run.run_id)}
                       </HashLink>
                     </td>
-                    <td>{workTypeLabel(run.work_type)}</td>
-                    <td>{run.source_folder ?? "Legacy"}</td>
-                    <td>{run.phase ?? "—"}</td>
-                    <td><ShortHash value={run.plan_hash} /></td>
-                    <td><Status value={run.status} /></td>
-                    <td>
+                    <td data-label="类型" className="nowrap">
+                      {workTypeLabel(run.work_type)}
+                    </td>
+                    <td data-label="入站文件夹" className="folder-cell">
+                      <span title={run.source_folder ?? undefined}>
+                        {run.source_folder ?? "无（旧版运行）"}
+                      </span>
+                    </td>
+                    <td data-label="阶段" className="nowrap">
+                      {run.phase ? statusLabel("phase", run.phase) : "—"}
+                    </td>
+                    <td data-label="计划">
+                      <ShortHash value={run.plan_hash} />
+                    </td>
+                    <td data-label="状态" className="nowrap">
+                      <Status value={run.status} />
+                    </td>
+                    <td data-label="操作" className="row-actions">
                       {run.available_actions.includes("delete_run") ? (
-                        <RunDeletionAction runId={run.run_id} />
+                        <RunDeletionAction
+                          runId={run.run_id}
+                          className="danger-outline compact"
+                        />
                       ) : (
                         <span className="muted">—</span>
                       )}
@@ -195,11 +245,13 @@ export function DashboardPage() {
               </tbody>
             </table>
           </div>
-        ) : (
+        ) : runs.isSuccess ? (
           <div className="empty-inline">
             <p>还没有运行。</p>
             <span>配置完成后，稳定的媒体发现会出现在这里。</span>
           </div>
+        ) : (
+          <div className="empty-inline"><p>正在读取运行…</p></div>
         )}
       </section>
 
@@ -214,10 +266,13 @@ export function DashboardPage() {
           {discoveries.data?.items.map((item) => (
             <article key={item.discovery_id}>
               <div>
-                <strong>{item.watch_id}</strong>
+                <strong title={item.source_folder ?? undefined}>
+                  {item.source_folder ?? "无（旧版发现）"}
+                </strong>
                 <span>
                   {workTypeLabel(item.work_type)}
-                  {item.source_folder ? ` · ${item.source_folder}` : " · Legacy"}
+                  {" · "}
+                  {item.watch_id}
                   {" · "}
                   {formatTime(item.discovered_at)}
                 </span>
@@ -231,13 +286,28 @@ export function DashboardPage() {
               )}
             </article>
           ))}
-          {!discoveries.data?.items.length ? (
+          {discoveries.isSuccess && !discoveries.data.items.length ? (
             <div className="empty-inline"><p>暂无发现。</p></div>
           ) : null}
         </div>
       </section>
     </main>
   );
+}
+
+/** Polling must follow real tab visibility, not the value at first render. */
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(
+    () => document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    const update = () =>
+      setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    update();
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  return visible;
 }
 
 function Metric({

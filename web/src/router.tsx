@@ -37,21 +37,21 @@ export function HashLink({
 
 export function HashNavLink({
   to,
+  owns = [],
   children,
 }: {
   to: string;
+  /** Extra path prefixes this nav entry represents, e.g. "/runs/" under "/". */
+  owns?: string[];
   children: ReactNode;
 }) {
   const path = useHashPath();
+  const active =
+    path === to ||
+    (to !== "/" && path.startsWith(`${to}/`)) ||
+    owns.some((prefix) => path.startsWith(prefix));
   return (
-    <HashLink
-      to={to}
-      className={
-        path === to || (to !== "/" && path.startsWith(`${to}/`))
-          ? "active"
-          : undefined
-      }
-    >
+    <HashLink to={to} className={active ? "active" : undefined}>
       {children}
     </HashLink>
   );

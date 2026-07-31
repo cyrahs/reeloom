@@ -159,7 +159,7 @@ export function ConfigPage() {
       queryClient.setQueryData(["config"], result);
       setLoadedRevision(result.revision);
       setForm(fromConfig(result));
-      setNotice(`配置 revision ${result.revision} 已保存。`);
+      setNotice(`配置版本 ${result.revision} 已保存。`);
     },
     onError: async (error, attempt) => {
       if (error instanceof ApiError && error.status === 409) {
@@ -168,7 +168,7 @@ export function ConfigPage() {
         await queryClient.invalidateQueries({ queryKey: ["config"] });
       } else if (error instanceof ApiError && error.code === "network_uncertain") {
         setNotice(
-          "保存结果不确定，已从服务端重新读取；如需重放只会复用原请求键。",
+          "保存结果不确定，已从服务端重新读取；如需重试只会复用原请求键。",
         );
         setUncertainAttempt(attempt);
         setResyncing(true);
@@ -243,7 +243,7 @@ export function ConfigPage() {
         </div>
         {query.data ? (
           <div className="revision-badge">
-            <span>当前 revision</span>
+            <span>当前版本</span>
             <strong>{query.data.revision}</strong>
           </div>
         ) : null}
@@ -254,14 +254,14 @@ export function ConfigPage() {
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       {uncertainAttempt ? (
         <div className="notice" role="status">
-          <p>新保存已锁定，直到原请求得到确定结果。</p>
+          <p>保存已锁定，直到上一次请求得到确定结果。</p>
           <button
             type="button"
             className="secondary"
             disabled={resyncing || save.isPending}
             onClick={() => save.mutate(uncertainAttempt)}
           >
-            {resyncing ? "正在读取 durable config…" : "使用原请求安全重放"}
+            {resyncing ? "正在读取服务端配置…" : "使用原请求安全重试"}
           </button>
         </div>
       ) : null}
@@ -278,6 +278,12 @@ export function ConfigPage() {
           </p>
           {form.watches.map((watch, index) => (
             <div className="form-card" key={watch.watch_id}>
+              <div className="form-card-heading">
+                <strong>
+                  监听 {index + 1} · {workTypeLabel(watch.work_type)}
+                </strong>
+                <code title={watch.watch_id}>{watch.watch_id}</code>
+              </div>
               <div className="form-grid">
                 <Field label="内容类型">
                   <select
@@ -419,18 +425,22 @@ export function ConfigPage() {
               moveProbe.variables === watch.watch_id ? (
                 <PageError code={moveProbe.error.code} />
               ) : null}
-              <button
-                type="button"
-                className="text-button danger-text"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    watches: current.watches.filter((_, item) => item !== index),
-                  }))
-                }
-              >
-                移除此监听
-              </button>
+              <div className="form-card-footer">
+                <button
+                  type="button"
+                  className="text-button danger-text"
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      watches: current.watches.filter(
+                        (_, item) => item !== index,
+                      ),
+                    }))
+                  }
+                >
+                  移除此监听
+                </button>
+              </div>
             </div>
           ))}
           <button
@@ -526,7 +536,7 @@ export function ConfigPage() {
 
         <ConfigSection number="03" title="Agent 预算">
           <p className="section-help">
-            每个新 run 固定使用保存时的累计预算；每次问答或修订会获得新的单次时间窗口。
+            每个新运行固定使用保存时的累计预算；每次问答或修订会获得新的单次时间窗口。
             修改配置不会改变已创建的任务，任一限制触发都会安全停止。
           </p>
           <div className="form-grid">
@@ -582,8 +592,8 @@ export function ConfigPage() {
           <div className="policy-grid">
             {[
               ["plan_only", "仅计划", "永不执行文件移动。"],
-              ["manual", "人工审批", "每次执行都必须由管理员确认 exact hash。"],
-              ["automatic", "确定性自动审批", "仅后台 policy 可发起自动审批；UI 仍只人工提交。"],
+              ["manual", "人工审批", "每次执行都必须由管理员确认计划哈希。"],
+              ["automatic", "确定性自动审批", "仅后台策略可发起自动审批；界面仍只支持人工提交。"],
             ].map(([value, title, detail]) => (
               <label className="policy-card" key={value}>
                 <input
@@ -607,14 +617,29 @@ export function ConfigPage() {
 
         <div className="sticky-actions">
           <span>
-            保存使用 CAS；冲突时必须重新加载，不会自动覆盖。
+            保存使用乐观并发校验；冲突时必须重新加载，不会自动覆盖。
           </span>
-          <button
-            className="primary"
-            disabled={save.isPending || resyncing || uncertainAttempt !== null}
-          >
-            {save.isPending ? "正在保存…" : "保存配置"}
-          </button>
+          <div className="sticky-actions-buttons">
+            <button
+              type="button"
+              className="ghost on-dark"
+              disabled={save.isPending || resyncing}
+              onClick={() => {
+                setNotice("");
+                setForm(query.data ? fromConfig(query.data) : emptyState());
+              }}
+            >
+              放弃修改
+            </button>
+            <button
+              className="primary"
+              disabled={
+                save.isPending || resyncing || uncertainAttempt !== null
+              }
+            >
+              {save.isPending ? "正在保存…" : "保存配置"}
+            </button>
+          </div>
         </div>
       </form>
       {directoryTarget ? (

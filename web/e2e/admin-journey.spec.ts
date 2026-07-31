@@ -238,20 +238,20 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
   ).toBeVisible();
   await expect(page.getByText("仅系统证据")).toBeVisible();
   const approveButton = page.getByRole("button", {
-    name: "审批并执行此 exact plan",
+    name: "审批并执行此计划",
   });
   await approveButton.click();
-  await expect(page.getByLabel(/我已审查 exact hash/)).toBeFocused();
+  await expect(page.getByLabel(/我已审查计划哈希/)).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(approveButton).toBeFocused();
   await approveButton.click();
   await expect(page.getByText(planHash)).toBeVisible();
   await page
-    .getByLabel(/我已审查 exact hash/)
+    .getByLabel(/我已审查计划哈希/)
     .check();
   await page.getByRole("button", { name: "批准并执行" }).click();
 
-  await expect(page.getByText("执行状态：completed")).toBeVisible();
+  await expect(page.getByText("执行状态：已完成")).toBeVisible();
   expect(approvalBody).toEqual({
     automatic: false,
     folder_disposition_plan_hash: null,
@@ -272,7 +272,7 @@ test("Movie review shows exact paths and completed reapply converges to no-op", 
 
   await page.goto("/");
   const movieRun = page.locator("tbody tr").filter({ hasText: "电影" }).first();
-  await expect(movieRun).toContainText("completed");
+  await expect(movieRun).toContainText("已完成");
   await movieRun.getByRole("link").click();
   await expect(
     page.getByRole("heading", { name: "运行详情" }),
@@ -299,7 +299,7 @@ test("Movie review shows exact paths and completed reapply converges to no-op", 
     page.getByText("旅程电影 (2025) {tmdb-700}/旅程电影 (2025).mkv"),
   ).toBeVisible();
   await expect(page.getByText("zz-extra.mkv")).toBeVisible();
-  await expect(page.getByText("执行状态：completed")).toBeVisible();
+  await expect(page.getByText("执行状态：已完成")).toBeVisible();
   await page.getByRole("button", { name: "重新整理已完成布局" }).click();
   await page.getByLabel("重新整理已完成布局").fill("复验当前布局");
   const historyRefreshed = page.waitForResponse(
@@ -310,7 +310,9 @@ test("Movie review shows exact paths and completed reapply converges to no-op", 
   await page.getByRole("button", { name: "提交" }).click();
 
   await expect(
-    page.getByText("布局没有变化；服务端保留原 head，未创建空 amendment。"),
+    page.getByText(
+      "布局没有变化；服务端保留了原有计划，未生成空的修订版本。",
+    ),
   ).toBeVisible();
   await historyRefreshed;
   const historyHeading = page.getByRole("heading", { name: "交互历史" });

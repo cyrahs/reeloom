@@ -37,7 +37,7 @@ export function App() {
           </span>
         </HashLink>
         <nav aria-label="主导航">
-          <HashNavLink to="/">总览</HashNavLink>
+          <HashNavLink to="/" owns={["/runs/"]}>总览</HashNavLink>
           <HashNavLink to="/config">配置</HashNavLink>
         </nav>
         <button className="ghost" onClick={logout}>退出</button>
