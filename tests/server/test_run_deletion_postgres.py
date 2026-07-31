@@ -136,14 +136,12 @@ def test_terminal_run_can_be_hidden_without_deleting_history() -> None:
             item["run_id"]
             for item in queries.list_runs(before=None, limit=10_000)
         }
-        discovery = next(
-            item
+        assert discovery_id not in {
+            item["discovery_id"]
             for item in queries.list_discoveries(
                 before=None, limit=10_000
             )
-            if item["discovery_id"] == discovery_id
-        )
-        assert discovery["run_id"] is None
+        }
 
         with control.pool.connection() as connection:
             operation = connection.execute(

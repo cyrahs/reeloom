@@ -565,6 +565,13 @@ class PostgresQueries:
                             FROM page_cursor
                         )
                     )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM runs AS hidden_run
+                          JOIN run_deletions AS deleted
+                            ON deleted.run_id = hidden_run.run_id
+                          WHERE hidden_run.discovery_id = d.discovery_id
+                      )
                     ORDER BY d.discovered_at DESC, d.discovery_id DESC
                     LIMIT %s
                     """,
