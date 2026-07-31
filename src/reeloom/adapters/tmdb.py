@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import unicodedata
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -29,6 +30,23 @@ _MAX_SEASONS = 100
 _MAX_EPISODES = 500
 _MAX_GENRES = 32
 _ANIMATION_GENRE_ID = 16
+
+
+def _title_key(value: str) -> str:
+    return "".join(
+        unicodedata.normalize("NFKC", value).casefold().split()
+    )
+
+
+def _is_exact_title_match(
+    query: str,
+    candidate: TmdbSearchCandidate,
+) -> bool:
+    query_key = _title_key(query)
+    return bool(query_key) and query_key in {
+        _title_key(candidate.localized_name),
+        _title_key(candidate.original_name),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +289,10 @@ class TmdbHttpAdapter:
                     candidate
                     for candidate, genre_ids in candidates
                     if _ANIMATION_GENRE_ID in genre_ids
+                    or (
+                        not genre_ids
+                        and _is_exact_title_match(query, candidate)
+                    )
                 )
             else:
                 candidates = tuple(
@@ -349,6 +371,7 @@ class TmdbHttpAdapter:
             genre_ids = self._parse_detail_genre_ids(payload)
             if (
                 work_type is TmdbWorkType.ANIME
+                and genre_ids
                 and _ANIMATION_GENRE_ID not in genre_ids
             ):
                 raise ValueError("series is not animation")

@@ -531,7 +531,7 @@ def test_adult_search_option_requires_strict_boolean() -> None:
     assert request_count == 0
 
 
-def test_anime_search_filters_out_non_animation_without_fallback() -> None:
+def test_anime_search_filters_explicit_non_animation_genres() -> None:
     adapter = TmdbHttpAdapter(
         api_key="test-key-not-secret",
         transport=httpx.MockTransport(
@@ -555,6 +555,103 @@ def test_anime_search_filters_out_non_animation_without_fallback() -> None:
         results = asyncio.run(
             adapter.search_titles(
                 query="title",
+                work_type=TmdbWorkType.ANIME,
+                language=TmdbLanguage.ZH_CN,
+                limit=10,
+            )
+        )
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert results == ()
+
+
+def test_anime_search_keeps_exact_title_when_genres_are_missing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/3/search/tv":
+            return _json_response(
+                {
+                    "results": [
+                        {
+                            "id": 327371,
+                            "name": "作弊道具管理局的工作EX",
+                            "original_name": "チートアイテム管理局のお仕事EX",
+                            "first_air_date": "2026-07-03",
+                            "original_language": "ja",
+                            "genre_ids": [],
+                        }
+                    ]
+                }
+            )
+        return _json_response(
+            {
+                "id": 327371,
+                "name": "作弊道具管理局的工作EX",
+                "original_name": "チートアイテム管理局のお仕事EX",
+                "first_air_date": "2026-07-03",
+                "genres": [],
+                "seasons": [
+                    {
+                        "season_number": 1,
+                        "episode_count": 1,
+                        "name": "第 1 季",
+                    }
+                ],
+            }
+        )
+
+    adapter = TmdbHttpAdapter(
+        api_key="test-key-not-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        results = asyncio.run(
+            adapter.search_titles(
+                query="  チートアイテム管理局のお仕事ex  ",
+                work_type=TmdbWorkType.ANIME,
+                language=TmdbLanguage.ZH_CN,
+                limit=10,
+            )
+        )
+        details = asyncio.run(
+            adapter.get_series(
+                tmdb_id=327371,
+                work_type=TmdbWorkType.ANIME,
+                language=TmdbLanguage.ZH_CN,
+            )
+        )
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert tuple(candidate.tmdb_id for candidate in results) == (327371,)
+    assert details.tmdb_id == 327371
+    assert details.seasons[0].episode_count == 1
+
+
+def test_anime_search_hides_inexact_title_when_genres_are_missing() -> None:
+    adapter = TmdbHttpAdapter(
+        api_key="test-key-not-secret",
+        transport=httpx.MockTransport(
+            lambda request: _json_response(
+                {
+                    "results": [
+                        {
+                            "id": 327371,
+                            "name": "作弊道具管理局的工作EX",
+                            "original_name": "チートアイテム管理局のお仕事EX",
+                            "first_air_date": "2026-07-03",
+                            "original_language": "ja",
+                            "genre_ids": [],
+                        }
+                    ]
+                }
+            )
+        ),
+    )
+    try:
+        results = asyncio.run(
+            adapter.search_titles(
+                query="お仕事",
                 work_type=TmdbWorkType.ANIME,
                 language=TmdbLanguage.ZH_CN,
                 limit=10,

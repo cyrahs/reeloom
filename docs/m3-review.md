@@ -16,7 +16,9 @@
   （anime/tv_series/movie archive category）明确分离。
 - [x] `RunStarted` 必须显式绑定 trusted `work_type`，search filter 不能跨类型。
 - [x] capability 使用 `(work_type, tmdb_id)`，不混淆 TV/Movie 同号 ID。
-- [x] anime search 和 details 都要求 TMDB Animation genre 16，不做 fallback。
+- [x] anime search 和 details 要求 TMDB Animation genre 16；仅当 genre metadata
+  为空且 query 与 localized/original title 标准化后完全一致时允许安全 fallback，
+  非空 genre 不含 16 时仍 fail closed。
 - [x] movie search 使用 `/search/movie` 并解析 movie title/release 字段。
 - [x] movie metadata 使用 `/movie/{id}` 并返回有界字段；`adult` 必须是严格
   boolean，metadata 尚未开放为 Agent 工具。

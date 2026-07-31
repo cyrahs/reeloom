@@ -179,7 +179,7 @@ APPLYING → ROLLED_BACK
 | 工具 | Phase | 输入 | 输出与限制 |
 | --- | --- | --- | --- |
 | `list_candidates` | IDENTIFY/MAP | kind、cursor、limit | opaque ID、相对展示名、有限元数据；分页有上限 |
-| `search_tmdb` | IDENTIFY | query、work_type | 类型化候选；filter 必须匹配 run；只能访问 TMDB adapter |
+| `search_tmdb` | IDENTIFY | query、work_type | 类型化候选；filter 必须匹配 run；anime 仅对空 genre 的标准化精确标题允许 fallback；只能访问 TMDB adapter |
 | `get_tmdb_series` | IDENTIFY/MAP | work_type、tmdb_id、language | 仅 series 类型；白名单字段和大小受限的文本 |
 | `get_tmdb_season` | MAP | work_type、tmdb_id、season、language | 仅已选 series；集号、标题、限长 overview |
 | `search_dir` | MAP | selected identity 或 literal name、cursor、limit | 只缓存并过滤媒体库根的直接子目录，返回 run-scoped opaque ID |
