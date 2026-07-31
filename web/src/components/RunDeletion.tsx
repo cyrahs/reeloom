@@ -6,6 +6,7 @@ import { useAuth } from "../auth";
 import { compactRunId } from "../labels";
 import { runDeletionSchema, runSchema } from "../schemas";
 import { cursorKey } from "../sse";
+import { IconTrash } from "./Icon";
 import { errorMessage } from "./Status";
 
 export function RunDeletionAction({
@@ -78,6 +79,7 @@ export function RunDeletionAction({
           setOpen(true);
         }}
       >
+        <IconTrash size={14} />
         删除记录
       </button>
       {notice ? <p className="form-error" role="status">{notice}</p> : null}

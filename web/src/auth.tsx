@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { ApiClient, ApiError, TOKEN_STORAGE_KEY } from "./api";
+import { IconReel } from "./components/Icon";
 import { sessionSchema } from "./schemas";
 
 type AuthValue = {
@@ -99,7 +100,7 @@ function Login({
     <main className="login-shell">
       <section className="login-card" aria-labelledby="login-title">
         <div className="brand-mark" aria-hidden="true">
-          R
+          <IconReel size={32} />
         </div>
         <p className="eyebrow">REELOOM CONTROL PLANE</p>
         <h1 id="login-title">把剧集归位，过程始终可见。</h1>

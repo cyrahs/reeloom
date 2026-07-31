@@ -4,7 +4,9 @@ import { useAuth } from "./auth";
 import { ConfigPage } from "./pages/ConfigPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { RunPage } from "./pages/RunPage";
+import { IconReel } from "./components/Icon";
 import { HashLink, HashNavLink, useHashPath } from "./router";
+import { ThemeToggle } from "./theme";
 
 export function App() {
   const { logout } = useAuth();
@@ -30,7 +32,9 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <HashLink to="/" className="brand" aria-label="Reeloom 首页">
-          <span className="brand-mark small" aria-hidden="true">R</span>
+          <span className="brand-mark small" aria-hidden="true">
+            <IconReel size={20} />
+          </span>
           <span>
             <strong>Reeloom</strong>
             <small>控制台</small>
@@ -40,7 +44,10 @@ export function App() {
           <HashNavLink to="/" owns={["/runs/"]}>总览</HashNavLink>
           <HashNavLink to="/config">配置</HashNavLink>
         </nav>
-        <button className="ghost" onClick={logout}>退出</button>
+        <div className="topbar-actions">
+          <ThemeToggle />
+          <button className="ghost" onClick={logout}>退出</button>
+        </div>
       </header>
       <ErrorBoundary>{page}</ErrorBoundary>
     </div>

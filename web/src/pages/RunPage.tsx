@@ -20,6 +20,15 @@ import {
 import { useAuth } from "../auth";
 import { Hint } from "../components/Hint";
 import {
+  IconArrowLeft,
+  IconCheck,
+  IconCopy,
+  IconFilm,
+  IconFolder,
+  IconMoveTo,
+  IconSubtitle,
+} from "../components/Icon";
+import {
   errorMessage,
   PageError,
   ShortHash,
@@ -457,7 +466,10 @@ export function RunPage({ runId }: { runId: string }) {
 
   return (
     <main className="page run-page">
-      <HashLink className="back-link" to="/">← 返回总览</HashLink>
+      <HashLink className="back-link" to="/">
+        <IconArrowLeft size={15} />
+        返回总览
+      </HashLink>
       <section className="run-heading">
         <div>
           <div className="heading-status">
@@ -915,6 +927,7 @@ export function RunIdentity({ runId }: { runId: string }) {
         aria-live="polite"
         onClick={copy}
       >
+        {copyStatus === "copied" ? <IconCheck size={13} /> : <IconCopy size={13} />}
         {copyStatus === "copied"
           ? "已复制"
           : copyStatus === "failed"
@@ -979,14 +992,16 @@ function PreviewGroups({
                       : undefined
                   }
                 >
-                  <span className={`kind-icon ${item.kind}`}>
-                    {item.kind === "video" ? "V" : "S"}
+                  <span className={`kind-icon ${item.kind}`} aria-hidden="true">
+                    {item.kind === "video" ? <IconFilm /> : <IconSubtitle />}
                   </span>
                   <div>
                     <code>{item.source}</code>
                     {item.destination ? (
                       <>
-                        <span className="path-arrow">↓</span>
+                        <span className="path-arrow" aria-hidden="true">
+                          <IconMoveTo size={15} />
+                        </span>
                         <code className="destination">{item.destination}</code>
                       </>
                     ) : null}
@@ -1112,7 +1127,11 @@ export function ArchiveReportCard({
               style={{ paddingInlineStart: `${(entry.depth - 1) * 18}px` }}
             >
               <span aria-hidden="true">
-                {entry.kind === "directory" ? "▸" : "V"}
+                {entry.kind === "directory" ? (
+                  <IconFolder size={15} />
+                ) : (
+                  <IconFilm size={15} />
+                )}
               </span>
               <span>{entry.name}</span>
               {entry.kind === "directory" && !entry.listed ? (

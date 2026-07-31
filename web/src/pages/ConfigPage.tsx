@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ApiError, idempotencyKey, type ApiClient } from "../api";
 import { useAuth } from "../auth";
 import { Hint } from "../components/Hint";
+import { IconFolder, IconPlus, IconTrash } from "../components/Icon";
 import { errorMessage, PageError } from "../components/Status";
 import { compactValue } from "../labels";
 import {
@@ -439,6 +440,7 @@ export function ConfigPage() {
                     }))
                   }
                 >
+                  <IconTrash size={14} />
                   移除此监听
                 </button>
               </div>
@@ -457,6 +459,7 @@ export function ConfigPage() {
               }))
             }
           >
+            <IconPlus size={15} />
             添加监听
           </button>
         </ConfigSection>
@@ -965,7 +968,9 @@ function DirectoryPicker({
               key={directory.path}
               onClick={() => setPath(directory.path)}
             >
-              <span aria-hidden="true">▸</span>
+              <span aria-hidden="true">
+                <IconFolder size={15} />
+              </span>
               <span>{directory.name}</span>
             </button>
           ))}

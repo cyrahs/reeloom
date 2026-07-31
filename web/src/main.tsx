@@ -4,7 +4,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { App } from "./App";
 import { AuthGate } from "./auth";
+import { applyTheme, readTheme } from "./theme";
 import "./styles.css";
+
+// Set before the first render so the page never flashes the wrong palette.
+applyTheme(readTheme());
 
 const queryClient = new QueryClient({
   defaultOptions: {

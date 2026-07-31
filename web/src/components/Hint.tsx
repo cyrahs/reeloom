@@ -6,6 +6,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { IconHelp } from "./Icon";
+
 const EDGE_MARGIN = 12;
 
 /**
@@ -62,7 +64,7 @@ export function Hint({
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
       >
-        ?
+        <IconHelp size={15} />
       </button>
       {open ? (
         <span
