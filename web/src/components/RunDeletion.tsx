@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, idempotencyKey } from "../api";
 import { useAuth } from "../auth";
+import { compactRunId } from "../labels";
 import { runDeletionSchema, runSchema } from "../schemas";
 import { cursorKey } from "../sse";
 import { errorMessage } from "./Status";
@@ -132,11 +133,13 @@ export function DeleteRunDialog({
         aria-modal="true"
         aria-labelledby="delete-run-title"
       >
-        <p className="eyebrow">RUN RECORD</p>
         <h2 id="delete-run-title">删除运行记录？</h2>
         <p>
-          {runId} 将从控制台和公开 API 中永久隐藏。媒体文件不会改变，
+          这条运行将从控制台和公开 API 中永久隐藏。媒体文件不会改变，
           底层计划、事件和事务审计会继续保留。
+        </p>
+        <p className="modal-subject">
+          <code title={runId}>{compactRunId(runId)}</code>
         </p>
         <label className="risk-check">
           <input

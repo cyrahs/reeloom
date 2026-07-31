@@ -4,7 +4,9 @@ import { z } from "zod";
 
 import { ApiError, idempotencyKey, type ApiClient } from "../api";
 import { useAuth } from "../auth";
+import { Hint } from "../components/Hint";
 import { errorMessage, PageError } from "../components/Status";
+import { compactValue } from "../labels";
 import {
   configSchema,
   directoryListingSchema,
@@ -234,19 +236,13 @@ export function ConfigPage() {
   return (
     <main className="page config-page">
       <section className="hero-row compact">
-        <div>
-          <p className="eyebrow">ADMIN CONFIGURATION</p>
-          <h1>{noConfig ? "建立第一份安全配置" : "配置控制面"}</h1>
-          <p className="lede">
-            已配置路径与密钥默认保留。只有明确选择“替换”才需要重新输入。
-          </p>
+        <div className="hero-title">
+          <h1>{noConfig ? "建立第一份安全配置" : "配置"}</h1>
+          <Hint label="配置说明">
+            已配置的路径与密钥默认保留，只有点“替换”才需要重新输入。
+            保存使用乐观并发校验：若他人已改动，必须重新加载，不会自动覆盖。
+          </Hint>
         </div>
-        {query.data ? (
-          <div className="revision-badge">
-            <span>当前版本</span>
-            <strong>{query.data.revision}</strong>
-          </div>
-        ) : null}
       </section>
       {query.error instanceof ApiError && !noConfig ? (
         <PageError code={query.error.code} />
@@ -270,19 +266,24 @@ export function ConfigPage() {
       ) : null}
 
       <form onSubmit={submit}>
-        <ConfigSection number="01" title="监听与媒体库">
-          <p className="section-help">
-            只处理此目录的直接子文件夹；archive、fail 和隐藏目录会被忽略。
-            每个监听独立绑定最终媒体库。archive 和 fail 由 Reeloom
-            在入站目录内管理，不等同于媒体库目录。
-          </p>
+        <ConfigSection
+          title="监听与媒体库"
+          hint={
+            <>
+              只处理入站目录的直接子文件夹；archive、fail 和隐藏目录会被忽略。
+              archive 和 fail 由 Reeloom 在入站目录内管理，不等同于媒体库目录。
+            </>
+          }
+        >
           {form.watches.map((watch, index) => (
             <div className="form-card" key={watch.watch_id}>
               <div className="form-card-heading">
                 <strong>
                   监听 {index + 1} · {workTypeLabel(watch.work_type)}
                 </strong>
-                <code title={watch.watch_id}>{watch.watch_id}</code>
+                <code title={watch.watch_id}>
+                  {compactValue(watch.watch_id)}
+                </code>
               </div>
               <div className="form-grid">
                 <Field label="内容类型">
@@ -460,7 +461,7 @@ export function ConfigPage() {
           </button>
         </ConfigSection>
 
-        <ConfigSection number="02" title="模型 Provider">
+        <ConfigSection title="模型 Provider">
           <div className="form-grid">
             <Field label="Base URL">
               <input
@@ -534,11 +535,15 @@ export function ConfigPage() {
           ) : null}
         </ConfigSection>
 
-        <ConfigSection number="03" title="Agent 预算">
-          <p className="section-help">
-            每个新运行固定使用保存时的累计预算；每次问答或修订会获得新的单次时间窗口。
-            修改配置不会改变已创建的任务，任一限制触发都会安全停止。
-          </p>
+        <ConfigSection
+          title="Agent 预算"
+          hint={
+            <>
+              每个新运行固定使用保存时的累计预算；每次问答或修订会获得新的单次时间窗口。
+              修改配置不会改变已创建的任务，任一限制触发都会安全停止。
+            </>
+          }
+        >
           <div className="form-grid">
             <BudgetField
               label="单次操作时间上限（秒）"
@@ -588,27 +593,29 @@ export function ConfigPage() {
           </div>
         </ConfigSection>
 
-        <ConfigSection number="04" title="执行策略">
+        <ConfigSection title="执行策略">
           <div className="policy-grid">
             {[
-              ["plan_only", "仅计划", "永不执行文件移动。"],
-              ["manual", "人工审批", "每次执行都必须由管理员确认计划哈希。"],
-              ["automatic", "确定性自动审批", "仅后台策略可发起自动审批；界面仍只支持人工提交。"],
+              ["plan_only", "仅计划", "永不移动文件。"],
+              ["manual", "人工审批", "每次执行都要管理员确认计划哈希。"],
+              ["automatic", "确定性自动审批", "仅后台策略可自动审批；界面仍需人工提交。"],
             ].map(([value, title, detail]) => (
               <label className="policy-card" key={value}>
-                <input
-                  type="radio"
-                  name="apply-policy"
-                  value={value}
-                  checked={form.apply_policy === value}
-                  onChange={() =>
-                    setForm({
-                      ...form,
-                      apply_policy: value as FormState["apply_policy"],
-                    })
-                  }
-                />
-                <strong>{title}</strong>
+                <span className="policy-card-title">
+                  <input
+                    type="radio"
+                    name="apply-policy"
+                    value={value}
+                    checked={form.apply_policy === value}
+                    onChange={() =>
+                      setForm({
+                        ...form,
+                        apply_policy: value as FormState["apply_policy"],
+                      })
+                    }
+                  />
+                  <strong>{title}</strong>
+                </span>
                 <span>{detail}</span>
               </label>
             ))}
@@ -617,7 +624,7 @@ export function ConfigPage() {
 
         <div className="sticky-actions">
           <span>
-            保存使用乐观并发校验；冲突时必须重新加载，不会自动覆盖。
+            {query.data ? `当前版本 ${query.data.revision}` : "尚未保存过配置"}
           </span>
           <div className="sticky-actions-buttons">
             <button
@@ -764,21 +771,21 @@ function BudgetField({
 }
 
 function ConfigSection({
-  number,
   title,
+  hint,
   children,
 }: {
-  number: string;
   title: string;
+  hint?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="config-section">
-      <div className="section-number">{number}</div>
-      <div className="section-content">
+      <div className="section-heading">
         <h2>{title}</h2>
-        {children}
+        {hint ? <Hint label={`${title}说明`}>{hint}</Hint> : null}
       </div>
+      {children}
     </section>
   );
 }
@@ -825,51 +832,51 @@ function SecretChoice({
   return (
     <fieldset className="secret-choice">
       <legend>{label}</legend>
-      {canRetain ? (
-        <div className="segmented">
+      {effectiveMode === "retain" ? (
+        <div className="secret-row">
+          <p className="retained-value">
+            {retainedValue || value || "已配置 · 内容不会回传浏览器"}
+          </p>
           <button
             type="button"
-            className={effectiveMode === "retain" ? "selected" : ""}
-            onClick={() => onMode("retain")}
-          >
-            保留现有值
-          </button>
-          <button
-            type="button"
-            className={effectiveMode === "replace" ? "selected" : ""}
+            className="text-button"
             onClick={() => onMode("replace")}
           >
             替换
           </button>
         </div>
       ) : (
-        <p className="field-note">新项目必须提供明确值。</p>
-      )}
-      {effectiveMode === "replace" ? (
-        <div className="path-input-row">
-          <input
-            type={secret ? "password" : "text"}
-            autoComplete="off"
-            value={value}
-            onChange={(event) => onValue(event.target.value)}
-            placeholder={placeholder}
-            required
-          />
-          {onBrowse ? (
+        <>
+          <div className="path-input-row">
+            <input
+              type={secret ? "password" : "text"}
+              autoComplete="off"
+              value={value}
+              onChange={(event) => onValue(event.target.value)}
+              placeholder={placeholder}
+              required
+            />
+            {onBrowse ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={onBrowse}
+                aria-label={`浏览${label}`}
+              >
+                浏览
+              </button>
+            ) : null}
+          </div>
+          {canRetain ? (
             <button
               type="button"
-              className="secondary"
-              onClick={onBrowse}
-              aria-label={`浏览${label}`}
+              className="text-button"
+              onClick={() => onMode("retain")}
             >
-              浏览
+              保留现有值
             </button>
           ) : null}
-        </div>
-      ) : (
-        <p className="retained-value">
-          {retainedValue || value || "已配置 · 内容不会回传浏览器"}
-        </p>
+        </>
       )}
     </fieldset>
   );
@@ -922,10 +929,7 @@ function DirectoryPicker({
         aria-labelledby="directory-picker-title"
       >
         <div className="directory-picker-heading">
-          <div>
-            <p className="eyebrow">POD DIRECTORIES</p>
-            <h2 id="directory-picker-title">选择{label}</h2>
-          </div>
+          <h2 id="directory-picker-title">选择{label}</h2>
           <button type="button" className="ghost" onClick={onClose} autoFocus>
             关闭
           </button>

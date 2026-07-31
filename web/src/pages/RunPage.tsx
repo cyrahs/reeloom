@@ -18,6 +18,7 @@ import {
   idempotencyKey,
 } from "../api";
 import { useAuth } from "../auth";
+import { Hint } from "../components/Hint";
 import {
   errorMessage,
   PageError,
@@ -462,20 +463,20 @@ export function RunPage({ runId }: { runId: string }) {
           <div className="heading-status">
             <Status value={run.data.status} />
             <span>{workTypeLabel(run.data.work_type)}</span>
-            <span>
-              {run.data.phase
-                ? statusLabel("phase", run.data.phase)
-                : "无活动阶段"}
-            </span>
+            {/* The phase often restates the status; show it only when it adds something. */}
+            {run.data.phase &&
+            statusLabel("phase", run.data.phase) !==
+              statusLabel("run", run.data.status) ? (
+              <span>{statusLabel("phase", run.data.phase)}</span>
+            ) : null}
           </div>
-          <p className="eyebrow">
-            {run.data.source_folder ? "运行详情 · 入站文件夹" : "运行详情"}
-          </p>
           <h1 title={run.data.source_folder ?? undefined}>
             {run.data.source_folder ?? "运行详情"}
           </h1>
-          <RunIdentity runId={run.data.run_id} />
-          <ShortHash value={run.data.plan_hash} label="当前计划" />
+          <div className="run-meta-row">
+            <RunIdentity runId={run.data.run_id} />
+            <ShortHash value={run.data.plan_hash} label="当前计划" />
+          </div>
         </div>
         <div className="stream-indicator">
           <span className="pulse online" />
@@ -483,7 +484,7 @@ export function RunPage({ runId }: { runId: string }) {
         </div>
       </section>
 
-      <section className="metric-grid four">
+      <section className="stat-strip" aria-label="Agent 用量">
         <RunMetric label="模型轮次" value={run.data.model_turns} />
         <RunMetric label="模型 tokens" value={run.data.model_tokens} />
         <RunMetric label="工具调用" value={run.data.tool_calls} />
@@ -493,16 +494,20 @@ export function RunPage({ runId }: { runId: string }) {
       {run.data.settlement ? (
         <section className="settlement" aria-live="polite">
           <div>
-            <p className="eyebrow">DURABLE SETTLEMENT</p>
             <h2>
               执行状态：
               {statusLabel("settlement", run.data.settlement.status)}
             </h2>
           </div>
           <dl>
-            <div><dt>Transaction</dt><dd>{run.data.settlement.transaction_id}</dd></div>
             <div><dt>已应用</dt><dd>{run.data.settlement.applied_count}</dd></div>
             <div><dt>已回滚</dt><dd>{run.data.settlement.rolled_back_count}</dd></div>
+            <div>
+              <dt>事务</dt>
+              <dd title={run.data.settlement.transaction_id}>
+                {compactValue(run.data.settlement.transaction_id)}
+              </dd>
+            </div>
           </dl>
           {run.data.settlement.failure_code ? (
             <p className="notice danger" role="alert">
@@ -516,7 +521,6 @@ export function RunPage({ runId }: { runId: string }) {
       {run.data.folder_disposition ? (
         <section className="settlement" aria-live="polite">
           <div>
-            <p className="eyebrow">FOLDER DISPOSITION</p>
             <h2>
               文件夹收尾：
               {statusLabel(
@@ -553,9 +557,11 @@ export function RunPage({ runId }: { runId: string }) {
           {displayedInteractions.length ? (
             <section className="panel interaction-history">
               <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">AGENT HISTORY</p>
+                <div className="heading-title">
                   <h2>交互历史</h2>
+                  <span className="count-pill">
+                    {displayedInteractions.length}
+                  </span>
                 </div>
               </div>
               <div className="interaction-list">
@@ -608,10 +614,7 @@ export function RunPage({ runId }: { runId: string }) {
           ) : null}
           <section className="panel">
             <div className="panel-heading">
-              <div>
-                <p className="eyebrow">PLAN REVIEW</p>
-                <h2>计划审查</h2>
-              </div>
+              <h2>计划审查</h2>
               {lineage.data?.items.length ? (
                 <label className="version-picker">
                   <span>版本</span>
@@ -667,7 +670,6 @@ export function RunPage({ runId }: { runId: string }) {
 
         <aside className="run-aside">
           <section className="panel action-panel">
-            <p className="eyebrow">AVAILABLE ACTIONS</p>
             <h2>下一步</h2>
             {uncertainAttempt ? (
               <div className="recovery-box">
@@ -777,7 +779,7 @@ export function RunPage({ runId }: { runId: string }) {
                 {available.has("delete_run") ? (
                   <div className="danger-zone">
                     <p className="danger-zone-note">
-                      仅隐藏控制台记录，不会改动任何媒体文件。
+                      仅隐藏控制台记录，不改动媒体文件。
                     </p>
                     <RunDeletionAction
                       runId={runId}
@@ -808,18 +810,17 @@ export function RunPage({ runId }: { runId: string }) {
 
           <section className="panel timeline-panel">
             <div className="panel-heading">
-              <div>
-                <p className="eyebrow">DURABLE EVENTS</p>
-                <h2>事件时间线</h2>
-              </div>
+              <h2>事件时间线</h2>
             </div>
             <ol className="timeline">
               {events.slice(-40).reverse().map((event) => (
                 <li key={event.event_id}>
                   <span className="timeline-dot" />
                   <div>
-                    <strong>{event.event_type}</strong>
-                    <small>event {event.event_id}</small>
+                    <strong title={event.event_type}>
+                      {statusLabel("event", event.event_type)}
+                    </strong>
+                    <small>#{event.event_id}</small>
                     <SafeEventData value={event.data} />
                   </div>
                 </li>
@@ -932,7 +933,7 @@ function mergeEvents(current: RunEvent[], incoming: RunEvent[]) {
 
 function RunMetric({ label, value }: { label: string; value: number }) {
   return (
-    <article className="metric compact-metric">
+    <article>
       <span>{label}</span>
       <strong>{value.toLocaleString("zh-CN")}</strong>
     </article>
@@ -1010,30 +1011,27 @@ export function PlanReviewCard({ review }: { review: Preview["review"] }) {
   return (
     <section className="plan-rationale" aria-label="计划说明">
       <div className="plan-rationale-heading">
-        <div>
-          <p className="eyebrow">PLAN RATIONALE</p>
+        <div className="heading-title">
           <h3>计划说明</h3>
+          <Hint label="计划说明的作用" align="end">
+            说明仅供审查，执行仍以计划哈希和路径预览为准。系统核验{" "}
+            {review.coverage.system_verified} 项、Agent 说明{" "}
+            {review.coverage.agent_explained} 项、通用兜底{" "}
+            {review.coverage.fallback} 项。
+          </Hint>
         </div>
         <span className={`review-status ${review.status}`}>
           {reviewStatusLabel(review.status)}
         </span>
       </div>
       {review.agent_summary ? (
-        <div className="review-source">
-          <strong>Agent 判断（仅供审查）</strong>
+        <div className="review-summary">
+          <span className="review-attribution">Agent 判断（仅供审查）</span>
           <p>{review.agent_summary}</p>
         </div>
       ) : (
         <p className="muted">Agent 原始说明不可用。</p>
       )}
-      <div className="review-source">
-        <strong>系统核验</strong>
-        <p>
-          已核验 {review.coverage.system_verified} 项；Agent 说明{" "}
-          {review.coverage.agent_explained} 项；通用 fallback{" "}
-          {review.coverage.fallback} 项。说明仅供审查，执行仍以计划哈希和路径预览为准。
-        </p>
-      </div>
     </section>
   );
 }
@@ -1084,16 +1082,15 @@ export function ArchiveReportCard({
   return (
     <section className="panel archive-report">
       <div className="panel-heading">
-        <div>
-          <p className="eyebrow">ARCHIVE REFERENCE</p>
+        <div className="heading-title">
           <h2>历史媒体库参考</h2>
+          <Hint label="历史媒体库参考说明" align="end">
+            这些结果仅供 Agent 判断已有内容；实际写入位置始终以计划预览为准，
+            不会向旧目录合并文件。
+          </Hint>
         </div>
         <Status value={report.status} kind="archive" />
       </div>
-      <p className="section-help">
-        这些结果仅供 Agent 判断已有内容；实际写入位置始终以计划预览为准，
-        不会向旧目录合并文件。
-      </p>
       {report.possible_existing_archive ? (
         <div className="notice" role="status">
           找到可能已归档的项目。旧目录格式可能造成重复归档，请核对下方内容。
@@ -1244,12 +1241,14 @@ function ApproveDialog({
         aria-modal="true"
         aria-labelledby="approve-title"
       >
-        <p className="eyebrow">EXACT PLAN APPROVAL</p>
-        <h2 id="approve-title">确认文件移动</h2>
-        <p>
-          你将审批 v{preview.version} {preview.plan_kind}。服务端会再次验证
-          hash、审批、源文件 identity、collision 和目标不存在。
-        </p>
+        <div className="heading-title">
+          <h2 id="approve-title">确认文件移动</h2>
+          <Hint label="执行前的服务端校验" align="end">
+            服务端会再次校验计划哈希、审批记录、源文件身份、目标冲突与目标不存在，
+            任一不符都会中止。
+          </Hint>
+        </div>
+        <p>即将审批 v{preview.version}（{preview.plan_kind}）。</p>
         <div className="exact-hash">
           <span>计划哈希</span>
           <code>{preview.plan_hash}</code>
@@ -1326,12 +1325,13 @@ function FolderDispositionDialog({
         aria-modal="true"
         aria-labelledby="folder-disposition-title"
       >
-        <p className="eyebrow">EXACT FOLDER DISPOSITION</p>
-        <h2 id="folder-disposition-title">确认文件夹收尾</h2>
-        <p>
-          服务端会重新验证目录 identity、完整 inventory 与目标不存在，
-          浏览器不会推断移动成功。
-        </p>
+        <div className="heading-title">
+          <h2 id="folder-disposition-title">确认文件夹收尾</h2>
+          <Hint label="执行前的服务端校验" align="end">
+            服务端会重新校验目录身份、完整文件清单与目标不存在；
+            浏览器不会推断移动是否成功。
+          </Hint>
+        </div>
         <div className="exact-hash">
           <span>{folderActionLabel(disposition.action)}</span>
           <code>{disposition.plan_hash}</code>

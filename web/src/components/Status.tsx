@@ -28,7 +28,7 @@ export function ShortHash({
         <span className="muted">尚无计划</span>
       ) : (
         <code className="hash" title={value}>
-          {value.slice(0, 15)}…{value.slice(-8)}
+          {value.slice(0, 10)}…{value.slice(-6)}
         </code>
       )}
     </span>

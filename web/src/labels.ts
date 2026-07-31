@@ -5,7 +5,9 @@ export type StatusKind =
   | "interaction"
   | "archive"
   | "disposition"
-  | "settlement";
+  | "settlement"
+  | "event"
+  | "reason";
 
 export type StatusTone = "neutral" | "success" | "warning" | "danger";
 
@@ -61,6 +63,54 @@ const labels: Record<StatusKind, Record<string, string>> = {
     completed: "已完成",
     rolled_back: "已回滚",
   },
+  /** Durable event vocabulary; unknown types keep their raw name. */
+  event: {
+    run_started: "运行开始",
+    run_completed: "运行完成",
+    run_failed: "运行失败",
+    run_stopped: "运行停止",
+    candidate_snapshot_created: "扫描完成",
+    subtitle_variant_detected: "识别字幕版本",
+    tmdb_candidates_observed: "查询 TMDB",
+    tmdb_season_catalog_observed: "读取季度目录",
+    series_selected: "选定剧集",
+    movie_selected: "选定电影",
+    existing_inventory_observed: "读取媒体库现状",
+    archive_search_observed: "检索历史归档",
+    archive_directory_listed: "浏览历史目录",
+    mapping_submitted: "提交映射",
+    movie_mapping_submitted: "提交电影映射",
+    mapping_rejected: "映射被拒绝",
+    mapping_review_captured: "记录映射说明",
+    plan_built: "生成计划",
+    approval_requested: "请求审批",
+    plan_approved: "计划已审批",
+    apply_started: "开始执行",
+    apply_completed: "执行完成",
+    apply_failed: "执行失败",
+    apply_rolled_back: "执行已回滚",
+    move_applied: "文件已移动",
+    move_rolled_back: "移动已回滚",
+    rollback_started: "开始回滚",
+    rollback_completed: "回滚完成",
+    execution_settled: "执行已结算",
+    folder_rename_started: "开始文件夹改名",
+    folder_completed: "文件夹收尾完成",
+    media_completed: "媒体处理完成",
+    interaction_completed: "交互完成",
+    model_usage_recorded: "记录模型用量",
+    tool_requested: "请求工具调用",
+    tool_rejected: "工具调用被拒绝",
+  },
+  /** Short forms of the failure codes; the full guidance lives in errorMessage. */
+  reason: {
+    atomic_move_unsupported: "挂载不支持原子移动",
+    permission_denied: "权限不足",
+    transient_io: "目录访问暂时失败",
+    state_ambiguous: "结果无法确认",
+    recovery_required: "需要恢复",
+    interaction_budget_exhausted: "预算已耗尽",
+  },
 };
 
 const tones: Record<StatusKind, Record<string, StatusTone>> = {
@@ -99,6 +149,8 @@ const tones: Record<StatusKind, Record<string, StatusTone>> = {
     completed: "success",
     rolled_back: "warning",
   },
+  event: {},
+  reason: {},
 };
 
 /** Untrusted server vocabulary falls back to the raw value, never to a guess. */

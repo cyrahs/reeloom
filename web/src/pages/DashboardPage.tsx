@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { ApiError } from "../api";
 import { useAuth } from "../auth";
+import { Hint } from "../components/Hint";
 import { RunDeletionAction } from "../components/RunDeletion";
 import { PageError, ShortHash, Status } from "../components/Status";
-import { compactRunId, statusLabel } from "../labels";
+import { compactRunId, compactValue, statusLabel } from "../labels";
 import { HashLink } from "../router";
 import {
   configSchema,
@@ -60,12 +61,11 @@ export function DashboardPage() {
   return (
     <main className="page">
       <section className="hero-row">
-        <div>
-          <p className="eyebrow">OPERATIONS OVERVIEW</p>
+        <div className="hero-title">
           <h1>今天的整理进度，一眼看清。</h1>
-          <p className="lede">
+          <Hint label="数据来源说明">
             页面只展示服务端持久化状态；浏览器不会推断执行成功。
-          </p>
+          </Hint>
         </div>
         <div className="health-card" aria-label="服务健康状态">
           <span className={health.data ? "pulse online" : "pulse"} />
@@ -101,10 +101,10 @@ export function DashboardPage() {
               ? `${runItems.length}${truncated ? "+" : ""}`
               : "—"
           }
-          detail={
+          hint={
             truncated
-              ? `仅统计最新 ${PAGE_LIMIT} 条，实际更多`
-              : "服务端现有全部运行"
+              ? `只统计最新 ${PAGE_LIMIT} 条，服务端实际更多。`
+              : "服务端现有的全部运行。页面可见时每 10 秒刷新。"
           }
         />
         <Metric
@@ -118,11 +118,7 @@ export function DashboardPage() {
                 )
               : "—"
           }
-          detail={
-            truncated
-              ? `最新 ${PAGE_LIMIT} 条中需人工确认`
-              : "需要人工确认"
-          }
+          hint="计划已生成，需要管理员确认后才会移动文件。"
           accent
         />
         <Metric
@@ -132,7 +128,7 @@ export function DashboardPage() {
               ? String(discoveries.data.items.length)
               : "—"
           }
-          detail={`最新 ${PAGE_LIMIT} 条 · 页面可见时每 10 秒刷新`}
+          hint={`最新 ${PAGE_LIMIT} 条发现记录。`}
         />
       </section>
 
@@ -141,11 +137,16 @@ export function DashboardPage() {
       ) : null}
       <section className="panel">
         <div className="panel-heading">
-          <div>
-            <p className="eyebrow">INBOUND FOLDERS</p>
+          <div className="heading-title">
             <h2>入站文件夹</h2>
+            {folders.isSuccess ? (
+              <span className="count-pill">{folders.data.items.length}</span>
+            ) : null}
+            <Hint label="入站文件夹说明">
+              Reeloom 监听目录下正在观察或处理的子文件夹。稳定中表示还在等待写入结束，
+              已阻断表示需要人工介入。
+            </Hint>
           </div>
-          <span className="muted">稳定中、处理中与阻断状态</span>
         </div>
         {folders.error instanceof ApiError ? (
           <PageError code={folders.error.code} />
@@ -157,9 +158,11 @@ export function DashboardPage() {
                 <strong title={item.source_folder}>
                   {item.source_folder}
                 </strong>
-                <span>
-                  {item.watch_id}
-                  {item.reason_code ? ` · ${item.reason_code}` : ""}
+                <span title={item.watch_id}>
+                  {compactValue(item.watch_id)}
+                  {item.reason_code
+                    ? ` · ${statusLabel("reason", item.reason_code)}`
+                    : ""}
                   {item.retry_count
                     ? ` · 重试 ${item.retry_count}/3`
                     : ""}
@@ -182,11 +185,18 @@ export function DashboardPage() {
 
       <section className="panel">
         <div className="panel-heading">
-          <div>
-            <p className="eyebrow">RUNS</p>
+          <div className="heading-title">
             <h2>运行</h2>
+            {runs.isSuccess ? (
+              <span className="count-pill">
+                {runItems.length}
+                {truncated ? "+" : ""}
+              </span>
+            ) : null}
+            <Hint label="运行列表说明">
+              按创建时间倒序。删除记录只隐藏控制台里的这条运行，不会改动任何媒体文件。
+            </Hint>
           </div>
-          <span className="muted">按创建时间倒序</span>
         </div>
         {runItems.length ? (
           <div className="table-wrap">
@@ -257,9 +267,16 @@ export function DashboardPage() {
 
       <section className="panel">
         <div className="panel-heading">
-          <div>
-            <p className="eyebrow">DISCOVERIES</p>
+          <div className="heading-title">
             <h2>发现</h2>
+            {discoveries.isSuccess ? (
+              <span className="count-pill">
+                {discoveries.data.items.length}
+              </span>
+            ) : null}
+            <Hint label="发现说明">
+              后台扫描到的稳定文件夹。等待调度表示尚未创建运行。
+            </Hint>
           </div>
         </div>
         <div className="discovery-list">
@@ -269,10 +286,10 @@ export function DashboardPage() {
                 <strong title={item.source_folder ?? undefined}>
                   {item.source_folder ?? "无（旧版发现）"}
                 </strong>
-                <span>
+                <span title={item.watch_id}>
                   {workTypeLabel(item.work_type)}
                   {" · "}
-                  {item.watch_id}
+                  {compactValue(item.watch_id)}
                   {" · "}
                   {formatTime(item.discovered_at)}
                 </span>
@@ -313,19 +330,21 @@ function useDocumentVisible(): boolean {
 function Metric({
   label,
   value,
-  detail,
+  hint,
   accent = false,
 }: {
   label: string;
   value: string;
-  detail: string;
+  hint: string;
   accent?: boolean;
 }) {
   return (
     <article className={accent ? "metric accent" : "metric"}>
-      <span>{label}</span>
+      <span>
+        {label}
+        <Hint label={`${label}说明`}>{hint}</Hint>
+      </span>
       <strong>{value}</strong>
-      <small>{detail}</small>
     </article>
   );
 }
