@@ -1695,6 +1695,11 @@ button:disabled {
   text-align: right;
 }
 
+/* Wide enough for the armed label too, so confirming never reflows the row. */
+.runs-table .row-actions button {
+  min-width: 132px;
+}
+
 .discovery-list article > div strong {
   overflow-wrap: anywhere;
 }
@@ -1714,6 +1719,43 @@ button.compact {
 
 .danger-outline:hover:not(:disabled) {
   background: var(--danger-soft-strong);
+}
+
+/* An armed delete button reads as filled and steady, so the second click is
+   an obvious commitment rather than a repeat of the first. */
+button.armed {
+  border-color: var(--red);
+  color: var(--paper);
+  background: var(--red);
+}
+
+button.armed:hover:not(:disabled) {
+  background: var(--red);
+}
+
+.selection-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.selection-actions .muted {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.runs-table .select-cell {
+  width: 34px;
+  padding-right: 0;
+}
+
+.runs-table .select-cell input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--red);
+  vertical-align: middle;
 }
 
 .danger-zone {
@@ -1830,6 +1872,16 @@ button.compact {
 
   .runs-table .row-actions {
     text-align: left;
+  }
+
+  .runs-table td.select-cell {
+    width: auto;
+  }
+
+  /* Stacked rows have no column to keep aligned, so a run that cannot be
+     deleted simply drops the checkbox line. */
+  .runs-table td.select-cell:empty {
+    display: none;
   }
 
   .runs-table .row-actions button {

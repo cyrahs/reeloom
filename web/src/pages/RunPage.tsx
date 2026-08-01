@@ -791,7 +791,7 @@ export function RunPage({ runId }: { runId: string }) {
                 {available.has("delete_run") ? (
                   <div className="danger-zone">
                     <p className="danger-zone-note">
-                      仅隐藏控制台记录，不改动媒体文件。
+                      仅隐藏控制台记录，不改动媒体文件；点两次确认，且无法撤销。
                     </p>
                     <RunDeletionAction
                       runId={runId}

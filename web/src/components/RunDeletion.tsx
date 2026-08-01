@@ -1,13 +1,73 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, idempotencyKey } from "../api";
 import { useAuth } from "../auth";
-import { compactRunId } from "../labels";
 import { runDeletionSchema, runSchema } from "../schemas";
 import { cursorKey } from "../sse";
 import { IconTrash } from "./Icon";
 import { errorMessage } from "./Status";
+
+/** How long an armed delete button stays armed before it disarms itself. */
+const ARM_TIMEOUT_MS = 6000;
+/** A double-click must not sail straight through the confirmation. */
+const ARM_SETTLE_MS = 400;
+
+/**
+ * Two-click confirmation: the first click arms the button, the second one
+ * performs the delete. Arming lapses on its own so a stray click can never
+ * leave a loaded gun in the table.
+ */
+function useArmedAction(onConfirm: () => void) {
+  const [armed, setArmed] = useState(false);
+  const armedAt = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const disarm = useCallback(() => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    setArmed(false);
+  }, []);
+
+  useEffect(() => disarm, [disarm]);
+
+  const click = () => {
+    if (armed) {
+      // Too soon to be a considered second click — stay armed and wait.
+      if (Date.now() - armedAt.current < ARM_SETTLE_MS) return;
+      disarm();
+      onConfirm();
+      return;
+    }
+    setArmed(true);
+    armedAt.current = Date.now();
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setArmed(false);
+    }, ARM_TIMEOUT_MS);
+  };
+
+  return { armed, click, disarm };
+}
+
+/** Drops every client-side trace of runs the server no longer exposes. */
+function useForgetRuns() {
+  const queryClient = useQueryClient();
+  return useCallback(
+    async (runIds: string[]) => {
+      for (const runId of runIds) {
+        window.localStorage.removeItem(cursorKey(runId));
+        queryClient.removeQueries({ queryKey: ["run", runId] });
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["discoveries"] }),
+        queryClient.invalidateQueries({ queryKey: ["folders"] }),
+      ]);
+    },
+    [queryClient],
+  );
+}
 
 export function RunDeletionAction({
   runId,
@@ -21,20 +81,13 @@ export function RunDeletionAction({
   className?: string;
 }) {
   const { api } = useAuth();
-  const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const forgetRuns = useForgetRuns();
   const [attemptKey, setAttemptKey] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const encodedRunId = encodeURIComponent(runId);
 
   const finish = async () => {
-    window.localStorage.removeItem(cursorKey(runId));
-    queryClient.removeQueries({ queryKey: ["run", runId] });
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["runs"] }),
-      queryClient.invalidateQueries({ queryKey: ["discoveries"] }),
-      queryClient.invalidateQueries({ queryKey: ["folders"] }),
-    ]);
+    await forgetRuns([runId]);
     if (redirectOnSuccess) window.location.hash = "/";
   };
 
@@ -50,7 +103,6 @@ export function RunDeletionAction({
       ),
     onSuccess: finish,
     onError: async (error) => {
-      setOpen(false);
       if (!(error instanceof ApiError) || error.code !== "network_uncertain") {
         setAttemptKey(null);
         return;
@@ -68,19 +120,34 @@ export function RunDeletionAction({
     },
   });
 
+  const { armed, click, disarm } = useArmedAction(() => {
+    const key = idempotencyKey();
+    setAttemptKey(key);
+    deletion.mutate(key);
+  });
+
   return (
     <>
       <button
-        className={className}
+        className={armed ? `${className} armed` : className}
         disabled={disabled || deletion.isPending}
+        aria-live="polite"
+        title={armed ? undefined : "仅隐藏控制台记录，不改动媒体文件"}
         onClick={() => {
-          deletion.reset();
-          setNotice("");
-          setOpen(true);
+          if (!armed) {
+            deletion.reset();
+            setNotice("");
+          }
+          click();
         }}
+        onBlur={disarm}
       >
         <IconTrash size={14} />
-        删除记录
+        {deletion.isPending
+          ? "正在删除…"
+          : armed
+            ? "再点一次删除"
+            : "删除记录"}
       </button>
       {notice ? <p className="form-error" role="status">{notice}</p> : null}
       {deletion.error instanceof ApiError &&
@@ -99,72 +166,90 @@ export function RunDeletionAction({
           使用原请求键重试
         </button>
       ) : null}
-      {open ? (
-        <DeleteRunDialog
-          runId={runId}
-          pending={deletion.isPending}
-          onCancel={() => setOpen(false)}
-          onConfirm={() => {
-            const key = idempotencyKey();
-            setAttemptKey(key);
-            deletion.mutate(key);
-          }}
-        />
-      ) : null}
     </>
   );
 }
 
-export function DeleteRunDialog({
-  runId,
-  pending,
-  onCancel,
-  onConfirm,
+/**
+ * Batch deletion for a checkbox selection. Each run keeps its own idempotency
+ * key and its own request: a failure part-way through leaves the runs that did
+ * succeed deleted, and reports the rest instead of claiming the whole batch.
+ */
+export function RunBulkDeletionAction({
+  runIds,
+  disabled = false,
+  className = "danger-outline compact",
+  onDeleted,
 }: {
-  runId: string;
-  pending: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
+  runIds: string[];
+  disabled?: boolean;
+  className?: string;
+  onDeleted?: (deleted: string[]) => void;
 }) {
-  const [confirmed, setConfirmed] = useState(false);
+  const { api } = useAuth();
+  const forgetRuns = useForgetRuns();
+  const [notice, setNotice] = useState("");
+
+  const deletion = useMutation({
+    mutationFn: async (targets: string[]) => {
+      const deleted: string[] = [];
+      const failures: string[] = [];
+      for (const runId of targets) {
+        try {
+          await api.request(
+            `/api/v1/runs/${encodeURIComponent(runId)}`,
+            runDeletionSchema,
+            {
+              method: "DELETE",
+              headers: { "Idempotency-Key": idempotencyKey() },
+            },
+          );
+          deleted.push(runId);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 404) {
+            deleted.push(runId);
+            continue;
+          }
+          failures.push(runId);
+        }
+      }
+      return { deleted, failures };
+    },
+    onSuccess: async ({ deleted, failures }) => {
+      await forgetRuns(deleted);
+      setNotice(
+        failures.length
+          ? `已删除 ${deleted.length} 条，${failures.length} 条失败，可重试。`
+          : "",
+      );
+      onDeleted?.(deleted);
+    },
+  });
+
+  const { armed, click, disarm } = useArmedAction(() =>
+    deletion.mutate(runIds),
+  );
+
   return (
-    <div className="modal-backdrop">
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-run-title"
+    <>
+      <button
+        className={armed ? `${className} armed` : className}
+        disabled={disabled || !runIds.length || deletion.isPending}
+        aria-live="polite"
+        onClick={() => {
+          if (!armed) setNotice("");
+          click();
+        }}
+        onBlur={disarm}
       >
-        <h2 id="delete-run-title">删除运行记录？</h2>
-        <p>
-          这条运行将从控制台和公开 API 中永久隐藏。媒体文件不会改变，
-          底层计划、事件和事务审计会继续保留。
-        </p>
-        <p className="modal-subject">
-          <code title={runId}>{compactRunId(runId)}</code>
-        </p>
-        <label className="risk-check">
-          <input
-            type="checkbox"
-            checked={confirmed}
-            onChange={(event) => setConfirmed(event.target.checked)}
-            autoFocus
-          />
-          <span>我理解此操作不会删除媒体，但无法恢复显示这条记录。</span>
-        </label>
-        <div className="button-row end">
-          <button className="ghost" disabled={pending} onClick={onCancel}>
-            取消
-          </button>
-          <button
-            className="danger-button"
-            disabled={!confirmed || pending}
-            onClick={onConfirm}
-          >
-            {pending ? "正在删除记录…" : "确认删除记录"}
-          </button>
-        </div>
-      </div>
-    </div>
+        <IconTrash size={14} />
+        {deletion.isPending
+          ? "正在删除…"
+          : armed
+            ? `再点一次删除 ${runIds.length} 条`
+            : `删除所选 ${runIds.length} 条`}
+      </button>
+      {notice ? <p className="form-error" role="status">{notice}</p> : null}
+    </>
   );
 }
