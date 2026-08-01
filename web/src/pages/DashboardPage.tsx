@@ -4,7 +4,10 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../api";
 import { useAuth } from "../auth";
 import { Hint } from "../components/Hint";
-import { RunDeletionAction } from "../components/RunDeletion";
+import {
+  RunBulkDeletionAction,
+  RunDeletionAction,
+} from "../components/RunDeletion";
 import { PageError, ShortHash, Status } from "../components/Status";
 import { compactRunId, compactValue, statusLabel } from "../labels";
 import { HashLink } from "../router";
@@ -57,6 +60,23 @@ export function DashboardPage() {
     config.error instanceof ApiError && config.error.status === 404;
   const runItems = runs.data?.items ?? [];
   const truncated = runItems.length >= PAGE_LIMIT;
+  const deletableIds = runItems
+    .filter((run) => run.available_actions.includes("delete_run"))
+    .map((run) => run.run_id);
+  const [selected, setSelected] = useState<string[]>([]);
+  /* A run may stop being deletable (or disappear) on any refresh; the
+     selection must never outlive what the server still offers. */
+  const deletableKey = deletableIds.join("\u0000");
+  useEffect(() => {
+    const allowed = new Set(deletableKey ? deletableKey.split("\u0000") : []);
+    setSelected((prev) => {
+      const next = prev.filter((id) => allowed.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [deletableKey]);
+  const selectedSet = new Set(selected);
+  const allSelected =
+    deletableIds.length > 0 && selected.length === deletableIds.length;
 
   return (
     <main className="page">
@@ -195,14 +215,48 @@ export function DashboardPage() {
             ) : null}
             <Hint label="运行列表说明">
               按创建时间倒序。删除记录只隐藏控制台里的这条运行，不会改动任何媒体文件。
+              删除按钮点第一次变成确认，再点一次才执行。
             </Hint>
           </div>
+          {selected.length ? (
+            <div className="selection-actions">
+              <span className="muted">已选 {selected.length} 条</span>
+              <button className="ghost compact" onClick={() => setSelected([])}>
+                取消选择
+              </button>
+              <RunBulkDeletionAction
+                runIds={selected}
+                onDeleted={(deleted) =>
+                  setSelected((prev) =>
+                    prev.filter((id) => !deleted.includes(id)),
+                  )
+                }
+              />
+            </div>
+          ) : null}
         </div>
         {runItems.length ? (
           <div className="table-wrap">
             <table className="runs-table">
               <thead>
                 <tr>
+                  <th className="select-cell">
+                    <input
+                      type="checkbox"
+                      aria-label="全选可删除的运行"
+                      disabled={!deletableIds.length}
+                      checked={allSelected}
+                      ref={(node) => {
+                        if (node) {
+                          node.indeterminate =
+                            selected.length > 0 && !allSelected;
+                        }
+                      }}
+                      onChange={(event) =>
+                        setSelected(event.target.checked ? deletableIds : [])
+                      }
+                    />
+                  </th>
                   <th>运行</th>
                   <th>类型</th>
                   <th>入站文件夹</th>
@@ -213,8 +267,27 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {runItems.map((run) => (
+                {runItems.map((run) => {
+                  const deletable =
+                    run.available_actions.includes("delete_run");
+                  return (
                   <tr key={run.run_id}>
+                    <td data-label="选择" className="select-cell">
+                      {deletable ? (
+                        <input
+                          type="checkbox"
+                          aria-label={`选择运行 ${run.run_id}`}
+                          checked={selectedSet.has(run.run_id)}
+                          onChange={(event) =>
+                            setSelected((prev) =>
+                              event.target.checked
+                                ? [...prev, run.run_id]
+                                : prev.filter((id) => id !== run.run_id),
+                            )
+                          }
+                        />
+                      ) : null}
+                    </td>
                     <td data-label="运行" className="run-cell">
                       <HashLink
                         to={`/runs/${encodeURIComponent(run.run_id)}`}
@@ -241,7 +314,7 @@ export function DashboardPage() {
                       <Status value={run.status} />
                     </td>
                     <td data-label="操作" className="row-actions">
-                      {run.available_actions.includes("delete_run") ? (
+                      {deletable ? (
                         <RunDeletionAction
                           runId={run.run_id}
                           className="danger-outline compact"
@@ -251,7 +324,8 @@ export function DashboardPage() {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

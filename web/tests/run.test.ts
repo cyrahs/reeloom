@@ -10,7 +10,6 @@ import {
   compactRunId,
   shouldShowArchiveReport,
 } from "../src/pages/RunPage";
-import { DeleteRunDialog } from "../src/components/RunDeletion";
 import { errorMessage } from "../src/components/Status";
 
 test("only the current durable plan can be approved", () => {
@@ -57,26 +56,6 @@ test("interaction budget failures distinguish retryable timeouts", () => {
   expect(errorMessage("interaction_budget_exhausted")).toMatch(
     /单次超时可重试/,
   );
-});
-
-test("run deletion requires explicit acknowledgement", async () => {
-  const onConfirm = vi.fn();
-  render(createElement(DeleteRunDialog, {
-    runId: "run-1",
-    pending: false,
-    onCancel: () => undefined,
-    onConfirm,
-  }));
-
-  const confirm = screen.getByRole("button", {
-    name: "确认删除记录",
-  });
-  expect(confirm).toBeDisabled();
-  expect(screen.getByText(/媒体文件不会改变/)).toBeInTheDocument();
-
-  await userEvent.click(screen.getByRole("checkbox"));
-  await userEvent.click(confirm);
-  expect(onConfirm).toHaveBeenCalledOnce();
 });
 
 test("archive reference renders untrusted names as plain text", () => {
