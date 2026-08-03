@@ -50,12 +50,14 @@ class TmdbCandidatesObserved:
 class SeriesSelected:
     series: SeriesIdentity
     work_type: TmdbWorkType
+    poster_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class MovieSelected:
     movie: MovieIdentity
     work_type: TmdbWorkType
+    poster_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

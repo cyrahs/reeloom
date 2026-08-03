@@ -2,8 +2,10 @@
 
 ## Status
 
-Proposed. The pure M12.0 presentation contract is implemented; real Telegram
-network access remains unapproved.
+Accepted. The presentation contract and PostgreSQL outbox are implemented;
+the fixed-purpose Telegram network adapter was explicitly approved on
+2026-08-03 subject to the host, redirect, proxy, secret, and test restrictions
+in this ADR.
 
 ## Context
 
@@ -49,11 +51,9 @@ does not claim exactly-once delivery.
 
 ## Security gate
 
-The current repository invariant permits TMDB as the only business network
-adapter. A real Telegram adapter is therefore deferred. M12.1 may implement the
-database outbox using only a fake sender. M12.2 requires an explicit, separately
-reviewed policy change that names Telegram as a fixed-purpose adapter; this ADR
-does not grant that authority by itself.
+The repository invariant now permits Telegram only as a fixed-purpose outbound
+adapter alongside TMDB. The approval does not permit arbitrary URL access,
+redirects, proxy configuration, inbound webhooks, commands, or networked tests.
 
 ## Consequences
 
@@ -61,7 +61,7 @@ does not grant that authority by itself.
 - notification failures remain isolated from organizing and apply correctness;
 - schemas, retry behavior, and residual duplicate risk are explicit and testable;
 - PostgreSQL and worker lifecycle gain additional operational state;
-- full delivery cannot ship until the network invariant is deliberately updated.
+- the fixed-purpose network exception must remain narrower than general URL access.
 
 ## References
 

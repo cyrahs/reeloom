@@ -14,6 +14,9 @@ export const healthSchema = z
     status: z.literal("ok"),
     postgres_major: z.number().int(),
     schema_version: z.number().int(),
+    notification_pending: z.number().int().nonnegative().default(0),
+    notification_dead: z.number().int().nonnegative().default(0),
+    telegram_configured: z.boolean().default(false),
   })
   .strict();
 
@@ -333,6 +336,19 @@ export const configSchema = z
         reasoning_effort: z.string().nullable(),
         verbosity: z.string().nullable(),
         api_key_configured: z.boolean(),
+      })
+      .strict(),
+    telegram: z
+      .object({
+        enabled: z.boolean(),
+        notification_types: z.array(
+          z.enum([
+            "plan_ready",
+            "archive_completed",
+            "attention_required",
+          ]),
+        ).min(1).max(3),
+        destination_configured: z.boolean(),
       })
       .strict(),
     apply_policy: z.enum(["plan_only", "manual", "automatic"]),

@@ -96,6 +96,14 @@ export function DashboardPage() {
                 ? `PostgreSQL ${health.data.postgres_major} · Schema ${health.data.schema_version}`
                 : "等待健康检查"}
             </small>
+            {health.data?.telegram_configured ? (
+              <small>
+                Telegram 队列 {health.data.notification_pending}
+                {health.data.notification_dead
+                  ? ` · 失败 ${health.data.notification_dead}`
+                  : ""}
+              </small>
+            ) : null}
           </div>
         </div>
       </section>

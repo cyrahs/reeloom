@@ -21,6 +21,11 @@ import {
 } from "../workTypes";
 
 type RootMode = "retain" | "replace";
+type TelegramDestinationMode = RootMode | "unset";
+type TelegramNotificationType =
+  | "plan_ready"
+  | "archive_completed"
+  | "attention_required";
 type WatchForm = {
   watch_id: string;
   work_type: WorkType;
@@ -39,6 +44,11 @@ type FormState = {
   verbosity: string;
   credentialMode: RootMode;
   apiKey: string;
+  telegramEnabled: boolean;
+  telegramTypes: TelegramNotificationType[];
+  telegramDestinationMode: TelegramDestinationMode;
+  telegramBotToken: string;
+  telegramChatId: string;
   apply_policy: "plan_only" | "manual" | "automatic";
   agent_budget: {
     max_model_turns: number;
@@ -78,6 +88,15 @@ const emptyState = (): FormState => ({
   verbosity: "medium",
   credentialMode: "replace",
   apiKey: "",
+  telegramEnabled: false,
+  telegramTypes: [
+    "plan_ready",
+    "archive_completed",
+    "attention_required",
+  ],
+  telegramDestinationMode: "unset",
+  telegramBotToken: "",
+  telegramChatId: "",
   apply_policy: "plan_only",
   agent_budget: {
     max_model_turns: 64,
@@ -106,6 +125,13 @@ function fromConfig(config: Config): FormState {
     verbosity: config.provider.verbosity ?? "medium",
     credentialMode: "retain",
     apiKey: "",
+    telegramEnabled: config.telegram.enabled,
+    telegramTypes: config.telegram.notification_types,
+    telegramDestinationMode: config.telegram.destination_configured
+      ? "retain"
+      : "unset",
+    telegramBotToken: "",
+    telegramChatId: "",
     apply_policy: config.apply_policy,
     agent_budget: config.agent_budget,
   };
@@ -125,6 +151,7 @@ export function ConfigPage() {
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
   const [providerNotice, setProviderNotice] = useState("");
+  const [telegramNotice, setTelegramNotice] = useState("");
   const [uncertainAttempt, setUncertainAttempt] =
     useState<ConfigAttempt | null>(null);
   const [resyncing, setResyncing] = useState(false);
@@ -216,6 +243,26 @@ export function ConfigPage() {
         moveCapabilitySchema,
         { method: "POST", body: {} },
       ),
+  });
+
+  const telegramTest = useMutation({
+    mutationFn: () =>
+      api.request(
+        "/api/v1/admin/config/telegram-test",
+        z
+          .object({
+            notification_id: z.string(),
+            state: z.literal("queued"),
+          })
+          .strict(),
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": idempotencyKey() },
+          body: {},
+        },
+      ),
+    onMutate: () => setTelegramNotice(""),
+    onSuccess: () => setTelegramNotice("测试通知已加入发送队列。"),
   });
 
   const submit = (event: FormEvent) => {
@@ -462,6 +509,128 @@ export function ConfigPage() {
             <IconPlus size={15} />
             添加监听
           </button>
+        </ConfigSection>
+
+        <ConfigSection
+          title="Telegram 通知"
+          hint={
+            <>
+              仅向固定 Chat ID 单向推送，不接受命令或审批。Bot Token 与 Chat ID
+              不会回传浏览器；网络失败由 PostgreSQL 队列恢复。
+            </>
+          }
+        >
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={form.telegramEnabled}
+              onChange={(event) =>
+                setForm({ ...form, telegramEnabled: event.target.checked })
+              }
+            />
+            <span>启用 Telegram 推送</span>
+          </label>
+          <fieldset className="secret-choice">
+            <legend>推送类型</legend>
+            {[
+              ["plan_ready", "计划待批准"],
+              ["archive_completed", "整理完成"],
+              ["attention_required", "需要处理"],
+            ].map(([value, label]) => (
+              <label className="toggle-row" key={value}>
+                <input
+                  type="checkbox"
+                  checked={form.telegramTypes.includes(
+                    value as TelegramNotificationType,
+                  )}
+                  disabled={
+                    form.telegramTypes.length === 1 &&
+                    form.telegramTypes.includes(
+                      value as TelegramNotificationType,
+                    )
+                  }
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      telegramTypes: event.target.checked
+                        ? [...form.telegramTypes, value as TelegramNotificationType]
+                        : form.telegramTypes.filter((item) => item !== value),
+                    })
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </fieldset>
+          {form.telegramDestinationMode === "retain" ? (
+            <div className="secret-row">
+              <p className="retained-value">
+                目标与 Bot Token 已配置 · 内容不会回传浏览器
+              </p>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    telegramDestinationMode: "replace",
+                  })
+                }
+              >
+                替换
+              </button>
+            </div>
+          ) : (
+            <div className="form-grid">
+              <Field label="Bot Token">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={form.telegramBotToken}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      telegramDestinationMode: "replace",
+                      telegramBotToken: event.target.value,
+                    })
+                  }
+                  required={form.telegramEnabled}
+                  placeholder="123456789:…"
+                />
+              </Field>
+              <Field label="Chat ID">
+                <input
+                  value={form.telegramChatId}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      telegramDestinationMode: "replace",
+                      telegramChatId: event.target.value,
+                    })
+                  }
+                  required={form.telegramEnabled}
+                  placeholder="-1001234567890"
+                />
+              </Field>
+            </div>
+          )}
+          <button
+            className="secondary"
+            type="button"
+            disabled={
+              telegramTest.isPending ||
+              !query.data?.telegram.destination_configured
+            }
+            onClick={() => telegramTest.mutate()}
+          >
+            {telegramTest.isPending ? "正在入队…" : "发送测试通知"}
+          </button>
+          {telegramNotice ? (
+            <div className="notice" role="status">{telegramNotice}</div>
+          ) : null}
+          {telegramTest.error instanceof ApiError ? (
+            <PageError code={telegramTest.error.code} />
+          ) : null}
         </ConfigSection>
 
         <ConfigSection title="模型 Provider">
@@ -741,6 +910,24 @@ export function toPayload(state: FormState, current?: Config) {
         (current === undefined || current.provider.api_key_configured)
           ? { mode: "retain" as const }
           : { mode: "replace" as const, api_key: state.apiKey },
+    },
+    telegram: {
+      enabled: state.telegramEnabled,
+      notification_types: state.telegramTypes,
+      destination:
+        state.telegramDestinationMode === "retain" &&
+        current?.telegram.destination_configured === true
+          ? { mode: "retain" as const }
+          : state.telegramDestinationMode === "unset" &&
+              !state.telegramEnabled &&
+              !state.telegramBotToken &&
+              !state.telegramChatId
+            ? { mode: "unset" as const }
+            : {
+                mode: "replace" as const,
+                bot_token: state.telegramBotToken,
+                chat_id: state.telegramChatId,
+              },
     },
   };
 }

@@ -44,6 +44,12 @@ storage backend 不能提供专用 UID/GID 或 ACL，这类 runtime 只能把容
 网络 adapter；server 不读取 dotenv。模型 provider key 仍通过 admin config
 write-only 写入 filesystem SecretStore。
 
+Telegram bot token 与 chat ID 同样只通过 Admin 配置页 write-only 保存到 state
+root，不作为 Pod 环境变量。启用通知的部署必须允许到
+`api.telegram.org:443` 与 `image.tmdb.org:443` 的 DNS/HTTPS 出站；应用仍固定
+Telegram origin、禁用 redirect 和环境 proxy。网络策略不应因此开放入站 webhook、
+任意目标 URL 或通配代理。
+
 部署只注入 `REELOOM_ADMIN_TOKEN`；该值必须是 16–4096 字符的 base64url
 字符串（`A-Z a-z 0-9 _ -`）。所有受保护 API 统一要求该 Admin Bearer。
 反向代理必须保留 Host，禁止改写 Origin，并关闭响应缓存和代理缓冲 SSE。所有

@@ -1,6 +1,6 @@
 # M12 Telegram outbound notification threat model
 
-状态：M12.0 baseline
+状态：M12.0-M12.3 verified；fixed-purpose network gate approved
 
 ## Assets
 
@@ -47,10 +47,26 @@ secret、不读取文件、不发起 HTTP，也没有新增 Agent tool。测试�
 caption、完整 MarkdownV2 保留字符、控制字符、超长字段、非法计数/哈希、绝对 URL、
 嵌套路径、路径逃逸和非 TMDB poster shape。
 
-## Residual risks for later milestones
+## M12.1 verified boundary
+
+schema 26 只存 versioned closed payload 和有界 receipt/error enum。唯一 dedupe
+消除本地重复生产；claim 使用 `FOR UPDATE SKIP LOCKED` 与短事务，sender 只在
+claim 提交后运行；settlement 绑定 worker 与 attempt fencing。过期 lease 在启动时
+回收到 retry/dead，瞬时错误使用有界指数退避与 jitter，`retry_after` 被原样尊重。
+caller-owned transaction 接口保证 durable fact 与通知同时 commit/rollback。本阶段
+没有 HTTP adapter、secret、任意 URL、文件读取或 Agent tool。
+
+## Verified M12.2-M12.3 boundary
+
+Telegram adapter 只接受经过校验的 token/chat ID，固定访问
+`https://api.telegram.org`，禁用 redirect 与环境 proxy；响应、并发和超时有界。
+Admin 配置与测试动作不回显 secret。确定性 projector 在 durable fact 同一事务中
+入队；选定 TMDB poster path 随运行投影持久化，不能注入完整 URL。Worker 只改变
+outbox 行，领域 reducer、审批、执行和文件夹状态不读取 delivery 结果。
+
+## Residual risks
 
 - Telegram 没有 caller-supplied idempotency key，网络成功但 receipt 未落库时可能
   重复发送；
 - chat 管理员或 Telegram 平台本身仍能读取消息内容，因此内容必须保持最小化；
-- poster availability and Telegram rate limits are external dependencies；
-- 真实适配器在当前安全不变量中尚未获准，M12.2 前必须单独更新并评审网络白名单。
+- poster availability and Telegram rate limits are external dependencies。

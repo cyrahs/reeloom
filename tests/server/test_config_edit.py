@@ -11,6 +11,7 @@ from reeloom.server.config import (
     ConfigRevision,
     ProviderConfig,
     ServerWorkType,
+    TelegramConfig,
     WatchConfig,
 )
 from reeloom.server.config_edit import parse_config_edit
@@ -271,3 +272,101 @@ def test_config_edit_rejects_mixed_legacy_and_retain_wire_formats(
         )
 
     assert raised.value.code is ServerErrorCode.INVALID_CONFIG
+
+
+def test_config_edit_replaces_write_only_telegram_destination(
+    tmp_path: Path,
+) -> None:
+    current = _current(tmp_path)
+    edit = parse_config_edit(
+        {
+            "watches": [],
+            "provider": {
+                "base_url": current.provider.base_url,
+                "model": current.provider.model,
+                "reasoning_effort": None,
+                "verbosity": None,
+                "credential": {"mode": "retain"},
+            },
+            "apply_policy": "manual",
+            "telegram": {
+                "enabled": True,
+                "notification_types": [
+                    "plan_ready",
+                    "archive_completed",
+                ],
+                "destination": {
+                    "mode": "replace",
+                    "bot_token": (
+                        "123456789:abcdefghijklmnopqrstuvwxyz_123456789"
+                    ),
+                    "chat_id": "-1001234567890",
+                },
+            },
+        },
+        current=current,
+    )
+
+    assert edit.draft.telegram.enabled
+    assert edit.draft.telegram.chat_id == "-1001234567890"
+    assert edit.draft.telegram.secret_ref == "replacement-pending"
+    assert edit.replacement_telegram_token is not None
+    assert "123456789:" not in repr(edit.draft)
+
+
+def test_config_edit_retains_or_leaves_telegram_unset(
+    tmp_path: Path,
+) -> None:
+    current = _current(tmp_path)
+    configured = ConfigRevision.create(
+        revision_id="cfg-telegram",
+        revision=2,
+        created_at=datetime(2026, 8, 3, tzinfo=UTC),
+        draft=ConfigDraft(
+            watches=current.watches,
+            provider=current.provider,
+            apply_policy=current.apply_policy,
+            telegram=TelegramConfig(
+                enabled=True,
+                chat_id="-1001234567890",
+                secret_ref="secret-telegram",
+            ),
+        ),
+    )
+    base = {
+        "watches": [],
+        "provider": {
+            "base_url": configured.provider.base_url,
+            "model": configured.provider.model,
+            "reasoning_effort": None,
+            "verbosity": None,
+            "credential": {"mode": "retain"},
+        },
+        "apply_policy": "manual",
+    }
+    retained = parse_config_edit(
+        {
+            **base,
+            "telegram": {
+                "enabled": False,
+                "notification_types": ["attention_required"],
+                "destination": {"mode": "retain"},
+            },
+        },
+        current=configured,
+    )
+    unset = parse_config_edit(
+        {
+            **base,
+            "telegram": {
+                "enabled": False,
+                "notification_types": ["attention_required"],
+                "destination": {"mode": "unset"},
+            },
+        },
+        current=current,
+    )
+
+    assert retained.draft.telegram.secret_ref == "secret-telegram"
+    assert retained.replacement_telegram_token is None
+    assert unset.draft.telegram.secret_ref == ""

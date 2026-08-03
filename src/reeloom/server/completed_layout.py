@@ -31,6 +31,9 @@ from reeloom.adapters.filesystem import FilesystemScanner
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.notification_projector import (
+    PostgresNotificationProjector,
+)
 
 
 def capture_completed_layout(
@@ -197,8 +200,14 @@ def _decode(value: object) -> CompletedLayout:
 
 
 class PostgresCompletedLayoutRepository:
-    def __init__(self, pool: ConnectionPool) -> None:
+    def __init__(
+        self,
+        pool: ConnectionPool,
+        *,
+        notifications: PostgresNotificationProjector | None = None,
+    ) -> None:
         self._pool = pool
+        self._notifications = notifications
 
     def settle_and_append(
         self,
@@ -391,6 +400,12 @@ class PostgresCompletedLayoutRepository:
                         """,
                         (result.status.value, run_id),
                     )
+                    if self._notifications is not None:
+                        self._notifications.execution_settled(
+                            connection,
+                            run_id=run_id,
+                            result=result,
+                        )
                     if layout is None:
                         return None
                     row = connection.execute(

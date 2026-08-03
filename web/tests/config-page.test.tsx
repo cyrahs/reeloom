@@ -47,6 +47,15 @@ test("keeps internal watch identity hidden and displays configured paths", async
         verbosity: "medium",
         api_key_configured: true,
       },
+      telegram: {
+        enabled: false,
+        notification_types: [
+          "plan_ready",
+          "archive_completed",
+          "attention_required",
+        ],
+        destination_configured: false,
+      },
       apply_policy: "manual",
       agent_budget: {
         max_model_turns: 64,
@@ -100,6 +109,11 @@ test("selects a pod directory without requiring manual path entry", async () => 
         reasoning_effort: "medium",
         verbosity: "medium",
         api_key_configured: true,
+      },
+      telegram: {
+        enabled: false,
+        notification_types: ["attention_required"],
+        destination_configured: false,
       },
       apply_policy: "manual",
       agent_budget: {
@@ -156,6 +170,11 @@ test("shows provider probe result inside the provider section", async () => {
         verbosity: "medium",
         api_key_configured: true,
       },
+      telegram: {
+        enabled: true,
+        notification_types: ["plan_ready", "archive_completed"],
+        destination_configured: true,
+      },
       apply_policy: "manual",
       agent_budget: {
         max_model_turns: 64,
@@ -168,6 +187,10 @@ test("shows provider probe result inside the provider section", async () => {
     .mockResolvedValueOnce(jsonResponse({
       available: true,
       status_code: 200,
+    }))
+    .mockResolvedValueOnce(jsonResponse({
+      notification_id: "notification-test",
+      state: "queued",
     }));
 
   render(
@@ -177,6 +200,25 @@ test("shows provider probe result inside the provider section", async () => {
       </AuthGate>
     </QueryClientProvider>,
   );
+
+  const telegram = (await screen.findByRole("heading", {
+    name: "Telegram 通知",
+  })).closest("section");
+  expect(telegram).not.toBeNull();
+  expect(
+    within(telegram!).getByRole("checkbox", {
+      name: "启用 Telegram 推送",
+    }),
+  ).toBeChecked();
+  expect(
+    within(telegram!).getByText(/目标与 Bot Token 已配置/),
+  ).toBeVisible();
+  expect(
+    within(telegram!).getByRole("checkbox", { name: "计划待批准" }),
+  ).toBeChecked();
+  expect(
+    within(telegram!).getByRole("checkbox", { name: "需要处理" }),
+  ).not.toBeChecked();
 
   const provider = (await screen.findByRole("heading", {
     name: "模型 Provider",
@@ -188,6 +230,12 @@ test("shows provider probe result inside the provider section", async () => {
 
   expect(
     await within(provider!).findByText("Provider 连接正常。"),
+  ).toBeVisible();
+  await userEvent.click(
+    within(telegram!).getByRole("button", { name: "发送测试通知" }),
+  );
+  expect(
+    await within(telegram!).findByText("测试通知已加入发送队列。"),
   ).toBeVisible();
 });
 
@@ -212,6 +260,11 @@ test("shows bounded move capability below its watch", async () => {
         reasoning_effort: "medium",
         verbosity: "medium",
         api_key_configured: true,
+      },
+      telegram: {
+        enabled: false,
+        notification_types: ["attention_required"],
+        destination_configured: false,
       },
       apply_policy: "manual",
       agent_budget: {

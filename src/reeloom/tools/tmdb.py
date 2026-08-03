@@ -759,7 +759,11 @@ async def select_series(
             retryable=False,
         )
     runtime.store.append(
-        SeriesSelected(series=series, work_type=work_type)
+        SeriesSelected(
+            series=series,
+            work_type=work_type,
+            poster_path=details.poster_path,
+        )
     )
     runtime.succeed(call_id=call_id, tool_name=tool_name)
     return observation
@@ -850,7 +854,11 @@ async def select_movie(
             retryable=False,
         )
     runtime.store.append(
-        MovieSelected(movie=movie, work_type=TmdbWorkType.MOVIE)
+        MovieSelected(
+            movie=movie,
+            work_type=TmdbWorkType.MOVIE,
+            poster_path=details.poster_path,
+        )
     )
     runtime.succeed(call_id=call_id, tool_name=tool_name)
     return observation

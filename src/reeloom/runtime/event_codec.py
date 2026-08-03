@@ -472,12 +472,14 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
         }
     if isinstance(event, SeriesSelected):
         return "series_selected", {
+            "poster_path": event.poster_path,
             "series": _series_payload(event.series),
             "work_type": event.work_type.value,
         }
     if isinstance(event, MovieSelected):
         return "movie_selected", {
             "movie": _movie_payload(event.movie),
+            "poster_path": event.poster_path,
             "work_type": event.work_type.value,
         }
     if isinstance(event, TmdbSeasonCatalogObserved):
@@ -702,16 +704,30 @@ def _event_from_payload(
         p = _fields(value, {"candidates"}, field=event_type)
         return TmdbCandidatesObserved(_candidate_refs(p["candidates"]))
     if event_type == "series_selected":
-        p = _fields(value, {"series", "work_type"}, field=event_type)
+        fields = frozenset(value) if isinstance(value, dict) else frozenset()
+        expected = (
+            {"poster_path", "series", "work_type"}
+            if "poster_path" in fields
+            else {"series", "work_type"}
+        )
+        p = _fields(value, expected, field=event_type)
         return SeriesSelected(
             SeriesIdentity.from_dict(p["series"]),
             _work_type(p["work_type"]),
+            p.get("poster_path"),
         )
     if event_type == "movie_selected":
-        p = _fields(value, {"movie", "work_type"}, field=event_type)
+        fields = frozenset(value) if isinstance(value, dict) else frozenset()
+        expected = (
+            {"movie", "poster_path", "work_type"}
+            if "poster_path" in fields
+            else {"movie", "work_type"}
+        )
+        p = _fields(value, expected, field=event_type)
         return MovieSelected(
             MovieIdentity.from_dict(p["movie"]),
             _work_type(p["work_type"]),
+            p.get("poster_path"),
         )
     if event_type == "tmdb_season_catalog_observed":
         p = _fields(

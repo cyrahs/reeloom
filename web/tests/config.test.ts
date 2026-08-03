@@ -20,6 +20,11 @@ test("round-trips existing capabilities through explicit retain modes", () => {
     verbosity: "medium",
     credentialMode: "retain",
     apiKey: "",
+    telegramEnabled: false,
+    telegramTypes: ["attention_required"],
+    telegramDestinationMode: "unset",
+    telegramBotToken: "",
+    telegramChatId: "",
     apply_policy: "manual",
     agent_budget: {
       max_model_turns: 64,
@@ -55,6 +60,11 @@ test("includes replacement values only after an explicit replace choice", () => 
     verbosity: "low",
     credentialMode: "replace",
     apiKey: "new-key",
+    telegramEnabled: true,
+    telegramTypes: ["plan_ready", "archive_completed"],
+    telegramDestinationMode: "replace",
+    telegramBotToken: "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
+    telegramChatId: "-1001234567890",
     apply_policy: "plan_only",
     agent_budget: {
       max_model_turns: 32,
@@ -83,6 +93,15 @@ test("includes replacement values only after an explicit replace choice", () => 
     max_total_tokens: 200_000,
     max_elapsed_seconds: 900,
   });
+  expect(payload.telegram).toEqual({
+    enabled: true,
+    notification_types: ["plan_ready", "archive_completed"],
+    destination: {
+      mode: "replace",
+      bot_token: "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
+      chat_id: "-1001234567890",
+    },
+  });
 });
 
 test("cannot retain a capability after changing its exact identity", () => {
@@ -106,6 +125,11 @@ test("cannot retain a capability after changing its exact identity", () => {
       verbosity: "medium",
       credentialMode: "retain",
       apiKey: "",
+      telegramEnabled: false,
+      telegramTypes: ["attention_required"],
+      telegramDestinationMode: "unset",
+      telegramBotToken: "",
+      telegramChatId: "",
       apply_policy: "manual",
       agent_budget: {
         max_model_turns: 64,
@@ -134,6 +158,11 @@ test("cannot retain a capability after changing its exact identity", () => {
         reasoning_effort: "medium",
         verbosity: "medium",
         api_key_configured: true,
+      },
+      telegram: {
+        enabled: false,
+        notification_types: ["attention_required"],
+        destination_configured: false,
       },
       apply_policy: "manual",
       agent_budget: {

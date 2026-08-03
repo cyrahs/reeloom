@@ -33,6 +33,9 @@ class HealthResponse(_StrictModel):
     status: Literal["ok"]
     postgres_major: int = Field(ge=1)
     schema_version: int = Field(ge=1)
+    notification_pending: int = Field(default=0, ge=0)
+    notification_dead: int = Field(default=0, ge=0)
+    telegram_configured: bool = False
 
 
 class DirectoryItem(_StrictModel):
@@ -320,6 +323,19 @@ class ConfigProviderResponse(_StrictModel):
     api_key_configured: bool
 
 
+NotificationName = Literal[
+    "plan_ready",
+    "archive_completed",
+    "attention_required",
+]
+
+
+class ConfigTelegramResponse(_StrictModel):
+    enabled: bool
+    notification_types: list[NotificationName]
+    destination_configured: bool
+
+
 class ConfigAgentBudget(_StrictModel):
     max_model_turns: int = Field(ge=1, le=MAX_MODEL_TURNS)
     max_tool_calls: int = Field(ge=1, le=MAX_TOOL_CALLS)
@@ -336,6 +352,7 @@ class ConfigResponse(_StrictModel):
     revision_id: str
     watches: list[ConfigWatchResponse]
     provider: ConfigProviderResponse
+    telegram: ConfigTelegramResponse
     apply_policy: Literal["plan_only", "manual", "automatic"]
     agent_budget: ConfigAgentBudget
 
@@ -381,6 +398,33 @@ class CredentialReplace(_StrictModel):
     api_key: str
 
 
+class TelegramDestinationRetain(_StrictModel):
+    mode: Literal["retain"]
+
+
+class TelegramDestinationUnset(_StrictModel):
+    mode: Literal["unset"]
+
+
+class TelegramDestinationReplace(_StrictModel):
+    mode: Literal["replace"]
+    bot_token: str
+    chat_id: str
+
+
+class TelegramConfigRequest(_StrictModel):
+    enabled: bool
+    notification_types: list[NotificationName] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    destination: (
+        TelegramDestinationRetain
+        | TelegramDestinationUnset
+        | TelegramDestinationReplace
+    )
+
+
 class EditProviderRequest(_ProviderRequest):
     credential: CredentialRetain | CredentialReplace
 
@@ -390,6 +434,7 @@ class ConfigUpdateRequest(_StrictModel):
     provider: LegacyProviderRequest | EditProviderRequest
     apply_policy: Literal["plan_only", "manual", "automatic"]
     agent_budget: ConfigAgentBudget | None = None
+    telegram: TelegramConfigRequest | None = None
 
 
 class ProviderProbeRequest(_StrictModel):
@@ -399,6 +444,15 @@ class ProviderProbeRequest(_StrictModel):
 class ProviderProbeResponse(_StrictModel):
     available: bool
     status_code: int | None
+
+
+class TelegramTestRequest(_StrictModel):
+    pass
+
+
+class TelegramTestResponse(_StrictModel):
+    notification_id: str
+    state: Literal["queued"]
 
 
 class MoveCapabilityCheck(_StrictModel):

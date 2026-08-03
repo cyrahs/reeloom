@@ -8,9 +8,12 @@ import pytest
 
 from reeloom.server.config import (
     ApplyPolicy,
+    ConfigDraft,
     ConfigDraftInput,
+    ProviderConfig,
     ProviderConfigInput,
     ServerWorkType,
+    TelegramConfig,
     WatchConfig,
 )
 from reeloom.server.config_service import ConfigService
@@ -108,3 +111,41 @@ def test_config_cas_failure_leaves_only_unreferenced_secret(
     assert raised.value.code is ServerErrorCode.CONFIG_CONFLICT
     assert secrets.values == [b"orphan"]
     assert configs.head is None
+
+
+def test_config_service_writes_telegram_token_once_and_keeps_it_private() -> None:
+    secrets = _Secrets()
+    configs = _Configs()
+    service = ConfigService(
+        configs=configs,
+        secrets=secrets,
+        clock=lambda: datetime(2026, 8, 3, tzinfo=UTC),
+        id_factory=lambda: "cfg-telegram",
+    )
+
+    result = service.compare_and_append_draft(
+        expected_revision=0,
+        draft=ConfigDraft(
+            watches=(),
+            provider=ProviderConfig(
+                base_url="https://models.example.test/v1",
+                model="gpt-5",
+                secret_ref="secret-provider",
+            ),
+            apply_policy=ApplyPolicy.MANUAL,
+            telegram=TelegramConfig(
+                enabled=True,
+                chat_id="-1001234567890",
+                secret_ref="replacement-pending",
+            ),
+        ),
+        replacement_telegram_token=(
+            b"123456789:abcdefghijklmnopqrstuvwxyz_123456789"
+        ),
+    )
+
+    assert secrets.values == [
+        b"123456789:abcdefghijklmnopqrstuvwxyz_123456789"
+    ]
+    assert result.telegram.secret_ref == "secret-1"
+    assert "123456789:" not in repr(result.public_payload())

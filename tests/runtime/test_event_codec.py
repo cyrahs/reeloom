@@ -165,10 +165,11 @@ def _event_samples() -> tuple[object, ...]:
         TmdbCandidatesObserved(
             (TmdbCandidateRef(TmdbWorkType.ANIME, 42),)
         ),
-        SeriesSelected(series, TmdbWorkType.ANIME),
+        SeriesSelected(series, TmdbWorkType.ANIME, "/series.jpg"),
         MovieSelected(
             MovieIdentity("测试电影", 2025, 43),
             TmdbWorkType.MOVIE,
+            "/movie.jpg",
         ),
         TmdbSeasonCatalogObserved(
             "call-1", 42, TmdbWorkType.ANIME, 1, 12

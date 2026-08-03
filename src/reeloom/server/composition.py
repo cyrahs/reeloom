@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from reeloom.adapters.journal import FilesystemJournalStore
 from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
+from reeloom.adapters.telegram import TelegramHttpAdapter
 from reeloom.executor.apply import FilesystemExecutor
 from reeloom.executor.folder_disposition import FolderDispositionExecutor
 from reeloom.policy.path_policy import AuthorizedRoot
@@ -59,6 +60,15 @@ from reeloom.server.move_capability import (
     MoveCapabilityStatus,
     probe_move_capability,
 )
+from reeloom.server.notification_delivery import (
+    ConfiguredNotificationDelivery,
+    SenderFactory,
+    TelegramTestQueue,
+)
+from reeloom.server.notification_outbox import PostgresNotificationOutbox
+from reeloom.server.notification_projector import (
+    PostgresNotificationProjector,
+)
 from reeloom.server.run_deletion import PostgresRunDeletionService
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
@@ -91,6 +101,15 @@ from reeloom.server.settings import DeploymentSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationHealth:
+    postgres_major: int
+    schema_version: int
+    notification_pending: int
+    notification_dead: int
+    telegram_configured: bool
 
 
 def _state_subdirectory(root: Path, name: str) -> AuthorizedRoot:
@@ -219,6 +238,7 @@ def build_application(
     ) = None,
     model_factory: ModelLeaseFactory | None = None,
     tmdb_factory: TmdbLeaseFactory | None = None,
+    telegram_factory: SenderFactory | None = None,
 ) -> ServerApplication:
     if settings.workers != 1:
         raise ServerError(ServerErrorCode.MULTIPLE_WORKERS)
@@ -247,7 +267,15 @@ def build_application(
         plans = FilesystemPlanStore(plan_root)
         journals = FilesystemJournalStore(journal_root)
         approvals = PostgresApprovalStore(database.pool)
-        layouts = PostgresCompletedLayoutRepository(database.pool)
+        notification_outbox = PostgresNotificationOutbox(database.pool)
+        notification_projector = PostgresNotificationProjector(
+            plans=plans,
+            outbox=notification_outbox,
+        )
+        layouts = PostgresCompletedLayoutRepository(
+            database.pool,
+            notifications=notification_projector,
+        )
         executor = FilesystemExecutor(
             plans=plans,
             approvals=approvals,
@@ -260,7 +288,8 @@ def build_application(
             completed_layouts=layouts,
         )
         folder_repository = PostgresFolderDispositionRepository(
-            database.pool
+            database.pool,
+            notifications=notification_projector,
         )
         folder_planner = FolderDispositionPlanner(
             pool=database.pool,
@@ -282,7 +311,8 @@ def build_application(
         )
         apply.reconcile_active()
         interactions_repository = PostgresInteractionRepository(
-            database.pool
+            database.pool,
+            notifications=notification_projector,
         )
         interactions_repository.reconcile_active()
         idempotency = PostgresIdempotencyService(database.pool)
@@ -299,6 +329,10 @@ def build_application(
         config_service = ConfigService(
             configs=config_repository,
             secrets=secrets,
+        )
+        telegram_tests = TelegramTestQueue(
+            configs=config_repository,
+            outbox=notification_outbox,
         )
 
         def parse_config(
@@ -319,6 +353,9 @@ def build_application(
                 expected_revision=expected_revision,
                 draft=edit.draft,
                 replacement_api_key=edit.replacement_api_key,
+                replacement_telegram_token=(
+                    edit.replacement_telegram_token
+                ),
             )
             return revision.public_payload()
 
@@ -336,6 +373,7 @@ def build_application(
                     return None
                 raise
             provider = revision.provider
+            telegram = revision.telegram
             if (
                 revision.watches != expected.draft.watches
                 or revision.apply_policy is not expected.draft.apply_policy
@@ -358,6 +396,22 @@ def build_application(
                         expected.replacement_api_key,
                     )
                 )
+                or telegram.enabled != expected.draft.telegram.enabled
+                or telegram.notification_types
+                != expected.draft.telegram.notification_types
+                or telegram.chat_id != expected.draft.telegram.chat_id
+                or (
+                    expected.replacement_telegram_token is None
+                    and telegram.secret_ref
+                    != expected.draft.telegram.secret_ref
+                )
+                or (
+                    expected.replacement_telegram_token is not None
+                    and not hmac.compare_digest(
+                        secrets.load(telegram.secret_ref),
+                        expected.replacement_telegram_token,
+                    )
+                )
             ):
                 return None
             return revision.public_payload()
@@ -375,6 +429,14 @@ def build_application(
             tmdb_factory
             if tmdb_factory is not None
             else lambda: TmdbHttpLease(settings.tmdb_api_key)
+        )
+        effective_telegram_factory = (
+            telegram_factory
+            if telegram_factory is not None
+            else lambda token, chat_id: TelegramHttpAdapter(
+                bot_token=token,
+                chat_id=chat_id,
+            )
         )
         session_repository = PostgresSessionRepository(database.pool)
         definition_repository = PostgresAgentDefinitionRepository(
@@ -470,6 +532,7 @@ def build_application(
             model_factory=effective_model_factory,
             tmdb_factory=effective_tmdb_factory,
             pool=database.pool,
+            notifications=notification_projector,
         )
         background = BackgroundServices(
             boot_id=boot_id,
@@ -478,12 +541,31 @@ def build_application(
             worker=worker,
             apply=apply,
             folder_dispositions=folder_dispositions,
+            notifications=ConfiguredNotificationDelivery(
+                configs=config_repository,
+                secrets=secrets,
+                outbox=notification_outbox,
+                sender_factory=effective_telegram_factory,
+                worker_id=boot_id,
+            ),
         )
 
         def health() -> object:
             if background.fatal:
                 raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE)
-            return database.health()
+            database_health = database.health()
+            notification_stats = notification_outbox.stats()
+            config = config_repository.head()
+            return ApplicationHealth(
+                postgres_major=database_health.postgres_major,
+                schema_version=database_health.schema_version,
+                notification_pending=notification_stats.pending,
+                notification_dead=notification_stats.dead,
+                telegram_configured=(
+                    config is not None
+                    and bool(config.telegram.secret_ref)
+                ),
+            )
 
         api = create_api(
             ApiDependencies(
@@ -495,6 +577,7 @@ def build_application(
                 config_update=update_config,
                 config_resolve=resolve_config,
                 provider_probe=probe_provider,
+                telegram_test=telegram_tests.enqueue,
                 move_capability_probe=probe_moves,
                 directory_list=PodDirectoryBrowser().list,
                 idempotency=idempotency,

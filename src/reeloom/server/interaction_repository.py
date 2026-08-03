@@ -25,6 +25,9 @@ from reeloom.server.interactions import (
     InteractionResult,
     _request_hash,
 )
+from reeloom.server.notification_projector import (
+    PostgresNotificationProjector,
+)
 
 
 def _result(value: object) -> InteractionResult:
@@ -70,8 +73,14 @@ def _fresh_interaction_budget(
 
 
 class PostgresInteractionRepository:
-    def __init__(self, pool: ConnectionPool) -> None:
+    def __init__(
+        self,
+        pool: ConnectionPool,
+        *,
+        notifications: PostgresNotificationProjector | None = None,
+    ) -> None:
         self._pool = pool
+        self._notifications = notifications
 
     def reserve(
         self,
@@ -702,6 +711,12 @@ class PostgresInteractionRepository:
                                 ),
                             ),
                         )
+                        if self._notifications is not None:
+                            self._notifications.plan_ready(
+                                connection,
+                                run_id=reservation.run_id,
+                                plan_hash=execution.plan_hash,
+                            )
                         review = (
                             execution.plan_review
                             or PlanReview.system_only()

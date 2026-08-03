@@ -19,7 +19,11 @@ from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
-from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
+from reeloom.kernel.tmdb import (
+    TmdbCandidateRef,
+    TmdbWorkType,
+    validate_tmdb_poster_path,
+)
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import (
@@ -424,6 +428,10 @@ def reduce_event(
 
     if isinstance(event, SeriesSelected):
         series = event.series
+        try:
+            poster_path = validate_tmdb_poster_path(event.poster_path)
+        except DomainError:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT) from None
         if (
             state.phase is not Phase.IDENTIFY_SERIES
             or state.selected_series is not None
@@ -443,10 +451,15 @@ def reduce_event(
             event_count=event_count,
             selected_series=series,
             selected_work_type=event.work_type,
+            selected_poster_path=poster_path,
         )
 
     if isinstance(event, MovieSelected):
         movie = event.movie
+        try:
+            poster_path = validate_tmdb_poster_path(event.poster_path)
+        except DomainError:
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT) from None
         if (
             state.phase is not Phase.IDENTIFY_MOVIE
             or state.selected_movie is not None
@@ -466,6 +479,7 @@ def reduce_event(
             event_count=event_count,
             selected_movie=movie,
             selected_work_type=event.work_type,
+            selected_poster_path=poster_path,
         )
 
     if isinstance(event, TmdbSeasonCatalogObserved):

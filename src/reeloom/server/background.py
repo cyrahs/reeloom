@@ -21,6 +21,9 @@ from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
+from reeloom.server.notification_delivery import (
+    ConfiguredNotificationDelivery,
+)
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
@@ -40,6 +43,7 @@ class BackgroundServices:
     worker: InitialAgentWorker
     apply: ApplyCoordinator
     folder_dispositions: FolderDispositionCoordinator | None = None
+    notifications: ConfiguredNotificationDelivery | None = None
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -57,6 +61,8 @@ class BackgroundServices:
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("background services already started")
+        if self.notifications is not None:
+            self.notifications.start()
         thread = threading.Thread(
             target=self._run,
             name="reeloom-background",
@@ -69,11 +75,15 @@ class BackgroundServices:
         self._stop.set()
         thread = self._thread
         if thread is None:
+            if self.notifications is not None:
+                self.notifications.close()
             return
         thread.join(timeout_seconds)
         if thread.is_alive():
             raise RuntimeError("background services did not stop")
         self._thread = None
+        if self.notifications is not None:
+            self.notifications.close()
 
     @property
     def fatal(self) -> bool:
@@ -91,6 +101,8 @@ class BackgroundServices:
                 if claimed is not None:
                     progressed = True
                     self._execute_job(claimed.job_id, claimed.run_id)
+                if self.notifications is not None:
+                    progressed = self.notifications.run_once() or progressed
             except Exception as error:
                 _LOG.error(
                     "background_cycle_failed error_type=%s",

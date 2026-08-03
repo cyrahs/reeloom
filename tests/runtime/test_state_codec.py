@@ -36,6 +36,7 @@ from reeloom.runtime.reducer import reduce_event
 from reeloom.runtime.state_codec import (
     STATE_PROJECTION_SCHEMA,
     V3_STATE_PROJECTION_SCHEMA,
+    V4_STATE_PROJECTION_SCHEMA,
     decode_state,
     encode_state,
 )
@@ -89,6 +90,7 @@ def test_projection_schema_label_must_match_payload_shape() -> None:
     payload.pop("mapping_review")
     payload.pop("mapping_review_call_id")
     payload.pop("mapping_conflicts")
+    payload.pop("selected_poster_path")
 
     with pytest.raises(ValueError):
         decode_state(
@@ -105,6 +107,14 @@ def test_projection_schema_label_must_match_payload_shape() -> None:
         )
         == state
     )
+
+    v4_payload = encode_state(state)
+    v4_payload.pop("selected_poster_path")
+    assert decode_state(
+        v4_payload,
+        load_plan=lambda _plan_hash: pytest.fail(),
+        schema_version=V4_STATE_PROJECTION_SCHEMA,
+    ) == state
 
 
 def test_directory_observations_round_trip_in_v3_projection() -> None:
@@ -247,6 +257,7 @@ def test_legacy_episode_projection_remains_readable() -> None:
     payload.pop("mapping_review")
     payload.pop("mapping_review_call_id")
     payload.pop("mapping_conflicts")
+    payload.pop("selected_poster_path")
 
     assert decode_state(
         payload,
@@ -279,6 +290,7 @@ def test_movie_run_state_projection_round_trips() -> None:
         MovieSelected(
             MovieIdentity("测试电影", 2024, 42),
             TmdbWorkType.MOVIE,
+            "/movie.jpg",
         ),
     )
     state = reduce_event(
@@ -319,3 +331,4 @@ def test_movie_run_state_projection_round_trips() -> None:
     )
 
     assert recovered == state
+    assert recovered.selected_poster_path == "/movie.jpg"

@@ -10,6 +10,7 @@ from reeloom.server.config import (
     ConfigDraftInput,
     ConfigRevision,
     ProviderConfig,
+    TelegramConfig,
 )
 from reeloom.server.provider import validate_provider_base_url
 
@@ -80,6 +81,7 @@ class ConfigService:
         expected_revision: int,
         draft: ConfigDraft,
         replacement_api_key: bytes | None = None,
+        replacement_telegram_token: bytes | None = None,
     ) -> ConfigRevision:
         if (
             type(expected_revision) is not int
@@ -90,6 +92,13 @@ class ConfigService:
                 and (
                     not isinstance(replacement_api_key, bytes)
                     or not 0 < len(replacement_api_key) <= 4_096
+                )
+            )
+            or (
+                replacement_telegram_token is not None
+                and (
+                    not isinstance(replacement_telegram_token, bytes)
+                    or not 0 < len(replacement_telegram_token) <= 512
                 )
             )
         ):
@@ -110,6 +119,23 @@ class ConfigService:
                 ),
                 apply_policy=draft.apply_policy,
                 agent_budget=draft.agent_budget,
+                telegram=draft.telegram,
+            )
+        if replacement_telegram_token is not None:
+            telegram_secret_ref = self._secrets.put(
+                replacement_telegram_token
+            )
+            draft = ConfigDraft(
+                watches=draft.watches,
+                provider=draft.provider,
+                apply_policy=draft.apply_policy,
+                agent_budget=draft.agent_budget,
+                telegram=TelegramConfig(
+                    enabled=draft.telegram.enabled,
+                    notification_types=draft.telegram.notification_types,
+                    chat_id=draft.telegram.chat_id,
+                    secret_ref=telegram_secret_ref,
+                ),
             )
         revision = ConfigRevision.create(
             revision_id=self._id_factory(),
