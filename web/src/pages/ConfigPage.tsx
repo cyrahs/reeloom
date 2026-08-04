@@ -530,124 +530,90 @@ export function ConfigPage() {
             />
             <span>启用 Telegram 推送</span>
           </label>
-          <fieldset className="toggle-group">
-            <legend>推送类型</legend>
-            <div className="toggle-group-items">
-              {[
-                ["plan_ready", "计划待批准"],
-                ["archive_completed", "整理完成"],
-                ["attention_required", "需要处理"],
-              ].map(([value, label]) => {
-                const last =
-                  form.telegramTypes.length === 1 &&
-                  form.telegramTypes.includes(
-                    value as TelegramNotificationType,
-                  );
-                return (
-                  <label
-                    className="toggle-row"
-                    key={value}
-                    title={last ? "至少保留一种推送类型" : undefined}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={form.telegramTypes.includes(
-                        value as TelegramNotificationType,
-                      )}
-                      disabled={last}
-                      onChange={(event) =>
-                        setForm({
-                          ...form,
-                          telegramTypes: event.target.checked
-                            ? [
-                                ...form.telegramTypes,
-                                value as TelegramNotificationType,
-                              ]
-                            : form.telegramTypes.filter(
-                                (item) => item !== value,
-                              ),
-                        })
-                      }
-                    />
-                    <span>{label}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </fieldset>
           <fieldset className="secret-choice">
-            <legend>推送目标</legend>
-            {form.telegramDestinationMode === "retain" ? (
-              <div className="secret-row">
-                <p className="retained-value">
-                  目标与 Bot Token 已配置 · 内容不会回传浏览器
-                </p>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() =>
+            <legend>推送类型</legend>
+            {[
+              ["plan_ready", "计划待批准"],
+              ["archive_completed", "整理完成"],
+              ["attention_required", "需要处理"],
+            ].map(([value, label]) => (
+              <label className="toggle-row" key={value}>
+                <input
+                  type="checkbox"
+                  checked={form.telegramTypes.includes(
+                    value as TelegramNotificationType,
+                  )}
+                  disabled={
+                    form.telegramTypes.length === 1 &&
+                    form.telegramTypes.includes(
+                      value as TelegramNotificationType,
+                    )
+                  }
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      telegramTypes: event.target.checked
+                        ? [...form.telegramTypes, value as TelegramNotificationType]
+                        : form.telegramTypes.filter((item) => item !== value),
+                    })
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </fieldset>
+          {form.telegramDestinationMode === "retain" ? (
+            <div className="secret-row">
+              <p className="retained-value">
+                目标与 Bot Token 已配置 · 内容不会回传浏览器
+              </p>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    telegramDestinationMode: "replace",
+                  })
+                }
+              >
+                替换
+              </button>
+            </div>
+          ) : (
+            <div className="form-grid">
+              <Field label="Bot Token">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={form.telegramBotToken}
+                  onChange={(event) =>
                     setForm({
                       ...form,
                       telegramDestinationMode: "replace",
+                      telegramBotToken: event.target.value,
                     })
                   }
-                >
-                  替换
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="form-grid">
-                  <Field label="Bot Token">
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={form.telegramBotToken}
-                      onChange={(event) =>
-                        setForm({
-                          ...form,
-                          telegramDestinationMode: "replace",
-                          telegramBotToken: event.target.value,
-                        })
-                      }
-                      required={form.telegramEnabled}
-                      placeholder="123456789:…"
-                    />
-                  </Field>
-                  <Field label="Chat ID">
-                    <input
-                      value={form.telegramChatId}
-                      onChange={(event) =>
-                        setForm({
-                          ...form,
-                          telegramDestinationMode: "replace",
-                          telegramChatId: event.target.value,
-                        })
-                      }
-                      required={form.telegramEnabled}
-                      placeholder="-1001234567890"
-                    />
-                  </Field>
-                </div>
-                {query.data?.telegram.destination_configured ? (
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={() =>
-                      setForm({
-                        ...form,
-                        telegramDestinationMode: "retain",
-                        telegramBotToken: "",
-                        telegramChatId: "",
-                      })
-                    }
-                  >
-                    保留现有值
-                  </button>
-                ) : null}
-              </>
-            )}
-          </fieldset>
+                  required={form.telegramEnabled}
+                  placeholder="123456789:…"
+                />
+              </Field>
+              <Field label="Chat ID">
+                <input
+                  value={form.telegramChatId}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      telegramDestinationMode: "replace",
+                      telegramChatId: event.target.value,
+                    })
+                  }
+                  required={form.telegramEnabled}
+                  placeholder="-1001234567890"
+                />
+              </Field>
+            </div>
+          )}
           <button
             className="secondary"
             type="button"
@@ -659,11 +625,6 @@ export function ConfigPage() {
           >
             {telegramTest.isPending ? "正在入队…" : "发送测试通知"}
           </button>
-          {query.data?.telegram.destination_configured ? null : (
-            <p className="muted field-note">
-              保存 Bot Token 与 Chat ID 后才能发送测试通知。
-            </p>
-          )}
           {telegramNotice ? (
             <div className="notice" role="status">{telegramNotice}</div>
           ) : null}

@@ -911,51 +911,6 @@ button:disabled {
   font-weight: 700;
 }
 
-.toggle-group {
-  margin: 16px 0;
-  padding: 0;
-  border: 0;
-}
-
-.toggle-group legend {
-  margin-bottom: 7px;
-  color: var(--label-ink);
-  font-size: 0.86rem;
-  font-weight: 700;
-}
-
-.toggle-group-items {
-  display: flex;
-  gap: 10px 22px;
-  flex-wrap: wrap;
-}
-
-/* Box and label share a baseline instead of falling back to inline defaults. */
-.toggle-row {
-  display: flex;
-  gap: 9px;
-  align-items: center;
-  cursor: pointer;
-  font-size: 0.9rem;
-}
-
-.toggle-row input {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-  flex: 0 0 auto;
-}
-
-.toggle-row:has(input:disabled) {
-  color: var(--muted);
-  cursor: default;
-}
-
-.field-note {
-  margin: 8px 0 0;
-  font-size: 0.82rem;
-}
-
 .path-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
