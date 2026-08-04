@@ -7,7 +7,12 @@ from psycopg_pool import ConnectionPool
 
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.event_codec import encode_event
-from reeloom.runtime.events import PlanBuilt, RunStarted, RuntimeEvent
+from reeloom.runtime.events import (
+    ApprovalRequested,
+    PlanBuilt,
+    RunStarted,
+    RuntimeEvent,
+)
 from reeloom.runtime.reducer import reduce_event
 from reeloom.runtime.state_codec import (
     STATE_PROJECTION_SCHEMA,
@@ -20,6 +25,9 @@ from reeloom.runtime.store import StoredEvent
 from reeloom.ports.plans import PlanStore
 from reeloom.kernel.initial_plan import InitialPlan, parse_initial_plan
 from reeloom.kernel.plan_review import PLAN_REVIEW_SCHEMA, PlanReview
+from reeloom.server.notification_projector import (
+    PostgresNotificationProjector,
+)
 
 _MAX_PROJECTION_BYTES = 10 * 1024 * 1024
 
@@ -51,10 +59,12 @@ class PostgresEventStore:
         *,
         run_id: str,
         plans: PlanStore | None = None,
+        notifications: PostgresNotificationProjector | None = None,
     ) -> None:
         self._pool = pool
         self.run_id = run_id
         self._plans = plans
+        self._notifications = notifications
         self._events: list[StoredEvent] = []
         self._state: RunState | None = None
         self._lock = threading.Lock()
@@ -205,6 +215,15 @@ class PostgresEventStore:
                                     next_state.mapping_review
                                     or PlanReview.system_only()
                                 ),
+                            )
+                        if (
+                            isinstance(event, ApprovalRequested)
+                            and self._notifications is not None
+                        ):
+                            self._notifications.plan_ready(
+                                connection,
+                                run_id=self.run_id,
+                                plan_hash=event.plan_hash,
                             )
             except RuntimeDomainError:
                 raise

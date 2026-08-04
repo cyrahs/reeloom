@@ -88,6 +88,7 @@ def test_series_and_season_parse_bounded_domain_models() -> None:
                     "id": 100,
                     "name": "动画",
                     "original_name": "Anime",
+                    "poster_path": "/anime-poster.jpg",
                     "first_air_date": "2020-01-01",
                     "genres": [{"id": 16, "name": "Animation"}],
                     "seasons": [
@@ -145,10 +146,43 @@ def test_series_and_season_parse_bounded_domain_models() -> None:
         asyncio.run(adapter.aclose())
 
     assert series.first_air_year == 2020
+    assert series.poster_path == "/anime-poster.jpg"
     assert series.seasons[0].season_number == 0
     assert tuple(
         episode.special_kind for episode in season.episodes
     ) == (SpecialKind.OVA, SpecialKind.OAD)
+
+
+def test_series_rejects_untrusted_poster_url() -> None:
+    adapter = TmdbHttpAdapter(
+        api_key="test-key-not-secret",
+        transport=httpx.MockTransport(
+            lambda request: _json_response(
+                {
+                    "id": 100,
+                    "name": "动画",
+                    "original_name": "Anime",
+                    "first_air_date": "2020-01-01",
+                    "genres": [{"id": 16}],
+                    "poster_path": "https://attacker.invalid/poster.jpg",
+                    "seasons": [],
+                }
+            )
+        ),
+    )
+    try:
+        with pytest.raises(TmdbProviderError) as error:
+            asyncio.run(
+                adapter.get_series(
+                    tmdb_id=100,
+                    work_type=TmdbWorkType.ANIME,
+                    language=TmdbLanguage.ZH_CN,
+                )
+            )
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert error.value.code is TmdbErrorCode.INVALID_RESPONSE
 
 
 def test_timeout_is_retryable_and_does_not_disclose_key() -> None:

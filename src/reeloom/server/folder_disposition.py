@@ -43,6 +43,9 @@ from reeloom.server.watcher import (
     NoFollowWatcher,
     WatchSnapshot,
 )
+from reeloom.server.notification_projector import (
+    PostgresNotificationProjector,
+)
 
 
 def _now() -> datetime:
@@ -94,8 +97,14 @@ def _inventory(
 
 
 class PostgresFolderDispositionRepository:
-    def __init__(self, pool: ConnectionPool) -> None:
+    def __init__(
+        self,
+        pool: ConnectionPool,
+        *,
+        notifications: PostgresNotificationProjector | None = None,
+    ) -> None:
         self._pool = pool
+        self._notifications = notifications
 
     def plan_for_media(
         self, *, run_id: str, media_plan_hash: str
@@ -717,6 +726,16 @@ class PostgresFolderDispositionRepository:
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
                         )
+                    if (
+                        self._notifications is not None
+                        and status in {"blocked", "recovery_required"}
+                    ):
+                        self._notifications.folder_failed(
+                            connection,
+                            run_id=transaction.run_id,
+                            plan_hash=transaction.plan_hash,
+                            event_id=transaction.transaction_id,
+                        )
         except ServerError:
             raise
         except Exception:
@@ -767,6 +786,12 @@ class PostgresFolderDispositionRepository:
                         """,
                         (run_id,),
                     )
+                    if self._notifications is not None:
+                        self._notifications.folder_settled(
+                            connection,
+                            run_id=run_id,
+                            approval_id=transaction.approval_id,
+                        )
         except Exception:
             raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 

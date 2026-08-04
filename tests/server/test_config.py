@@ -16,8 +16,10 @@ from reeloom.server.config import (
     ConfigRevision,
     ProviderConfig,
     ServerWorkType,
+    TelegramConfig,
     WatchConfig,
 )
+from reeloom.server.notifications import NotificationType
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.provider import (
     ControlledModelLease,
@@ -174,7 +176,7 @@ def test_legacy_config_maps_routes_to_each_watch(tmp_path: Path) -> None:
         library.resolve(),
         library.resolve(),
     ]
-    assert '"schema_version":3' in restored.to_json()
+    assert '"schema_version":4' in restored.to_json()
     assert restored.agent_budget.max_elapsed_seconds == 600
     assert "archive_routes" not in restored.public_payload()
 
@@ -182,6 +184,65 @@ def test_legacy_config_maps_routes_to_each_watch(tmp_path: Path) -> None:
     with pytest.raises(ServerError) as raised:
         ConfigRevision.from_json(json.dumps(payload))
     assert raised.value.code is ServerErrorCode.INVALID_CONFIG
+
+
+def test_telegram_config_round_trips_without_public_destination(
+    tmp_path: Path,
+) -> None:
+    draft = _draft(tmp_path)
+    revision = ConfigRevision.create(
+        revision_id="cfg-telegram",
+        revision=3,
+        created_at=datetime(2026, 8, 3, tzinfo=UTC),
+        draft=ConfigDraft(
+            watches=draft.watches,
+            provider=draft.provider,
+            apply_policy=draft.apply_policy,
+            telegram=TelegramConfig(
+                enabled=True,
+                notification_types=(
+                    NotificationType.PLAN_READY,
+                    NotificationType.ATTENTION_REQUIRED,
+                ),
+                chat_id="-1001234567890",
+                secret_ref="secret-telegram",
+            ),
+        ),
+    )
+
+    restored = ConfigRevision.from_json(revision.to_json())
+    public = restored.public_payload()
+
+    assert restored == revision
+    assert public["telegram"] == {
+        "enabled": True,
+        "notification_types": ["plan_ready", "attention_required"],
+        "destination_configured": True,
+    }
+    assert "-1001234567890" not in repr(public)
+    assert "secret-telegram" not in repr(public)
+
+
+def test_schema_v3_config_upgrades_with_telegram_disabled(
+    tmp_path: Path,
+) -> None:
+    draft = _draft(tmp_path)
+    revision = ConfigRevision.create(
+        revision_id="cfg-v3",
+        revision=2,
+        created_at=datetime(2026, 8, 2, tzinfo=UTC),
+        draft=draft,
+    )
+    payload = json.loads(revision.to_json())
+    payload["schema_version"] = 3
+    del payload["telegram"]
+
+    restored = ConfigRevision.from_json(json.dumps(payload))
+
+    assert not restored.telegram.enabled
+    assert not restored.public_payload()["telegram"][
+        "destination_configured"
+    ]
 
 
 def test_config_allows_explicit_shared_library_root(

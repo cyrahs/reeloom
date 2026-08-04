@@ -64,6 +64,8 @@ from reeloom.server.api_models import (
     RunResponse,
     RunsResponse,
     SessionResponse,
+    TelegramTestRequest,
+    TelegramTestResponse,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
@@ -191,6 +193,7 @@ class ApiDependencies:
         | None
     ) = None
     provider_probe: Callable[[], Awaitable[object]] | None = None
+    telegram_test: Callable[[str], dict[str, object]] | None = None
     move_capability_probe: (
         Callable[[str], Awaitable[dict[str, object]]] | None
     ) = None
@@ -868,6 +871,15 @@ def create_api(
                 "status": "ok",
                 "postgres_major": result.postgres_major,
                 "schema_version": result.schema_version,
+                "notification_pending": getattr(
+                    result, "notification_pending", 0
+                ),
+                "notification_dead": getattr(
+                    result, "notification_dead", 0
+                ),
+                "telegram_configured": getattr(
+                    result, "telegram_configured", False
+                ),
             }
         except Exception:
             raise HTTPException(
@@ -1016,6 +1028,8 @@ def create_api(
         value = body.model_dump()
         if value["agent_budget"] is None:
             del value["agent_budget"]
+        if value["telegram"] is None:
+            del value["telegram"]
 
         def execute() -> dict[str, object]:
             return dependencies.config_update(expected_revision, value)
@@ -1057,6 +1071,19 @@ def create_api(
             "available": result.available,
             "status_code": result.status_code,
         }
+
+    @app.post(
+        "/api/v1/admin/config/telegram-test",
+        response_model=TelegramTestResponse,
+    )
+    async def telegram_test(
+        body: TelegramTestRequest,
+        key: str = Depends(_idempotency_key),
+    ) -> dict[str, object]:
+        del body
+        if dependencies.telegram_test is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+        return await asyncio.to_thread(dependencies.telegram_test, key)
 
     @app.post(
         "/api/v1/admin/watches/{watch_id}/move-capability-probe",

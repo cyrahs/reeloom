@@ -13,6 +13,9 @@ _MAX_TITLE_BYTES = 240
 _MAX_OVERVIEW_BYTES = 1_000
 _SPECIAL_TOKEN_PATTERN = re.compile(r"(?<![a-z0-9])(ova|oad)(?![a-z0-9])")
 _LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}$")
+_POSTER_PATH_PATTERN = re.compile(
+    r"^/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg)$", re.IGNORECASE
+)
 
 
 class TmdbLanguage(StrEnum):
@@ -76,6 +79,17 @@ def _validate_year(value: object) -> int | None:
     if value is None:
         return None
     if type(value) is not int or not 1000 <= value <= 9999:
+        raise DomainError(ErrorCode.INVALID_TMDB_DATA)
+    return value
+
+
+def validate_tmdb_poster_path(value: object) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or _POSTER_PATH_PATTERN.fullmatch(value) is None
+    ):
         raise DomainError(ErrorCode.INVALID_TMDB_DATA)
     return value
 
@@ -159,6 +173,7 @@ class TmdbMovieDetails:
     adult: bool
     genre_ids: tuple[int, ...]
     work_type: TmdbWorkType
+    poster_path: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tmdb_id", _validate_tmdb_id(self.tmdb_id))
@@ -205,6 +220,11 @@ class TmdbMovieDetails:
             or len(set(self.genre_ids)) != len(self.genre_ids)
         ):
             raise DomainError(ErrorCode.INVALID_TMDB_DATA)
+        object.__setattr__(
+            self,
+            "poster_path",
+            validate_tmdb_poster_path(self.poster_path),
+        )
 
     @property
     def media_type(self) -> TmdbMediaType:
@@ -245,6 +265,7 @@ class TmdbSeriesDetails:
     first_air_year: int | None
     seasons: tuple[TmdbSeasonSummary, ...]
     work_type: TmdbWorkType
+    poster_path: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tmdb_id", _validate_tmdb_id(self.tmdb_id))
@@ -255,6 +276,11 @@ class TmdbSeriesDetails:
             or not self.work_type.supports_episodes
         ):
             raise DomainError(ErrorCode.INVALID_TMDB_DATA)
+        object.__setattr__(
+            self,
+            "poster_path",
+            validate_tmdb_poster_path(self.poster_path),
+        )
         object.__setattr__(
             self,
             "localized_name",

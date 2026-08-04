@@ -109,6 +109,11 @@ class _Queries:
                 "verbosity": "medium",
                 "api_key_configured": True,
             },
+            "telegram": {
+                "enabled": False,
+                "notification_types": ["attention_required"],
+                "destination_configured": False,
+            },
             "apply_policy": "manual",
             "agent_budget": {
                 "max_model_turns": 64,
@@ -233,6 +238,7 @@ def _app(
     directory_list: Callable[[str], dict[str, object]] | None = None,
     run_delete: Callable[[str], dict[str, object]] | None = None,
     move_capability_probe: Callable[..., object] | None = None,
+    telegram_test: Callable[[str], dict[str, object]] | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
@@ -240,6 +246,7 @@ def _app(
             directory_list=directory_list,
             run_delete=run_delete,
             move_capability_probe=move_capability_probe,  # type: ignore[arg-type]
+            telegram_test=telegram_test,
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -249,6 +256,39 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+def test_admin_can_enqueue_idempotent_telegram_test() -> None:
+    keys: list[str] = []
+
+    def enqueue(key: str) -> dict[str, object]:
+        keys.append(key)
+        return {"notification_id": "notification-1", "state": "queued"}
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(telegram_test=enqueue)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            return await client.post(
+                "/api/v1/admin/config/telegram-test",
+                json={},
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                    "idempotency-key": "telegram-test-1",
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "notification_id": "notification-1",
+        "state": "queued",
+    }
+    assert keys == ["telegram-test-1"]
 
 
 def test_admin_can_probe_exact_watch_move_capability() -> None:

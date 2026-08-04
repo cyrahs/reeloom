@@ -355,6 +355,9 @@
             "title": "Revision Id",
             "type": "string"
           },
+          "telegram": {
+            "$ref": "#/components/schemas/ConfigTelegramResponse"
+          },
           "watches": {
             "items": {
               "$ref": "#/components/schemas/ConfigWatchResponse"
@@ -368,10 +371,43 @@
           "revision_id",
           "watches",
           "provider",
+          "telegram",
           "apply_policy",
           "agent_budget"
         ],
         "title": "ConfigResponse",
+        "type": "object"
+      },
+      "ConfigTelegramResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "destination_configured": {
+            "title": "Destination Configured",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "notification_types": {
+            "items": {
+              "enum": [
+                "plan_ready",
+                "archive_completed",
+                "attention_required"
+              ],
+              "type": "string"
+            },
+            "title": "Notification Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "notification_types",
+          "destination_configured"
+        ],
+        "title": "ConfigTelegramResponse",
         "type": "object"
       },
       "ConfigUpdateRequest": {
@@ -406,6 +442,16 @@
               }
             ],
             "title": "Provider"
+          },
+          "telegram": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TelegramConfigRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "watches": {
             "items": {
@@ -1095,6 +1141,18 @@
       "HealthResponse": {
         "additionalProperties": false,
         "properties": {
+          "notification_dead": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Notification Dead",
+            "type": "integer"
+          },
+          "notification_pending": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Notification Pending",
+            "type": "integer"
+          },
           "postgres_major": {
             "minimum": 1.0,
             "title": "Postgres Major",
@@ -1109,6 +1167,11 @@
             "const": "ok",
             "title": "Status",
             "type": "string"
+          },
+          "telegram_configured": {
+            "default": false,
+            "title": "Telegram Configured",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2373,6 +2436,131 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "TelegramConfigRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TelegramDestinationRetain"
+              },
+              {
+                "$ref": "#/components/schemas/TelegramDestinationUnset"
+              },
+              {
+                "$ref": "#/components/schemas/TelegramDestinationReplace"
+              }
+            ],
+            "title": "Destination"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "notification_types": {
+            "items": {
+              "enum": [
+                "plan_ready",
+                "archive_completed",
+                "attention_required"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Notification Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "notification_types",
+          "destination"
+        ],
+        "title": "TelegramConfigRequest",
+        "type": "object"
+      },
+      "TelegramDestinationReplace": {
+        "additionalProperties": false,
+        "properties": {
+          "bot_token": {
+            "title": "Bot Token",
+            "type": "string"
+          },
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "mode": {
+            "const": "replace",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "bot_token",
+          "chat_id"
+        ],
+        "title": "TelegramDestinationReplace",
+        "type": "object"
+      },
+      "TelegramDestinationRetain": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "retain",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "TelegramDestinationRetain",
+        "type": "object"
+      },
+      "TelegramDestinationUnset": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "unset",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "TelegramDestinationUnset",
+        "type": "object"
+      },
+      "TelegramTestRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "TelegramTestRequest",
+        "type": "object"
+      },
+      "TelegramTestResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "notification_id": {
+            "title": "Notification Id",
+            "type": "string"
+          },
+          "state": {
+            "const": "queued",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "notification_id",
+          "state"
+        ],
+        "title": "TelegramTestResponse",
+        "type": "object"
+      },
       "UnchangedPreviewItem": {
         "additionalProperties": false,
         "properties": {
@@ -2790,6 +2978,119 @@
           }
         ],
         "summary": "Provider Probe"
+      }
+    },
+    "/api/v1/admin/config/telegram-test": {
+      "post": {
+        "operationId": "telegram_test_api_v1_admin_config_telegram_test_post",
+        "parameters": [
+          {
+            "description": "Stable key for one logical mutation",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable key for one logical mutation",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Telegram Test"
       }
     },
     "/api/v1/admin/directories": {

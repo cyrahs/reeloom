@@ -11,7 +11,6 @@ from reeloom.kernel.archive_directory import (
 )
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.initial_plan import InitialPlan
-from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import (
     MovieIdentity,
@@ -19,7 +18,7 @@ from reeloom.kernel.naming import (
     SubtitleVariant,
 )
 from reeloom.kernel.schema import check_fields, require_object
-from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.kernel.tmdb import TmdbWorkType, validate_tmdb_poster_path
 from reeloom.runtime.event_codec import (
     _budget,
     _budget_payload,
@@ -48,7 +47,8 @@ from reeloom.runtime.state import (
 LEGACY_STATE_PROJECTION_SCHEMA = "runtime-state-v1"
 V2_STATE_PROJECTION_SCHEMA = "runtime-state-v2"
 V3_STATE_PROJECTION_SCHEMA = "runtime-state-v3"
-STATE_PROJECTION_SCHEMA = "runtime-state-v4"
+V4_STATE_PROJECTION_SCHEMA = "runtime-state-v4"
+STATE_PROJECTION_SCHEMA = "runtime-state-v5"
 _LEGACY_FIELDS = frozenset(
     {
         "applied_count",
@@ -98,11 +98,12 @@ _V3_FIELDS = _V2_FIELDS | {
     "archive_searches",
 }
 _V3_CURRENT_FIELDS = _V3_FIELDS | {"retryable_directory_failure"}
-_FIELDS = _V3_CURRENT_FIELDS | {
+_V4_FIELDS = _V3_CURRENT_FIELDS | {
     "mapping_conflicts",
     "mapping_review",
     "mapping_review_call_id",
 }
+_FIELDS = _V4_FIELDS | {"selected_poster_path"}
 
 
 def is_supported_projection_schema(value: object) -> bool:
@@ -110,6 +111,7 @@ def is_supported_projection_schema(value: object) -> bool:
         LEGACY_STATE_PROJECTION_SCHEMA,
         V2_STATE_PROJECTION_SCHEMA,
         V3_STATE_PROJECTION_SCHEMA,
+        V4_STATE_PROJECTION_SCHEMA,
         STATE_PROJECTION_SCHEMA,
     }
 
@@ -215,6 +217,7 @@ def encode_state(state: RunState) -> dict[str, object]:
             if state.selected_work_type is None
             else state.selected_work_type.value
         ),
+        "selected_poster_path": state.selected_poster_path,
         "status": state.status.value,
         "stop_reason": (
             None if state.stop_reason is None else state.stop_reason.value
@@ -594,6 +597,9 @@ def decode_state(
             if payload["selected_work_type"] is None
             else TmdbWorkType(payload["selected_work_type"])
         ),
+        selected_poster_path=validate_tmdb_poster_path(
+            payload["selected_poster_path"]
+        ),
         episode_catalog_counts=_int_pairs(
             payload["episode_catalog_counts"]
         ),
@@ -680,12 +686,17 @@ def _normalized_payload(
                 _V3_FIELDS,
                 _V3_CURRENT_FIELDS,
             ),
+            V4_STATE_PROJECTION_SCHEMA: (_V4_FIELDS,),
             STATE_PROJECTION_SCHEMA: (_FIELDS,),
         }.get(schema_version)
         if expected is None or keys not in expected:
             raise ValueError("projection schema does not match payload")
     if keys == _FIELDS:
         return dict(check_fields(raw, _FIELDS, field="run_state"))
+    if keys == _V4_FIELDS:
+        payload = dict(check_fields(raw, _V4_FIELDS, field="run_state"))
+        payload["selected_poster_path"] = None
+        return payload
     if keys == _V3_CURRENT_FIELDS:
         payload = dict(
             check_fields(raw, _V3_CURRENT_FIELDS, field="run_state")
@@ -693,6 +704,7 @@ def _normalized_payload(
         payload["mapping_review"] = None
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
+        payload["selected_poster_path"] = None
         return payload
     if keys == _V3_FIELDS:
         payload = dict(check_fields(raw, _V3_FIELDS, field="run_state"))
@@ -700,6 +712,7 @@ def _normalized_payload(
         payload["mapping_review"] = None
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
+        payload["selected_poster_path"] = None
         return payload
     if keys == _V2_FIELDS:
         payload = dict(check_fields(raw, _V2_FIELDS, field="run_state"))
@@ -710,6 +723,7 @@ def _normalized_payload(
         payload["mapping_review"] = None
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
+        payload["selected_poster_path"] = None
         return payload
     if keys == _LEGACY_FIELDS:
         payload = dict(
@@ -724,5 +738,6 @@ def _normalized_payload(
         payload["mapping_review"] = None
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
+        payload["selected_poster_path"] = None
         return payload
     return dict(check_fields(raw, _FIELDS, field="run_state"))

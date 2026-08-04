@@ -4,7 +4,7 @@
 
 日期：2026-08-01
 
-当前进度：M0-M11 已完成；M12.0 通知合同与固定渲染已完成。
+当前进度：M0-M12 已完成。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -600,17 +600,20 @@ symlink 只作为不透明残留，任意 `.env*` 会阻断整个文件夹。Fol
 
 ### M12：Telegram 出站通知与 PostgreSQL durable outbox
 
-当前状态：M12.0 已完成；M12.1-M12.3 计划中。已建立 closed notification
-payload、MarkdownV2 转义、受控 TMDB poster ref、900-byte caption 上限和三种
-固定样式；当前实现不访问数据库或网络，也不改变任何领域状态。
+当前状态：M12.0-M12.3 已完成。已建立 closed
+notification payload、MarkdownV2 转义、受控 TMDB poster ref、900-byte caption
+上限和三种固定样式，以及 PostgreSQL schema 26 durable outbox、严格 codec、
+dedupe、短 lease、fenced settlement、retry/dead、receipt 与重启回收；固定
+Telegram adapter、write-only 配置、Admin 测试、health 指标和单 worker 生命周期
+也已接通。
 
-后续使用 PostgreSQL transactional outbox、稳定 dedupe key、短 lease、
+实现使用 PostgreSQL transactional outbox、稳定 dedupe key、短 lease、
 `FOR UPDATE SKIP LOCKED` claim、有界 retry/dead 和单 worker 恢复网络波动或进程
 重启。通知只有 `plan_ready`、`archive_completed`、`attention_required` 与内部
 `test`；Telegram 只读旁路不提供批准或命令。
 
-真实 Telegram adapter 会与当前“TMDB 是唯一允许的业务网络适配器”不变量冲突，
-因此 M12.2 必须先经过独立安全评审和显式授权，不能由本计划自行开放。
+固定用途 Telegram 出站已于 2026-08-03 获得显式授权；它只允许固定 HTTPS host，
+不允许 redirect、proxy URL、入站 webhook、命令或网络化测试。
 
 详细分步、边界和验收见 [M12 计划](m12-plan.md)、
 [M12 Requirement Matrix](m12-requirements.md)、

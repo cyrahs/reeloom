@@ -344,6 +344,7 @@ class TmdbHttpAdapter:
                 adult=self._required_bool(payload, "adult"),
                 genre_ids=self._parse_detail_genre_ids(payload),
                 work_type=work_type,
+                poster_path=self._poster_path(payload),
             )
         except (DomainError, KeyError, TypeError, ValueError):
             raise TmdbProviderError(
@@ -415,6 +416,7 @@ class TmdbHttpAdapter:
                     )
                 ),
                 work_type=work_type,
+                poster_path=self._poster_path(payload),
             )
         except (DomainError, KeyError, TypeError, ValueError):
             raise TmdbProviderError(
@@ -639,6 +641,15 @@ class TmdbHttpAdapter:
         if not isinstance(result, str):
             raise TypeError("expected string")
         return result
+
+    @classmethod
+    def _poster_path(cls, value: object) -> str | None:
+        item = cls._object(value).get("poster_path")
+        if item is None:
+            return None
+        if not isinstance(item, str):
+            raise TypeError("expected poster path")
+        return item
 
     @staticmethod
     def _year(value: str) -> int | None:

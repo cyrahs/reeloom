@@ -1,6 +1,6 @@
 # M12：Telegram 出站通知计划
 
-状态：M12.0 已完成；M12.1-M12.3 计划中
+状态：M12.0-M12.3 已完成
 
 日期：2026-08-01
 
@@ -129,9 +129,9 @@ API 不提供调用方幂等键，因此语义是 at-least-once；稳定 `dedupe
 - 不记录 token、完整请求 URL、响应正文、caption 或 title；
 - 测试使用 scripted fake transport，pytest 永不访问网络。
 
-M12.2 会新增 Telegram 业务网络适配器，与当前“TMDB 是唯一允许的业务网络
-适配器”安全不变量冲突。在该不变量通过独立评审并显式修改前，不实现或启用真实
-Telegram HTTP。
+M12.2 新增的 Telegram 固定用途业务网络适配器已于 2026-08-03 获得显式授权；
+安全不变量已收窄更新为只允许固定 Telegram HTTPS origin，不开放任意 URL、
+redirect、proxy、入站 webhook 或命令。
 
 ## 7. 分步交付
 
@@ -144,24 +144,39 @@ Telegram HTTP。
 - 900-byte caption 上限和失败路径测试；
 - 计划、威胁模型、requirements 与 ADR。
 
-### M12.1：PostgreSQL durable outbox
+### M12.1：PostgreSQL durable outbox（已完成）
 
 - migration、严格 codec、repository 和状态机；
 - dedupe、claim、lease 回收、retry/dead；
 - fake sender；并发与重启测试；
 - 不包含真实 Telegram 网络。
 
-### M12.2：固定 Telegram transport
+完成证据：schema 26、严格 versioned codec、唯一 dedupe、`SKIP LOCKED`
+短 lease、fenced settlement、过期 lease 回收、`retry_after`、有界指数退避、
+dead/receipt 状态和 network-free sender protocol；纯单元测试与隔离 PostgreSQL
+并发/重启测试均通过。repository 同时提供 caller-owned transaction 入队接口，
+rollback 测试证明 durable fact 事务失败时不会残留孤立通知。
+
+### M12.2：固定 Telegram transport（已完成）
 
 - 仅在安全不变量明确授权后实施；
 - fixed-host adapter、secret/config、fake HTTP 合同测试；
 - `sendPhoto` / `sendMessage` 降级和 receipt 分类。
 
-### M12.3：领域事件集成与运维
+完成证据：adapter 固定 origin、禁用 redirect 与环境 proxy，限制并发、超时和
+响应大小；token/chat ID write-only；fake transport 覆盖 photo/text、429、5xx、
+timeout、错误响应与脱敏。
+
+### M12.3：领域事件集成与运维（已完成）
 
 - 绑定 plan、execution 和 folder settlement 的确定触发点；
 - 后台 worker 生命周期、health、metrics、Admin test action；
 - 容器配置和离线生产旅程测试。
+
+完成证据：计划待批准、媒体结算和文件夹结算在各自事实事务中入队；有文件夹收尾
+时延迟完成通知。TMDB poster ref 随选定 identity 持久化；后台单 worker、启动
+lease 回收、配置轮换、Admin 测试入队以及 pending/dead health 指标均已接通。
+完整非 PostgreSQL 离线测试、隔离 PostgreSQL 套件和 Web 测试通过。
 
 ## 8. 非目标
 

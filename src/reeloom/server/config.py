@@ -12,9 +12,11 @@ from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.errors import RuntimeDomainError
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.notifications import NotificationType
 
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_TELEGRAM_CHAT_ID = re.compile(r"^-?[0-9]{1,20}$")
 _REASONING = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -24,6 +26,11 @@ MAX_TOOL_CALLS = 4_096
 MAX_FAILURES = 100
 MAX_TOTAL_TOKENS = 10_000_000
 DEFAULT_AGENT_BUDGET = RunBudget()
+TELEGRAM_EVENT_TYPES = (
+    NotificationType.PLAN_READY,
+    NotificationType.ARCHIVE_COMPLETED,
+    NotificationType.ATTENTION_REQUIRED,
+)
 
 
 class ServerWorkType(StrEnum):
@@ -121,11 +128,53 @@ class ProviderConfigInput:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramConfig:
+    enabled: bool = False
+    notification_types: tuple[NotificationType, ...] = TELEGRAM_EVENT_TYPES
+    chat_id: str = ""
+    secret_ref: str = ""
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.enabled) is not bool
+            or not isinstance(self.notification_types, tuple)
+            or not self.notification_types
+            or len(set(self.notification_types)) != len(self.notification_types)
+            or not all(
+                item in TELEGRAM_EVENT_TYPES
+                for item in self.notification_types
+            )
+            or (bool(self.chat_id) != bool(self.secret_ref))
+            or (
+                self.chat_id
+                and _TELEGRAM_CHAT_ID.fullmatch(self.chat_id) is None
+            )
+            or (self.secret_ref and not _opaque(self.secret_ref))
+            or self.enabled
+            and not self.secret_ref
+        ):
+            raise ServerError(ServerErrorCode.INVALID_CONFIG)
+        object.__setattr__(
+            self,
+            "notification_types",
+            tuple(
+                item
+                for item in TELEGRAM_EVENT_TYPES
+                if item in self.notification_types
+            ),
+        )
+
+
+DEFAULT_TELEGRAM_CONFIG = TelegramConfig()
+
+
+@dataclass(frozen=True, slots=True)
 class ConfigDraft:
     watches: tuple[WatchConfig, ...]
     provider: ProviderConfig
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
+    telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
 
     def __post_init__(self) -> None:
         if (
@@ -135,6 +184,7 @@ class ConfigDraft:
             or not isinstance(self.provider, ProviderConfig)
             or not isinstance(self.apply_policy, ApplyPolicy)
             or not isinstance(self.agent_budget, RunBudget)
+            or not isinstance(self.telegram, TelegramConfig)
             or self.agent_budget.max_model_turns > MAX_MODEL_TURNS
             or self.agent_budget.max_tool_calls > MAX_TOOL_CALLS
             or self.agent_budget.max_failures > MAX_FAILURES
@@ -159,6 +209,7 @@ class ConfigDraftInput:
     provider: ProviderConfigInput
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
+    telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +221,7 @@ class ConfigRevision:
     provider: ProviderConfig
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
+    telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
 
     def __post_init__(self) -> None:
         if (
@@ -185,6 +237,7 @@ class ConfigRevision:
             provider=self.provider,
             apply_policy=self.apply_policy,
             agent_budget=self.agent_budget,
+            telegram=self.telegram,
         )
 
     @classmethod
@@ -204,6 +257,7 @@ class ConfigRevision:
             provider=draft.provider,
             apply_policy=draft.apply_policy,
             agent_budget=draft.agent_budget,
+            telegram=draft.telegram,
         )
 
     def to_json(self) -> str:
@@ -220,8 +274,17 @@ class ConfigRevision:
                 },
                 "revision": self.revision,
                 "revision_id": self.revision_id,
-                "schema_version": 3,
+                "schema_version": 4,
                 "agent_budget": _budget_payload(self.agent_budget),
+                "telegram": {
+                    "chat_id": self.telegram.chat_id,
+                    "enabled": self.telegram.enabled,
+                    "notification_types": [
+                        item.value
+                        for item in self.telegram.notification_types
+                    ],
+                    "secret_ref": self.telegram.secret_ref,
+                },
                 "watches": [
                     {
                         "library_root": str(item.library_root),
@@ -263,6 +326,15 @@ class ConfigRevision:
             },
             "apply_policy": self.apply_policy.value,
             "agent_budget": _budget_payload(self.agent_budget),
+            "telegram": {
+                "enabled": self.telegram.enabled,
+                "notification_types": [
+                    item.value for item in self.telegram.notification_types
+                ],
+                "destination_configured": bool(
+                    self.telegram.chat_id and self.telegram.secret_ref
+                ),
+            },
         }
 
     @classmethod
@@ -289,6 +361,7 @@ class ConfigRevision:
                 "watches",
             }
             budget = DEFAULT_AGENT_BUDGET
+            telegram = DEFAULT_TELEGRAM_CONFIG
             if set(raw) == common | {"archive_routes"}:
                 watches = _legacy_watches(
                     raw["watches"],
@@ -308,6 +381,16 @@ class ConfigRevision:
             ):
                 watches = _v2_watches(raw["watches"])
                 budget = agent_budget_from_payload(raw["agent_budget"])
+            elif (
+                set(raw)
+                == common
+                | {"schema_version", "agent_budget", "telegram"}
+                and type(raw["schema_version"]) is int
+                and raw["schema_version"] == 4
+            ):
+                watches = _v2_watches(raw["watches"])
+                budget = agent_budget_from_payload(raw["agent_budget"])
+                telegram = telegram_config_from_payload(raw["telegram"])
             else:
                 raise ValueError
             return cls(
@@ -324,6 +407,7 @@ class ConfigRevision:
                 ),
                 apply_policy=ApplyPolicy(raw["apply_policy"]),
                 agent_budget=budget,
+                telegram=telegram,
             )
         except (KeyError, TypeError, ValueError, ServerError):
             raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
@@ -367,6 +451,26 @@ def agent_budget_from_payload(value: object) -> RunBudget:
     ):
         raise ValueError
     return budget
+
+
+def telegram_config_from_payload(value: object) -> TelegramConfig:
+    fields = {"chat_id", "enabled", "notification_types", "secret_ref"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError
+    notification_types = value["notification_types"]
+    if not isinstance(notification_types, list):
+        raise ValueError
+    try:
+        return TelegramConfig(
+            enabled=value["enabled"],
+            notification_types=tuple(
+                NotificationType(item) for item in notification_types
+            ),
+            chat_id=value["chat_id"],
+            secret_ref=value["secret_ref"],
+        )
+    except (TypeError, ValueError, ServerError):
+        raise ValueError from None
 
 
 def _v2_watches(value: object) -> tuple[WatchConfig, ...]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from reeloom.adapters.telegram import validate_bot_token, validate_chat_id
 from reeloom.server.config import (
     ApplyPolicy,
     ConfigDraft,
@@ -10,16 +11,19 @@ from reeloom.server.config import (
     DEFAULT_AGENT_BUDGET,
     ProviderConfig,
     ServerWorkType,
+    TelegramConfig,
     WatchConfig,
     agent_budget_from_payload,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.notifications import NotificationType
 
 
 @dataclass(frozen=True, slots=True)
 class ConfigEdit:
     draft: ConfigDraft
     replacement_api_key: bytes | None
+    replacement_telegram_token: bytes | None = None
 
 
 def _root(
@@ -55,7 +59,9 @@ def parse_config_edit(
             "provider",
             "watches",
         }
-        if set(value) not in (fields, fields | {"agent_budget"}):
+        optional = {"agent_budget", "telegram"}
+        keys = set(value)
+        if not fields <= keys or not keys - fields <= optional:
             raise ValueError
         agent_budget = (
             agent_budget_from_payload(value["agent_budget"])
@@ -172,6 +178,10 @@ def parse_config_edit(
                 secret_ref = "replacement-pending"
             else:
                 raise ValueError
+        telegram, replacement_telegram_token = _telegram_edit(
+            value.get("telegram"),
+            current=None if current is None else current.telegram,
+        )
         draft = ConfigDraft(
             watches=tuple(watches),
             provider=ProviderConfig(
@@ -183,6 +193,7 @@ def parse_config_edit(
             ),
             apply_policy=ApplyPolicy(value["apply_policy"]),
             agent_budget=agent_budget,
+            telegram=telegram,
         )
         if (
             replacement_api_key is not None
@@ -192,8 +203,62 @@ def parse_config_edit(
         return ConfigEdit(
             draft=draft,
             replacement_api_key=replacement_api_key,
+            replacement_telegram_token=replacement_telegram_token,
         )
     except ServerError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
         raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
+
+
+def _telegram_edit(
+    value: object,
+    *,
+    current: TelegramConfig | None,
+) -> tuple[TelegramConfig, bytes | None]:
+    if value is None:
+        return current or TelegramConfig(), None
+    if not isinstance(value, dict) or set(value) != {
+        "destination",
+        "enabled",
+        "notification_types",
+    }:
+        raise ValueError
+    raw_types = value["notification_types"]
+    destination = value["destination"]
+    if not isinstance(raw_types, list) or not isinstance(destination, dict):
+        raise ValueError
+    notification_types = tuple(NotificationType(item) for item in raw_types)
+    if set(destination) == {"mode"} and destination["mode"] == "retain":
+        if current is None or not current.secret_ref:
+            raise ValueError
+        chat_id = current.chat_id
+        secret_ref = current.secret_ref
+        replacement = None
+    elif (
+        set(destination) == {"mode"}
+        and destination["mode"] == "unset"
+        and value["enabled"] is False
+    ):
+        chat_id = ""
+        secret_ref = ""
+        replacement = None
+    elif (
+        set(destination) == {"mode", "bot_token", "chat_id"}
+        and destination["mode"] == "replace"
+    ):
+        token = validate_bot_token(destination["bot_token"])
+        chat_id = validate_chat_id(destination["chat_id"])
+        secret_ref = "replacement-pending"
+        replacement = token.encode("utf-8")
+    else:
+        raise ValueError
+    return (
+        TelegramConfig(
+            enabled=value["enabled"],
+            notification_types=notification_types,
+            chat_id=chat_id,
+            secret_ref=secret_ref,
+        ),
+        replacement,
+    )

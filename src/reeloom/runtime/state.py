@@ -119,6 +119,7 @@ class RunState:
     selected_series: SeriesIdentity | None = None
     selected_movie: MovieIdentity | None = None
     selected_work_type: TmdbWorkType | None = None
+    selected_poster_path: str | None = None
     episode_catalog_counts: tuple[tuple[int, int], ...] = ()
     inventory_episodes: tuple[tuple[int, int], ...] | None = None
     archive_directory_capabilities: tuple[

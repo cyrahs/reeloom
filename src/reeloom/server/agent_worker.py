@@ -40,6 +40,9 @@ from reeloom.server.organizer_definition import organizer_definition
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.provider import ModelLease
 from reeloom.server.runtime_store import PostgresEventStore
+from reeloom.server.notification_projector import (
+    PostgresNotificationProjector,
+)
 from reeloom.server.scheduler import AgentJobContext
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
@@ -87,6 +90,7 @@ class InitialAgentWorker:
     model_factory: ModelLeaseFactory
     tmdb_factory: TmdbLeaseFactory
     pool: ConnectionPool
+    notifications: PostgresNotificationProjector | None = None
 
     async def run(self, *, run_id: str) -> str:
         job = self.scheduler.get_job_context(run_id=run_id)
@@ -104,6 +108,7 @@ class InitialAgentWorker:
             self.pool,
             run_id=run_id,
             plans=self.plans,
+            notifications=self.notifications,
         )
         state = event_store.state
         if (
