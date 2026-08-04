@@ -911,6 +911,35 @@ button:disabled {
   font-weight: 700;
 }
 
+/* Keep Telegram checkboxes from inheriting the full-width text-input layout. */
+.toggle-row {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 17px;
+  accent-color: var(--green);
+}
+
+.toggle-row span {
+  min-width: 0;
+}
+
+.toggle-row:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
 .path-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

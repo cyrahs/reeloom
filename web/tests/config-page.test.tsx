@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { TOKEN_STORAGE_KEY } from "../src/api";
 import { AuthGate } from "../src/auth";
 import { ConfigPage } from "../src/pages/ConfigPage";
+import "../src/styles.css";
 
 test("uses sixteen failures for a new configuration", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
@@ -205,11 +206,14 @@ test("shows provider probe result inside the provider section", async () => {
     name: "Telegram 通知",
   })).closest("section");
   expect(telegram).not.toBeNull();
-  expect(
-    within(telegram!).getByRole("checkbox", {
-      name: "启用 Telegram 推送",
-    }),
-  ).toBeChecked();
+  const telegramToggle = within(telegram!).getByRole("checkbox", {
+    name: "启用 Telegram 推送",
+  });
+  expect(telegramToggle).toBeChecked();
+  expect(getComputedStyle(telegramToggle).width).toBe("17px");
+  expect(getComputedStyle(telegramToggle.closest("label")!).alignItems).toBe(
+    "center",
+  );
   expect(
     within(telegram!).getByText(/目标与 Bot Token 已配置/),
   ).toBeVisible();
