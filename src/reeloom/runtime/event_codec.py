@@ -1497,7 +1497,11 @@ def _event_from_payload(
             fresh_mapping_submitted=_bool(
                 p["fresh_mapping_submitted"]
             ),
-            final_plan_hash=_str(p["final_plan_hash"]),
+            final_plan_hash=(
+                None
+                if p["final_plan_hash"] is None
+                else _str(p["final_plan_hash"])
+            ),
             plan_hash=(
                 None
                 if p["plan_hash"] is None

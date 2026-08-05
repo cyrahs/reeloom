@@ -15,6 +15,7 @@ const labels: Record<StatusKind, Record<string, string>> = {
   run: {
     registered: "已登记",
     running: "进行中",
+    needs_attention: "需要处理",
     awaiting_approval: "等待审批",
     applying: "正在执行",
     completed: "已完成",
@@ -71,6 +72,8 @@ const labels: Record<StatusKind, Record<string, string>> = {
     run_stopped: "运行停止",
     candidate_snapshot_created: "扫描完成",
     subtitle_variant_detected: "识别字幕版本",
+    embedded_subtitles_inspected: "检查内嵌字幕",
+    subtitle_selection_submitted: "提交字幕判断",
     tmdb_candidates_observed: "查询 TMDB",
     tmdb_season_catalog_observed: "读取季度目录",
     series_selected: "选定剧集",
@@ -117,6 +120,7 @@ const tones: Record<StatusKind, Record<string, StatusTone>> = {
   run: {
     completed: "success",
     awaiting_approval: "warning",
+    needs_attention: "warning",
     rolled_back: "warning",
     failed: "danger",
   },

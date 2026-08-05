@@ -39,6 +39,7 @@ import { compactRunId, compactValue, statusLabel } from "../labels";
 import { HashLink } from "../router";
 import {
   applyResultSchema,
+  attentionControlResultSchema,
   folderDispositionResultSchema,
   interactionsSchema,
   interactionResultSchema,
@@ -67,7 +68,7 @@ type PreviewExplanationValue = Extract<
 type ActionAttempt = {
   kind: ActionKind;
   message: string;
-  planHash: string;
+  head: string;
   key: string;
 };
 type ImmediateInteraction = {
@@ -95,12 +96,18 @@ type SubtitleAttempt = {
   planHash: string;
   key: string;
 };
+type AttentionAttempt = {
+  kind: "retry" | "fail";
+  eventSequence: number;
+  key: string;
+};
 type UncertainAttempt =
   | { type: "action"; value: ActionAttempt }
   | { type: "apply"; value: ApplyAttempt }
   | { type: "recover"; value: RecoveryAttempt }
   | { type: "subtitle"; value: SubtitleAttempt }
-  | { type: "folder"; value: FolderAttempt };
+  | { type: "folder"; value: FolderAttempt }
+  | { type: "attention"; value: AttentionAttempt };
 
 export function RunPage({ runId }: { runId: string }) {
   const { api, logout } = useAuth();
@@ -268,11 +275,11 @@ export function RunPage({ runId }: { runId: string }) {
     mutationFn: async ({
       kind,
       message,
-      planHash,
+      head,
       key,
     }: ActionAttempt) => {
       const headers = {
-        "If-Match": planHash,
+        "If-Match": head,
         "Idempotency-Key": key,
       };
       if (kind === "reapply") {
@@ -313,6 +320,42 @@ export function RunPage({ runId }: { runId: string }) {
         await reconcileUncertain({ type: "action", value: attempt });
       } else {
         setUncertainAttempt(null);
+      }
+    },
+  });
+
+  const attentionControl = useMutation({
+    mutationFn: async ({ kind, eventSequence, key }: AttentionAttempt) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}/${kind}`,
+        attentionControlResultSchema,
+        {
+          method: "POST",
+          headers: {
+            "If-Match": `event:${eventSequence}`,
+            "Idempotency-Key": key,
+          },
+          body: {},
+        },
+      ),
+    onSuccess: async (result) => {
+      setUncertainAttempt(null);
+      setActionNotice(
+        result.status === "retry_scheduled"
+          ? "已安排重新扫描；系统会为仍然匹配的源文件夹创建新运行。"
+          : "已生成不可变的 fail 处置计划；请核对后再次确认移动。",
+      );
+      await invalidateRun();
+    },
+    onError: async (error, attempt) => {
+      if (error instanceof ApiError && error.code === "network_uncertain") {
+        setActionNotice(
+          "操作结果不确定；已重新读取服务端状态，只允许复用原请求键。",
+        );
+        await reconcileUncertain({ type: "attention", value: attempt });
+      } else {
+        setUncertainAttempt(null);
+        await invalidateRun();
       }
     },
   });
@@ -498,6 +541,8 @@ export function RunPage({ runId }: { runId: string }) {
       recover.mutate(uncertainAttempt.value);
     } else if (uncertainAttempt.type === "subtitle") {
       subtitleAcquisition.mutate(uncertainAttempt.value);
+    } else if (uncertainAttempt.type === "attention") {
+      attentionControl.mutate(uncertainAttempt.value);
     } else {
       folderDisposition.mutate(uncertainAttempt.value);
     }
@@ -765,7 +810,8 @@ export function RunPage({ runId }: { runId: string }) {
                     apply.isPending ||
                     recover.isPending ||
                     subtitleAcquisition.isPending ||
-                    folderDisposition.isPending
+                    folderDisposition.isPending ||
+                    attentionControl.isPending
                   }
                   onClick={retryUncertain}
                 >
@@ -795,6 +841,38 @@ export function RunPage({ runId }: { runId: string }) {
               </div>
             ) : (
               <>
+                {available.has("retry_run") ? (
+                  <button
+                    className="secondary wide"
+                    disabled={attentionControl.isPending || blocked}
+                    onClick={() =>
+                      attentionControl.mutate({
+                        kind: "retry",
+                        eventSequence: run.data.event_sequence,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    {attentionControl.isPending
+                      ? "正在安排重试…"
+                      : "重新尝试"}
+                  </button>
+                ) : null}
+                {available.has("fail_run") ? (
+                  <button
+                    className="danger-button wide"
+                    disabled={attentionControl.isPending || blocked}
+                    onClick={() =>
+                      attentionControl.mutate({
+                        kind: "fail",
+                        eventSequence: run.data.event_sequence,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    标记失败
+                  </button>
+                ) : null}
                 {(["question", "revision", "reapply"] as const).map((kind) =>
                   available.has(kind) ? (
                     <InteractionForm
@@ -802,11 +880,14 @@ export function RunPage({ runId }: { runId: string }) {
                       kind={kind}
                       pending={action.isPending || blocked}
                       onSubmit={(message) => {
-                        if (!run.data.plan_hash || blocked) return;
+                        const head = run.data.plan_hash
+                          ? run.data.plan_hash
+                          : `event:${run.data.event_sequence}`;
+                        if (blocked) return;
                         action.mutate({
                           kind,
                           message,
-                          planHash: run.data.plan_hash,
+                          head,
                           key: idempotencyKey(),
                         });
                       }}

@@ -42,7 +42,8 @@ class InteractionReservation:
     kind: InteractionKind
     request_hash: str
     session_revision: int
-    plan_hash: str
+    plan_hash: str | None
+    event_sequence: int | None = None
     budget: RunBudget = RunBudget()
     terminal_result: InteractionResult | None = None
 
@@ -143,7 +144,8 @@ class InteractionRepository(Protocol):
         run_id: str,
         kind: InteractionKind,
         idempotency_key: str,
-        expected_plan_hash: str,
+        expected_plan_hash: str | None,
+        expected_event_sequence: int | None,
         message: str,
     ) -> InteractionReservation: ...
 
@@ -160,13 +162,19 @@ class InteractionRepository(Protocol):
 def _request_hash(
     *,
     kind: InteractionKind,
-    expected_plan_hash: str,
+    expected_plan_hash: str | None,
+    expected_event_sequence: int | None,
     message: str,
 ) -> str:
+    expected: dict[str, object]
+    if expected_event_sequence is None:
+        expected = {"expected_plan_hash": expected_plan_hash}
+    else:
+        expected = {"expected_event_sequence": expected_event_sequence}
     return "sha256:" + hashlib.sha256(
         json.dumps(
             {
-                "expected_plan_hash": expected_plan_hash,
+                **expected,
                 "kind": kind.value,
                 "message": message,
             },
@@ -182,12 +190,14 @@ class InMemoryInteractionRepository:
         self,
         *,
         run_id: str,
-        plan_hash: str,
+        plan_hash: str | None,
         session_revision: int,
+        event_sequence: int | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._run_id = run_id
         self.plan_hash = plan_hash
+        self.event_sequence = event_sequence
         self.session_revision = session_revision
         self.plan_versions = 1
         self.domain_event_count = 0
@@ -203,7 +213,8 @@ class InMemoryInteractionRepository:
         run_id: str,
         kind: InteractionKind,
         idempotency_key: str,
-        expected_plan_hash: str,
+        expected_plan_hash: str | None,
+        expected_event_sequence: int | None = None,
         message: str,
     ) -> InteractionReservation:
         if (
@@ -215,11 +226,24 @@ class InMemoryInteractionRepository:
             or not isinstance(message, str)
             or not message
             or len(message.encode("utf-8")) > _MAX_MESSAGE_BYTES
+            or (
+                (expected_plan_hash is None)
+                == (expected_event_sequence is None)
+            )
+            or (
+                expected_event_sequence is not None
+                and (
+                    kind is not InteractionKind.QUESTION
+                    or type(expected_event_sequence) is not int
+                    or expected_event_sequence < 1
+                )
+            )
         ):
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         digest = _request_hash(
             kind=kind,
             expected_plan_hash=expected_plan_hash,
+            expected_event_sequence=expected_event_sequence,
             message=message,
         )
         with self._lock:
@@ -237,11 +261,19 @@ class InMemoryInteractionRepository:
                     request_hash=reservation.request_hash,
                     session_revision=reservation.session_revision,
                     plan_hash=reservation.plan_hash,
+                    event_sequence=reservation.event_sequence,
                     terminal_result=result,
                 )
             if self._active is not None:
                 raise ServerError(ServerErrorCode.RUN_BUSY)
-            if expected_plan_hash != self.plan_hash:
+            if expected_plan_hash is not None and (
+                expected_plan_hash != self.plan_hash
+            ):
+                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            if expected_event_sequence is not None and (
+                self.plan_hash is not None
+                or expected_event_sequence != self.event_sequence
+            ):
                 raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
             reservation = InteractionReservation(
                 interaction_id=f"interaction-{uuid.uuid4().hex}",
@@ -250,6 +282,7 @@ class InMemoryInteractionRepository:
                 request_hash=digest,
                 session_revision=self.session_revision,
                 plan_hash=self.plan_hash,
+                event_sequence=expected_event_sequence,
             )
             self._records[idempotency_key] = (
                 digest,
@@ -366,7 +399,8 @@ class InteractionService:
         run_id: str,
         kind: InteractionKind,
         idempotency_key: str,
-        expected_plan_hash: str,
+        expected_plan_hash: str | None,
+        expected_event_sequence: int | None = None,
         message: str,
     ) -> InteractionResult:
         reservation = self._repository.reserve(
@@ -374,6 +408,7 @@ class InteractionService:
             kind=kind,
             idempotency_key=idempotency_key,
             expected_plan_hash=expected_plan_hash,
+            expected_event_sequence=expected_event_sequence,
             message=message,
         )
         if reservation.terminal_result is not None:

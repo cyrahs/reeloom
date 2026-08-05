@@ -107,19 +107,23 @@ def reduce_interaction_head(
     phase: Phase,
     plan_hash: str | None,
     event: InteractionCompleted,
-) -> tuple[Phase, str]:
-    if not _is_plan_hash(plan_hash) or not _is_plan_hash(
-        event.final_plan_hash
-    ):
-        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+) -> tuple[Phase, str | None]:
     if event.kind == "question":
         if (
             event.fresh_mapping_submitted
             or event.plan_hash is not None
             or event.final_plan_hash != plan_hash
+            or (
+                plan_hash is not None
+                and not _is_plan_hash(plan_hash)
+            )
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
         return phase, plan_hash
+    if not _is_plan_hash(plan_hash) or not _is_plan_hash(
+        event.final_plan_hash
+    ):
+        raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
     if not event.fresh_mapping_submitted:
         raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
     if event.kind == "revision":
@@ -270,6 +274,13 @@ def reduce_event(
             <= state.budget.max_tool_calls
             and state.failures + event.failures
             <= state.budget.max_failures
+            and (
+                state.plan_hash is not None
+                or (
+                    event.kind == "question"
+                    and state.stop_reason is StopReason.NEEDS_ATTENTION
+                )
+            )
         )
         if not valid_common:
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)

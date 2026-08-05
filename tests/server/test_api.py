@@ -16,6 +16,7 @@ from reeloom.server.api import (
 )
 from reeloom.server.auth import AuthSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.interactions import InteractionKind, InteractionResult
 from reeloom.server.queries import _safe_event
 from reeloom.server.config import SubtitleAcquisitionPolicy
 from reeloom.server.subtitle_acquisition_service import (
@@ -246,6 +247,9 @@ def _app(
     move_capability_probe: Callable[..., object] | None = None,
     telegram_test: Callable[[str], dict[str, object]] | None = None,
     subtitle_acquisitions: object | None = None,
+    interactions: object | None = None,
+    attention_retry: Callable[[str, int], dict[str, object]] | None = None,
+    attention_fail: Callable[[str, int], dict[str, object]] | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
@@ -255,6 +259,9 @@ def _app(
             move_capability_probe=move_capability_probe,  # type: ignore[arg-type]
             telegram_test=telegram_test,
             subtitle_acquisitions=subtitle_acquisitions,  # type: ignore[arg-type]
+            interactions=interactions,  # type: ignore[arg-type]
+            attention_retry=attention_retry,
+            attention_fail=attention_fail,
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -264,6 +271,24 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+class _Interactions:
+    def __init__(self) -> None:
+        self.head: tuple[str | None, int | None] | None = None
+
+    def run(self, **values: object) -> InteractionResult:
+        self.head = (
+            values["expected_plan_hash"],  # type: ignore[index]
+            values["expected_event_sequence"],  # type: ignore[index]
+        )
+        return InteractionResult(
+            interaction_id="interaction-1",
+            kind=InteractionKind.QUESTION,
+            assistant_reply="The evidence was ambiguous.",
+            plan_hash=None,
+            model_tokens=5,
+        )
 
 
 class _SubtitleAcquisitions:
@@ -844,6 +869,96 @@ def test_health_fails_closed_without_production_dependency() -> None:
     }
 
 
+def test_needs_attention_controls_require_exact_event_head() -> None:
+    calls: list[tuple[str, int, str]] = []
+
+    def retry(run_id: str, sequence: int) -> dict[str, object]:
+        calls.append((run_id, sequence, "retry"))
+        return {
+            "run_id": run_id,
+            "status": "retry_scheduled",
+            "retry_count": 1,
+        }
+
+    def fail(run_id: str, sequence: int) -> dict[str, object]:
+        calls.append((run_id, sequence, "fail"))
+        return {
+            "run_id": run_id,
+            "status": "failure_planned",
+            "plan_hash": "sha256:" + "f" * 64,
+        }
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(attention_retry=retry, attention_fail=fail)
+            ),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "attention-control-1",
+            },
+        ) as client:
+            retried = await client.post(
+                "/api/v1/runs/run-1/retry",
+                headers={"if-match": "event:37"},
+                json={},
+            )
+            failed = await client.post(
+                "/api/v1/runs/run-1/fail",
+                headers={
+                    "if-match": "event:37",
+                    "idempotency-key": "attention-control-2",
+                },
+                json={},
+            )
+            invalid = await client.post(
+                "/api/v1/runs/run-1/retry",
+                headers={
+                    "if-match": "sha256:" + "a" * 64,
+                    "idempotency-key": "attention-control-3",
+                },
+                json={},
+            )
+            return retried, failed, invalid
+
+    retried, failed, invalid = asyncio.run(scenario())
+
+    assert retried.status_code == 200
+    assert failed.status_code == 200
+    assert invalid.status_code == 400
+    assert calls == [
+        ("run-1", 37, "retry"),
+        ("run-1", 37, "fail"),
+    ]
+
+
+def test_needs_attention_question_uses_event_head_without_plan_hash() -> None:
+    interactions = _Interactions()
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(interactions=interactions)
+            ),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "attention-question-1",
+                "if-match": "event:37",
+            },
+        ) as client:
+            return await client.post(
+                "/api/v1/runs/run-1/interactions",
+                json={"kind": "question", "message": "Why?"},
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert interactions.head == (None, 37)
+
+
 @pytest.mark.parametrize(
     "token",
     (
@@ -1050,3 +1165,20 @@ def test_event_projection_drops_paths_prompts_and_observations() -> None:
     assert "journal_path" not in settlement
     assert interaction["kind"] == "revision"
     assert settlement["status"] == "completed"
+
+    attention = _safe_event(
+        "subtitle_selection_submitted",
+        {
+            "call_id": "private-call",
+            "decision": {
+                "reason_code": "subtitle_evidence_ambiguous",
+                "selections": [],
+                "status": "needs_attention",
+            },
+        },
+    )
+    assert attention == {
+        "reason_code": "subtitle_evidence_ambiguous",
+        "selection_count": 0,
+        "status": "needs_attention",
+    }

@@ -217,6 +217,85 @@ test("executes only the independently authorized subtitle action", async () => {
   })).toBeNull();
 });
 
+test("offers event-bound controls for a planless needs-attention run", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  const calls: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (path === "/api/v1/session") {
+      return jsonResponse({ api_version: "1.0.0", role: "admin" });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}`) {
+      return jsonResponse({
+        ...runResponse(),
+        status: "needs_attention",
+        phase: "map_episodes",
+        event_sequence: 37,
+        plan_hash: null,
+        available_actions: ["question", "retry_run", "fail_run"],
+      });
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (init?.method === "POST") {
+      expect(init.headers).toMatchObject({ "If-Match": "event:37" });
+      if (path.endsWith("/interactions")) {
+        calls.push("question");
+        return jsonResponse({
+          interaction_id: "interaction-attention",
+          kind: "question",
+          assistant_reply: "字幕证据不明确。",
+          plan_hash: null,
+          model_tokens: 5,
+        });
+      }
+      if (path.endsWith("/retry")) {
+        calls.push("retry");
+        return jsonResponse({
+          run_id: runId,
+          status: "retry_scheduled",
+          retry_count: 1,
+        });
+      }
+      if (path.endsWith("/fail")) {
+        calls.push("fail");
+        return jsonResponse({
+          run_id: runId,
+          status: "failure_planned",
+          plan_hash: `sha256:${"f".repeat(64)}`,
+        });
+      }
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+
+  renderRunPage();
+  expect(await screen.findByText("需要处理")).toBeVisible();
+  const user = userEvent.setup();
+
+  await user.click(screen.getByRole("button", { name: "向 Agent 提问" }));
+  await user.type(screen.getByLabelText("向 Agent 提问"), "为什么？");
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect(await screen.findByText("字幕证据不明确。")).toBeVisible();
+
+  await user.click(screen.getByRole("button", { name: "重新尝试" }));
+  expect(await screen.findByText(/已安排重新扫描/)).toBeVisible();
+
+  await user.click(screen.getByRole("button", { name: "标记失败" }));
+  expect(await screen.findByText(/已生成不可变的 fail 处置计划/)).toBeVisible();
+  expect(calls).toEqual(["question", "retry", "fail"]);
+});
+
 function renderRunPage() {
   render(
     <QueryClientProvider

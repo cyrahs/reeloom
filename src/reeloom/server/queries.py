@@ -100,6 +100,53 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
         }
     if event_type == "subtitle_variant_detected":
         return {"variant": payload.get("variant")}
+    if event_type == "embedded_subtitles_inspected":
+        inspection = payload.get("inspection")
+        tracks = (
+            inspection.get("tracks")
+            if isinstance(inspection, dict)
+            else None
+        )
+        return {
+            "chinese_status": (
+                inspection.get("chinese_status")
+                if isinstance(inspection, dict)
+                else None
+            ),
+            "probe_status": (
+                inspection.get("probe_status")
+                if isinstance(inspection, dict)
+                else None
+            ),
+            "season_number": (
+                inspection.get("season_number")
+                if isinstance(inspection, dict)
+                else None
+            ),
+            "track_count": len(tracks) if isinstance(tracks, list) else 0,
+        }
+    if event_type == "subtitle_selection_submitted":
+        decision = payload.get("decision")
+        selections = (
+            decision.get("selections")
+            if isinstance(decision, dict)
+            else None
+        )
+        return {
+            "reason_code": (
+                decision.get("reason_code")
+                if isinstance(decision, dict)
+                else None
+            ),
+            "selection_count": (
+                len(selections) if isinstance(selections, list) else 0
+            ),
+            "status": (
+                decision.get("status")
+                if isinstance(decision, dict)
+                else None
+            ),
+        }
     if event_type == "mapping_rejected":
         issue = payload.get("issue")
         return {
@@ -280,12 +327,18 @@ class PostgresQueries:
                            acquisition.approval_id,
                            acquisition.transaction_id,
                            acquisition.failure_code,
-                           successor.state
+                           successor.state,
+                           s.projection_payload->>'stop_reason',
+                           d.folder_generation_id IS NOT NULL,
+                           COALESCE(observation.retry_count, 3),
+                           COALESCE(observation.status = 'active', false),
+                           job.status
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
                     JOIN config_revisions AS c
                       ON c.revision = r.config_revision
+                    LEFT JOIN jobs AS job ON job.run_id = r.run_id
                     LEFT JOIN run_states AS s ON s.run_id = r.run_id
                     LEFT JOIN LATERAL (
                         SELECT c.approval_id
@@ -359,6 +412,8 @@ class PostgresQueries:
                     LEFT JOIN subtitle_successor_outbox AS successor
                       ON successor.lineage_key =
                          acquisition_settlement.lineage_key
+                    LEFT JOIN watch_folder_observations AS observation
+                      ON observation.discovery_id = d.discovery_id
                     WHERE r.run_id = %s
                       AND NOT EXISTS (
                           SELECT 1 FROM run_deletions AS deleted
@@ -373,7 +428,7 @@ class PostgresQueries:
             ) from None
         if row is None:
             return None
-        status = str(row[1])
+        stored_status = str(row[1])
         phase = None if row[3] is None else str(row[3])
         plan_hash = row[10]
         recovery_approval_id = row[11]
@@ -382,7 +437,31 @@ class PostgresQueries:
         interaction_budget_available = bool(row[36])
         folder_status = None if row[28] is None else str(row[28])
         folder_action = None if row[24] is None else str(row[24])
+        attention_state = (
+            stored_status in {"running", "failed"}
+            and row[4] == "stopped"
+            and plan_hash is None
+            and row[44] == "needs_attention"
+        )
+        needs_attention = attention_state and stored_status == "running"
+        status = "needs_attention" if needs_attention else stored_status
         actions: list[str] = []
+        if not busy and needs_attention:
+            if interaction_budget_available:
+                actions.append("question")
+            if bool(row[45]) and bool(row[47]) and row[48] == "completed":
+                if int(row[46]) < 3:
+                    actions.append("retry_run")
+                actions.append("fail_run")
+        elif (
+            not busy
+            and attention_state
+            and bool(row[45])
+            and bool(row[47])
+            and row[48] == "completed"
+            and row[23] is None
+        ):
+            actions.append("fail_run")
         if not busy and plan_hash is not None:
             if interaction_budget_available and status in {
                 "awaiting_approval",
@@ -535,7 +614,17 @@ class PostgresQueries:
                         FROM runs
                         WHERE run_id = %s
                     )
-                    SELECT r.run_id, r.status, r.work_type, r.created_at,
+                    SELECT r.run_id,
+                           CASE
+                               WHEN r.status = 'running'
+                                AND s.runtime_status = 'stopped'
+                                AND s.plan_hash IS NULL
+                                AND s.projection_payload->>'stop_reason'
+                                    = 'needs_attention'
+                               THEN 'needs_attention'
+                               ELSE r.status
+                           END,
+                           r.work_type, r.created_at,
                            s.phase, s.plan_hash, d.source_folder,
                            ({RUN_DELETION_READY_SQL}) AS deletion_ready
                     FROM runs AS r

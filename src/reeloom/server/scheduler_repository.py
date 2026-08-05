@@ -1749,3 +1749,183 @@ class PostgresSchedulerRepository:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
+
+    def retry_needs_attention(
+        self,
+        *,
+        run_id: str,
+        expected_event_sequence: int,
+        max_retries: int = 3,
+    ) -> int | None:
+        """Retire an exact stopped run and let the watcher create a fresh run."""
+
+        if (
+            type(expected_event_sequence) is not int
+            or expected_event_sequence < 1
+            or type(max_retries) is not int
+            or not 1 <= max_retries <= 3
+        ):
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    row = connection.execute(
+                        """
+                        SELECT d.discovery_id, d.watch_id, d.source_folder,
+                               observation.retry_count
+                        FROM runs AS run
+                        JOIN jobs AS job ON job.run_id = run.run_id
+                        JOIN discoveries AS d
+                          ON d.discovery_id = run.discovery_id
+                        JOIN run_states AS state
+                          ON state.run_id = run.run_id
+                        JOIN watch_folder_observations AS observation
+                          ON observation.discovery_id = d.discovery_id
+                        WHERE run.run_id = %s
+                          AND run.status = 'running'
+                          AND job.status = 'completed'
+                          AND d.folder_generation_id IS NOT NULL
+                          AND observation.status = 'active'
+                          AND state.runtime_status = 'stopped'
+                          AND state.plan_hash IS NULL
+                          AND state.event_sequence = %s
+                          AND state.projection_payload->>'stop_reason'
+                              = 'needs_attention'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM run_operations AS operation
+                              WHERE operation.run_id = run.run_id
+                          )
+                        FOR UPDATE OF run, job, observation
+                        """,
+                        (run_id, expected_event_sequence),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    retry_count = int(row[3])
+                    if retry_count >= max_retries:
+                        return None
+                    if not _invalidate_unclaimed(
+                        connection,
+                        discovery_id=str(row[0]),
+                    ):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    updated = connection.execute(
+                        """
+                        UPDATE watch_folder_observations
+                        SET discovery_id = NULL,
+                            status = 'settling',
+                            first_observed_at = clock_timestamp(),
+                            stable_at = NULL,
+                            retry_count = retry_count + 1
+                        WHERE watch_id = %s
+                          AND folder_name = %s
+                          AND discovery_id = %s
+                          AND status = 'active'
+                        RETURNING retry_count
+                        """,
+                        (str(row[1]), str(row[2]), str(row[0])),
+                    ).fetchone()
+                    if updated is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit
+                            (event_type, subject_id)
+                        VALUES ('needs_attention_retry', %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (run_id,),
+                    )
+                    return int(updated[0])
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
+    def mark_needs_attention_failed(
+        self,
+        *,
+        run_id: str,
+        expected_event_sequence: int,
+    ) -> None:
+        """Choose terminal failure for an exact, unplanned attention state."""
+
+        if (
+            type(expected_event_sequence) is not int
+            or expected_event_sequence < 1
+        ):
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    row = connection.execute(
+                        """
+                        SELECT run.status
+                        FROM runs AS run
+                        JOIN jobs AS job ON job.run_id = run.run_id
+                        JOIN discoveries AS discovery
+                          ON discovery.discovery_id = run.discovery_id
+                        JOIN run_states AS state
+                          ON state.run_id = run.run_id
+                        JOIN watch_folder_observations AS observation
+                          ON observation.discovery_id = discovery.discovery_id
+                        WHERE run.run_id = %s
+                          AND run.status IN ('running', 'failed')
+                          AND job.status = 'completed'
+                          AND discovery.folder_generation_id IS NOT NULL
+                          AND observation.status = 'active'
+                          AND state.runtime_status = 'stopped'
+                          AND state.plan_hash IS NULL
+                          AND state.event_sequence = %s
+                          AND state.projection_payload->>'stop_reason'
+                              = 'needs_attention'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM run_operations AS operation
+                              WHERE operation.run_id = run.run_id
+                          )
+                        FOR UPDATE OF run, job, observation
+                        """,
+                        (run_id, expected_event_sequence),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        UPDATE runs SET status = 'failed'
+                        WHERE run_id = %s
+                        """,
+                        (run_id,),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit
+                            (event_type, subject_id)
+                        VALUES ('needs_attention_failed', %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (run_id,),
+                    )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None

@@ -97,6 +97,8 @@ export const runSchema = z
         "dispose_failed_folder",
         "recover_folder_disposition",
         "approve_subtitle_acquisition",
+        "retry_run",
+        "fail_run",
         "delete_run",
       ]),
     ),
@@ -427,6 +429,23 @@ export const interactionResultSchema = z
     model_tokens: z.number().int().nonnegative(),
   })
   .strict();
+
+export const attentionControlResultSchema = z.union([
+  z
+    .object({
+      run_id: z.string(),
+      status: z.literal("retry_scheduled"),
+      retry_count: z.number().int().min(1).max(3),
+    })
+    .strict(),
+  z
+    .object({
+      run_id: z.string(),
+      status: z.literal("failure_planned"),
+      plan_hash: z.string(),
+    })
+    .strict(),
+]);
 
 export const reapplyResultSchema = z
   .object({
