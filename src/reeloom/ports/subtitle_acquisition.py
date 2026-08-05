@@ -19,6 +19,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveSetCapability,
     SubtitleAcquisitionPlan,
     SubtitleSearchCursorId,
+    SubtitleSearchDiagnostics,
     SubtitleSearchPage,
 )
 
@@ -73,11 +74,13 @@ class SubtitleSearchRequest:
 class SubtitleSearchResult:
     page: SubtitleSearchPage
     capabilities: tuple[SubtitleArchiveSetCapability, ...]
+    diagnostics: SubtitleSearchDiagnostics
 
     def __post_init__(self) -> None:
         if (
             not isinstance(self.page, SubtitleSearchPage)
             or not isinstance(self.capabilities, tuple)
+            or not isinstance(self.diagnostics, SubtitleSearchDiagnostics)
             or any(
                 not isinstance(item, SubtitleArchiveSetCapability)
                 for item in self.capabilities
@@ -86,6 +89,9 @@ class SubtitleSearchResult:
                 {item.archive_set_id for item in self.capabilities}
             )
             != len(self.capabilities)
+            or self.diagnostics.release_count < len(self.page.items)
+            or self.diagnostics.selectable_archive_set_count
+            < len(self.capabilities)
         ):
             raise DomainError(ErrorCode.INVALID_SUBTITLE_SEARCH_DATA)
         summaries = {

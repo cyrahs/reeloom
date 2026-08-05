@@ -106,6 +106,10 @@ unique key 防止重复 successor 与自动获取循环；旧 run 永不 rescan 
 - `search_sub` 只在季度样本明确 `chinese_status=absent` 时开放，observation 只含
   bounded 去 URL 证据和 opaque ID；stable capability 仅持久化数字
   `thread/post/attachment` identity；
+- 每次成功的 provider 调用额外持久化有界、去 URL 的搜索诊断：实际使用的
+  规范化标题别名及其命中帖子数，去重帖子、已读帖子/页面、楼层、原生附件、
+  可选归档组与 release 数，并派生空结果停留阶段；这些诊断不包含原始 HTML、
+  帖子正文、URL 或动态附件地址，也不进入 Agent observation；
 - `select_subtitle_release` 是唯一接受事件；一个候选仍需 Agent 显式选择，证据不足
   只能提交固定 reason code 的 `needs_attention`；
 - runtime event/state projection 升至 v7 并兼容 v1-v6；Anime AgentDefinition 升至

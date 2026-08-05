@@ -45,6 +45,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseId,
     SubtitleReleaseSummary,
     SubtitleSearchCursorId,
+    SubtitleSearchDiagnostics,
     SubtitleSearchPage,
     SubtitleSearchRecord,
     SubtitleSelection,
@@ -558,6 +559,70 @@ def _subtitle_search_record(value: object) -> SubtitleSearchRecord:
         _invalid()
 
 
+def _subtitle_search_diagnostics_payload(
+    value: SubtitleSearchDiagnostics,
+) -> dict[str, object]:
+    return {
+        "alias_thread_counts": list(value.alias_thread_counts),
+        "discovered_thread_count": value.discovered_thread_count,
+        "empty_stage": value.empty_stage.value,
+        "fetched_thread_count": value.fetched_thread_count,
+        "fetched_thread_page_count": value.fetched_thread_page_count,
+        "native_attachment_count": value.native_attachment_count,
+        "parsed_post_count": value.parsed_post_count,
+        "query_aliases": list(value.query_aliases),
+        "release_count": value.release_count,
+        "selectable_archive_set_count": value.selectable_archive_set_count,
+    }
+
+
+def _subtitle_search_diagnostics(value: object) -> SubtitleSearchDiagnostics:
+    payload = check_fields(
+        value,
+        frozenset(
+            {
+                "alias_thread_counts",
+                "discovered_thread_count",
+                "empty_stage",
+                "fetched_thread_count",
+                "fetched_thread_page_count",
+                "native_attachment_count",
+                "parsed_post_count",
+                "query_aliases",
+                "release_count",
+                "selectable_archive_set_count",
+            }
+        ),
+        field="subtitle_search_diagnostics",
+    )
+    try:
+        diagnostics = SubtitleSearchDiagnostics(
+            query_aliases=tuple(
+                _str(item) for item in _list(payload["query_aliases"])
+            ),
+            alias_thread_counts=tuple(
+                _int(item)
+                for item in _list(payload["alias_thread_counts"])
+            ),
+            discovered_thread_count=_int(payload["discovered_thread_count"]),
+            fetched_thread_count=_int(payload["fetched_thread_count"]),
+            fetched_thread_page_count=_int(
+                payload["fetched_thread_page_count"]
+            ),
+            parsed_post_count=_int(payload["parsed_post_count"]),
+            native_attachment_count=_int(payload["native_attachment_count"]),
+            selectable_archive_set_count=_int(
+                payload["selectable_archive_set_count"]
+            ),
+            release_count=_int(payload["release_count"]),
+        )
+        if diagnostics.empty_stage.value != _str(payload["empty_stage"]):
+            _invalid()
+        return diagnostics
+    except (DomainError, ValueError):
+        _invalid()
+
+
 def _subtitle_capability_payload(
     value: SubtitleArchiveSetCapability,
 ) -> dict[str, object]:
@@ -960,7 +1025,7 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             ),
         }
     if isinstance(event, SubtitleSearchObserved):
-        return "subtitle_search_observed", {
+        payload = {
             "call_id": event.call_id,
             "capabilities": [
                 _subtitle_capability_payload(item)
@@ -968,6 +1033,11 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             ],
             "record": _subtitle_search_record_payload(event.record),
         }
+        if event.diagnostics is not None:
+            payload["diagnostics"] = _subtitle_search_diagnostics_payload(
+                event.diagnostics
+            )
+        return "subtitle_search_observed", payload
     if isinstance(event, SubtitleSearchFailed):
         return "subtitle_search_failed", {
             "call_id": event.call_id,
@@ -1336,9 +1406,15 @@ def _event_from_payload(
             inspection=_embedded_inspection(p["inspection"]),
         )
     if event_type == "subtitle_search_observed":
+        fields = frozenset(value) if isinstance(value, dict) else frozenset()
+        expected = (
+            {"call_id", "capabilities", "diagnostics", "record"}
+            if "diagnostics" in fields
+            else {"call_id", "capabilities", "record"}
+        )
         p = _fields(
             value,
-            {"call_id", "capabilities", "record"},
+            expected,
             field=event_type,
         )
         return SubtitleSearchObserved(
@@ -1347,6 +1423,11 @@ def _event_from_payload(
             capabilities=tuple(
                 _subtitle_capability(item)
                 for item in _list(p["capabilities"])
+            ),
+            diagnostics=(
+                None
+                if "diagnostics" not in p
+                else _subtitle_search_diagnostics(p["diagnostics"])
             ),
         )
     if event_type == "subtitle_search_failed":

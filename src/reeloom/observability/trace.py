@@ -185,13 +185,44 @@ def _attributes(event: RuntimeEvent) -> dict[str, TraceValue]:
             "track_count": len(event.inspection.tracks),
         }
     if isinstance(event, SubtitleSearchObserved):
-        return {
+        attributes: dict[str, TraceValue] = {
             "archive_set_count": len(event.capabilities),
             "complete": event.record.page.complete,
             "has_next_cursor": event.record.page.next_cursor is not None,
             "release_count": len(event.record.page.items),
             "season_number": event.record.season_number,
         }
+        if event.diagnostics is not None:
+            diagnostics = event.diagnostics
+            attributes.update(
+                {
+                    "alias_thread_counts": " | ".join(
+                        f"{alias}={count}"
+                        for alias, count in zip(
+                            diagnostics.query_aliases,
+                            diagnostics.alias_thread_counts,
+                            strict=True,
+                        )
+                    ),
+                    "discovered_thread_count": (
+                        diagnostics.discovered_thread_count
+                    ),
+                    "empty_stage": diagnostics.empty_stage.value,
+                    "fetched_thread_count": diagnostics.fetched_thread_count,
+                    "fetched_thread_page_count": (
+                        diagnostics.fetched_thread_page_count
+                    ),
+                    "native_attachment_count": (
+                        diagnostics.native_attachment_count
+                    ),
+                    "parsed_post_count": diagnostics.parsed_post_count,
+                    "query_aliases": " | ".join(diagnostics.query_aliases),
+                    "selectable_archive_set_count": (
+                        diagnostics.selectable_archive_set_count
+                    ),
+                }
+            )
+        return attributes
     if isinstance(event, SubtitleSelectionSubmitted):
         return {
             "selection_count": len(event.decision.selections),

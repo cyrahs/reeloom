@@ -33,6 +33,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseId,
     SubtitleReleaseSummary,
     SubtitleSearchCursorId,
+    SubtitleSearchDiagnostics,
     SubtitleSearchPage,
 )
 from reeloom.ports.subtitle_acquisition import (
@@ -838,6 +839,7 @@ class _CachedSearch:
     offset: int
     items: tuple[SubtitleReleaseSummary, ...]
     capabilities: tuple[SubtitleArchiveSetCapability, ...]
+    diagnostics: SubtitleSearchDiagnostics
 
 
 class AcgripSubtitleSearchProvider:
@@ -905,14 +907,14 @@ class AcgripSubtitleSearchProvider:
             return self._page(cached)
         try:
             async with asyncio.timeout(ACGRIP_TOOL_TIMEOUT_SECONDS):
-                items, capabilities = await self._collect(request)
+                items, capabilities, diagnostics = await self._collect(request)
         except TimeoutError:
             raise _provider_error(
                 SubtitleSearchErrorCode.UNAVAILABLE,
                 retryable=True,
             ) from None
         return self._page(
-            _CachedSearch(signature, 0, items, capabilities)
+            _CachedSearch(signature, 0, items, capabilities, diagnostics)
         )
 
     def _page(self, cached: _CachedSearch) -> SubtitleSearchResult:
@@ -937,6 +939,7 @@ class AcgripSubtitleSearchProvider:
                 end,
                 cached.items,
                 cached.capabilities,
+                cached.diagnostics,
             )
         else:
             cursor = None
@@ -947,6 +950,7 @@ class AcgripSubtitleSearchProvider:
                 cursor is None,
             ),
             page_capabilities,
+            cached.diagnostics,
         )
 
     async def _collect(
@@ -955,11 +959,14 @@ class AcgripSubtitleSearchProvider:
     ) -> tuple[
         tuple[SubtitleReleaseSummary, ...],
         tuple[SubtitleArchiveSetCapability, ...],
+        SubtitleSearchDiagnostics,
     ]:
         landing = await self._request("GET", _SEARCH_PATH)
         formhash = self._parser.search_formhash(landing)
         thread_ids: list[int] = []
+        alias_thread_counts: list[int] = []
         for alias in request.title_aliases:
+            alias_thread_ids: set[int] = set()
             body = urlencode(
                 (
                     ("formhash", formhash),
@@ -987,6 +994,7 @@ class AcgripSubtitleSearchProvider:
                 )
             while True:
                 for thread_id in links.thread_ids:
+                    alias_thread_ids.add(thread_id)
                     if thread_id not in thread_ids:
                         thread_ids.append(thread_id)
                         if len(thread_ids) >= MAX_SEARCH_RESULTS_PER_RUN:
@@ -1001,9 +1009,13 @@ class AcgripSubtitleSearchProvider:
                     response,
                     aliases=request.title_aliases,
                 )
+            alias_thread_counts.append(len(alias_thread_ids))
         releases: list[SubtitleReleaseSummary] = []
         capabilities: list[SubtitleArchiveSetCapability] = []
         attachment_count = 0
+        fetched_thread_count = 0
+        fetched_thread_page_count = 0
+        parsed_post_count = 0
         seen_posts: set[tuple[int, int]] = set()
         for thread_id in thread_ids:
             pages: list[_ParsedThread] = []
@@ -1022,6 +1034,8 @@ class AcgripSubtitleSearchProvider:
                         thread_id=thread_id,
                     )
                 )
+            fetched_thread_count += 1
+            fetched_thread_page_count += len(pages)
             for page in pages:
                 if page.forum_id not in ACGRIP_FORUM_IDS:
                     continue
@@ -1030,6 +1044,7 @@ class AcgripSubtitleSearchProvider:
                     if post_key in seen_posts:
                         continue
                     seen_posts.add(post_key)
+                    parsed_post_count += 1
                     attachment_count += len(post.attachments)
                     if attachment_count > ACGRIP_MAX_ATTACHMENTS:
                         raise _provider_error(
@@ -1049,8 +1064,36 @@ class AcgripSubtitleSearchProvider:
                     releases.append(release)
                     capabilities.extend(release_capabilities)
                     if len(releases) >= MAX_SEARCH_RESULTS_PER_RUN:
-                        return tuple(releases), tuple(capabilities)
-        return tuple(releases), tuple(capabilities)
+                        return (
+                            tuple(releases),
+                            tuple(capabilities),
+                            SubtitleSearchDiagnostics(
+                                request.title_aliases,
+                                tuple(alias_thread_counts),
+                                len(thread_ids),
+                                fetched_thread_count,
+                                fetched_thread_page_count,
+                                parsed_post_count,
+                                attachment_count,
+                                len(capabilities),
+                                len(releases),
+                            ),
+                        )
+        return (
+            tuple(releases),
+            tuple(capabilities),
+            SubtitleSearchDiagnostics(
+                request.title_aliases,
+                tuple(alias_thread_counts),
+                len(thread_ids),
+                fetched_thread_count,
+                fetched_thread_page_count,
+                parsed_post_count,
+                attachment_count,
+                len(capabilities),
+                len(releases),
+            ),
+        )
 
     def _release(
         self,

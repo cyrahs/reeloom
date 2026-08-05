@@ -125,6 +125,89 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
             ),
             "track_count": len(tracks) if isinstance(tracks, list) else 0,
         }
+    if event_type == "subtitle_search_observed":
+        record = payload.get("record")
+        page = record.get("page") if isinstance(record, dict) else None
+        releases = page.get("items") if isinstance(page, dict) else None
+        capabilities = payload.get("capabilities")
+        diagnostics = payload.get("diagnostics")
+        aliases = (
+            diagnostics.get("query_aliases")
+            if isinstance(diagnostics, dict)
+            else None
+        )
+        alias_counts = (
+            diagnostics.get("alias_thread_counts")
+            if isinstance(diagnostics, dict)
+            else None
+        )
+        alias_pairs = (
+            [
+                f"{alias}={count}"
+                for alias, count in zip(aliases, alias_counts, strict=True)
+                if isinstance(alias, str) and type(count) is int
+            ]
+            if isinstance(aliases, list)
+            and isinstance(alias_counts, list)
+            and len(aliases) == len(alias_counts)
+            else []
+        )
+        return {
+            "season_number": (
+                record.get("season_number")
+                if isinstance(record, dict)
+                else None
+            ),
+            "query_aliases": (
+                " | ".join(
+                    alias for alias in aliases if isinstance(alias, str)
+                )
+                if isinstance(aliases, list)
+                else None
+            ),
+            "alias_thread_counts": " | ".join(alias_pairs),
+            "discovered_thread_count": (
+                diagnostics.get("discovered_thread_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "fetched_thread_count": (
+                diagnostics.get("fetched_thread_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "fetched_thread_page_count": (
+                diagnostics.get("fetched_thread_page_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "parsed_post_count": (
+                diagnostics.get("parsed_post_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "native_attachment_count": (
+                diagnostics.get("native_attachment_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "selectable_archive_set_count": (
+                diagnostics.get("selectable_archive_set_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "release_count": (
+                len(releases) if isinstance(releases, list) else 0
+            ),
+            "archive_set_count": (
+                len(capabilities) if isinstance(capabilities, list) else 0
+            ),
+            "empty_stage": (
+                diagnostics.get("empty_stage")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+        }
     if event_type == "subtitle_selection_submitted":
         decision = payload.get("decision")
         selections = (

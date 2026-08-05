@@ -433,16 +433,18 @@ async def search_sub(
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE,
             retryable=False,
         )
+    request = SubtitleSearchRequest(
+        title_aliases=(state.selected_series.title_zh_cn,),
+        season_number=season_number,
+        cursor=parsed_cursor,
+        limit=MAX_SEARCH_RESULTS_PER_PAGE,
+    )
     try:
-        result = await provider.search(
-            SubtitleSearchRequest(
-                title_aliases=(state.selected_series.title_zh_cn,),
-                season_number=season_number,
-                cursor=parsed_cursor,
-                limit=MAX_SEARCH_RESULTS_PER_PAGE,
-            )
-        )
-        if not isinstance(result, SubtitleSearchResult):
+        result = await provider.search(request)
+        if (
+            not isinstance(result, SubtitleSearchResult)
+            or result.diagnostics.query_aliases != request.title_aliases
+        ):
             raise DomainError(ErrorCode.INVALID_SUBTITLE_SEARCH_DATA)
     except SubtitleSearchProviderError as error:
         return _search_unavailable(
@@ -469,6 +471,7 @@ async def search_sub(
                 page=result.page,
             ),
             capabilities=result.capabilities,
+            diagnostics=result.diagnostics,
         )
     )
     runtime.succeed(call_id=call_id, tool_name=tool_name)
