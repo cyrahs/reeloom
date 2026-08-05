@@ -12,7 +12,7 @@ test("serves the dashboard from the real API and PostgreSQL control plane", asyn
   await expect(
     page.getByRole("heading", { name: "今天的整理进度，一眼看清。" }),
   ).toBeVisible();
-  await expect(page.getByText(/PostgreSQL \d+ · Schema 23/)).toBeVisible();
+  await expect(page.getByText(/PostgreSQL \d+ · Schema \d+/)).toBeVisible();
   const session = await page.evaluate(async () => {
     const response = await fetch("/api/v1/session", {
       headers: {

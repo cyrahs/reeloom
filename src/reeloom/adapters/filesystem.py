@@ -65,6 +65,10 @@ FFPROBE_ADDRESS_SPACE_BYTES = 256 * 1024 * 1024
 _TRUSTED_ZERO_STREAM_EXTENSIONS = frozenset(
     {".avi", ".m4v", ".mkv", ".mp4", ".webm"}
 )
+_FFPROBE_TOP_LEVEL_KEYS = frozenset(
+    {"programs", "stream_groups", "streams"}
+)
+_FFPROBE_WRAPPER_KEYS = frozenset({"programs", "stream_groups"})
 
 
 class FfprobeResultStatus(StrEnum):
@@ -136,7 +140,6 @@ class FixedFfprobeRunner:
                 FFPROBE_EXECUTABLE,
                 "-v",
                 "error",
-                "-nostdin",
                 "-protocol_whitelist",
                 "fd",
                 "-probesize",
@@ -255,7 +258,15 @@ def _parse_ffprobe_tracks(
         payload = json.loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or set(payload) != {"streams"}:
+    if (
+        not isinstance(payload, dict)
+        or "streams" not in payload
+        or not set(payload) <= _FFPROBE_TOP_LEVEL_KEYS
+        or any(
+            key in payload and not isinstance(payload[key], list)
+            for key in _FFPROBE_WRAPPER_KEYS
+        )
+    ):
         return None
     streams = payload["streams"]
     if (

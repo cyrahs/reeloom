@@ -353,6 +353,36 @@ def test_video_subtitle_inspector_distinguishes_non_chinese_tracks(
     assert result.tracks[0].language is EmbeddedSubtitleLanguage.EN
 
 
+def test_video_subtitle_inspector_accepts_known_ffprobe_wrapper_sections(
+    tmp_path: Path,
+) -> None:
+    scan, _video_path = _video_scan(tmp_path)
+
+    result = asyncio.run(
+        FilesystemVideoSubtitleInspector(
+            scan,
+            _ProbeRunner(
+                FfprobeProcessResult(
+                    FfprobeResultStatus.COMPLETE,
+                    json.dumps(
+                        {
+                            "programs": [],
+                            "stream_groups": [],
+                            "streams": [],
+                        }
+                    ).encode(),
+                )
+            ),
+        ).inspect(
+            CandidateId(CandidateKind.VIDEO, 1),
+            season_number=1,
+        )
+    )
+
+    assert result.probe_status is EmbeddedSubtitleProbeStatus.ABSENT
+    assert result.chinese_status is EmbeddedChineseStatus.ABSENT
+
+
 @pytest.mark.parametrize(
     ("name", "process_result", "expected"),
     (
@@ -376,6 +406,14 @@ def test_video_subtitle_inspector_distinguishes_non_chinese_tracks(
             FfprobeProcessResult(
                 FfprobeResultStatus.COMPLETE,
                 b'{"unexpected":[]}',
+            ),
+            EmbeddedSubtitleProbeStatus.INDETERMINATE,
+        ),
+        (
+            "Episode 01.mkv",
+            FfprobeProcessResult(
+                FfprobeResultStatus.COMPLETE,
+                b'{"programs":{},"streams":[]}',
             ),
             EmbeddedSubtitleProbeStatus.INDETERMINATE,
         ),
@@ -453,6 +491,40 @@ def test_video_subtitle_inspector_rejects_identity_drift_during_probe(
         )
 
     assert error.value.code is ErrorCode.SCAN_FAILED
+
+
+def test_fixed_ffprobe_runner_uses_devnull_without_nostdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(b'{"streams":[]}')
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    async def fake_create(*args: object, **kwargs: object) -> _Process:
+        assert "-nostdin" not in args
+        assert kwargs["stdin"] is asyncio.subprocess.DEVNULL
+        return _Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+
+    result = asyncio.run(FixedFfprobeRunner().probe(9))
+
+    assert result == FfprobeProcessResult(
+        FfprobeResultStatus.COMPLETE,
+        b'{"streams":[]}',
+    )
 
 
 def test_fixed_ffprobe_runner_fails_closed_on_output_limit(
