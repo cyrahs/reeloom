@@ -173,6 +173,7 @@ class RunResponse(_StrictModel):
             "settle_folder",
             "dispose_failed_folder",
             "recover_folder_disposition",
+            "approve_subtitle_acquisition",
             "delete_run",
         ]
     ]
@@ -180,6 +181,19 @@ class RunResponse(_StrictModel):
     source_folder: str | None = None
     folder_disposition: FolderDispositionView | None = None
     archive_report: ArchiveReport | None
+    subtitle_acquisition: SubtitleAcquisitionView | None = None
+
+
+class SubtitleAcquisitionView(_StrictModel):
+    plan_hash: str
+    policy: Literal["plan_only", "manual", "automatic"]
+    status: Literal["planned", "approved", "published", "blocked"]
+    approval_id: str | None
+    transaction_id: str | None
+    failure_code: str | None
+    successor_status: Literal[
+        "queued", "retry_wait", "leased", "completed", "blocked"
+    ] | None = None
 
 
 class PlanLineageItem(_StrictModel):
@@ -336,6 +350,10 @@ class ConfigTelegramResponse(_StrictModel):
     destination_configured: bool
 
 
+class ConfigAcgripResponse(_StrictModel):
+    enabled: bool
+
+
 class ConfigAgentBudget(_StrictModel):
     max_model_turns: int = Field(ge=1, le=MAX_MODEL_TURNS)
     max_tool_calls: int = Field(ge=1, le=MAX_TOOL_CALLS)
@@ -353,7 +371,11 @@ class ConfigResponse(_StrictModel):
     watches: list[ConfigWatchResponse]
     provider: ConfigProviderResponse
     telegram: ConfigTelegramResponse
+    acgrip: ConfigAcgripResponse
     apply_policy: Literal["plan_only", "manual", "automatic"]
+    subtitle_acquisition_policy: Literal[
+        "plan_only", "manual", "automatic"
+    ]
     agent_budget: ConfigAgentBudget
 
 
@@ -425,6 +447,10 @@ class TelegramConfigRequest(_StrictModel):
     )
 
 
+class AcgripConfigRequest(_StrictModel):
+    enabled: bool
+
+
 class EditProviderRequest(_ProviderRequest):
     credential: CredentialRetain | CredentialReplace
 
@@ -435,6 +461,10 @@ class ConfigUpdateRequest(_StrictModel):
     apply_policy: Literal["plan_only", "manual", "automatic"]
     agent_budget: ConfigAgentBudget | None = None
     telegram: TelegramConfigRequest | None = None
+    acgrip: AcgripConfigRequest | None = None
+    subtitle_acquisition_policy: Literal[
+        "plan_only", "manual", "automatic"
+    ] | None = None
 
 
 class ProviderProbeRequest(_StrictModel):
@@ -504,6 +534,14 @@ class ReapplyResponse(_StrictModel):
 class ApproveApplyRequest(_StrictModel):
     automatic: bool
     folder_disposition_plan_hash: str | None = None
+
+
+class SubtitleAcquisitionApprovalRequest(_StrictModel):
+    pass
+
+
+class SubtitleAcquisitionResponse(SubtitleAcquisitionView):
+    run_id: str
 
 
 class FolderDispositionResultResponse(_StrictModel):

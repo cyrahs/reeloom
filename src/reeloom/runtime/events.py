@@ -17,6 +17,12 @@ from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedSubtitleInspection,
+    SubtitleArchiveSetCapability,
+    SubtitleSearchRecord,
+    SubtitleSelectionDecision,
+)
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.state import MappingValidationIssue, StopReason
@@ -39,6 +45,11 @@ class CandidateSnapshotCreated:
     candidate_ids: tuple[CandidateId, ...] | None = None
     source_root: RootBinding | None = None
     output_root: RootBinding | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleAcquisitionConfigured:
+    enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +105,32 @@ class SubtitleVariantDetected:
     call_id: str
     subtitle_id: CandidateId
     variant: SubtitleVariant
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedSubtitlesInspected:
+    call_id: str
+    inspection: EmbeddedSubtitleInspection
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleSearchObserved:
+    call_id: str
+    record: SubtitleSearchRecord
+    capabilities: tuple[SubtitleArchiveSetCapability, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleSearchFailed:
+    call_id: str
+    season_number: int
+    reason_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleSelectionSubmitted:
+    call_id: str
+    decision: SubtitleSelectionDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +267,7 @@ class RunFailed:
 RuntimeEvent: TypeAlias = (
     RunStarted
     | CandidateSnapshotCreated
+    | SubtitleAcquisitionConfigured
     | TmdbCandidatesObserved
     | SeriesSelected
     | MovieSelected
@@ -238,6 +276,10 @@ RuntimeEvent: TypeAlias = (
     | ArchiveSearchObserved
     | ArchiveDirectoryListed
     | SubtitleVariantDetected
+    | EmbeddedSubtitlesInspected
+    | SubtitleSearchObserved
+    | SubtitleSearchFailed
+    | SubtitleSelectionSubmitted
     | MappingRejected
     | MappingReviewCaptured
     | MappingSubmitted

@@ -6,12 +6,16 @@ from pathlib import Path
 from reeloom.adapters.telegram import validate_bot_token, validate_chat_id
 from reeloom.server.config import (
     ApplyPolicy,
+    AcgripConfig,
     ConfigDraft,
     ConfigRevision,
     DEFAULT_AGENT_BUDGET,
+    DEFAULT_ACGRIP_CONFIG,
+    DEFAULT_SUBTITLE_ACQUISITION_POLICY,
     ProviderConfig,
     ServerWorkType,
     TelegramConfig,
+    SubtitleAcquisitionPolicy,
     WatchConfig,
     agent_budget_from_payload,
 )
@@ -59,7 +63,12 @@ def parse_config_edit(
             "provider",
             "watches",
         }
-        optional = {"agent_budget", "telegram"}
+        optional = {
+            "agent_budget",
+            "telegram",
+            "acgrip",
+            "subtitle_acquisition_policy",
+        }
         keys = set(value)
         if not fields <= keys or not keys - fields <= optional:
             raise ValueError
@@ -182,6 +191,19 @@ def parse_config_edit(
             value.get("telegram"),
             current=None if current is None else current.telegram,
         )
+        acgrip = _acgrip_edit(
+            value.get("acgrip"),
+            current=None if current is None else current.acgrip,
+        )
+        subtitle_acquisition_policy = (
+            SubtitleAcquisitionPolicy(value["subtitle_acquisition_policy"])
+            if "subtitle_acquisition_policy" in value
+            else (
+                current.subtitle_acquisition_policy
+                if current is not None
+                else DEFAULT_SUBTITLE_ACQUISITION_POLICY
+            )
+        )
         draft = ConfigDraft(
             watches=tuple(watches),
             provider=ProviderConfig(
@@ -194,6 +216,10 @@ def parse_config_edit(
             apply_policy=ApplyPolicy(value["apply_policy"]),
             agent_budget=agent_budget,
             telegram=telegram,
+            acgrip=acgrip,
+            subtitle_acquisition_policy=(
+                subtitle_acquisition_policy
+            ),
         )
         if (
             replacement_api_key is not None
@@ -262,3 +288,15 @@ def _telegram_edit(
         ),
         replacement,
     )
+
+
+def _acgrip_edit(
+    value: object,
+    *,
+    current: AcgripConfig | None,
+) -> AcgripConfig:
+    if value is None:
+        return current or DEFAULT_ACGRIP_CONFIG
+    if not isinstance(value, dict) or set(value) != {"enabled"}:
+        raise ValueError
+    return AcgripConfig(enabled=value["enabled"])

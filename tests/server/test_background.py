@@ -8,7 +8,11 @@ import pytest
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.kernel.candidates import CandidateKind
 from reeloom.server.background import BackgroundServices
-from reeloom.server.config import ApplyPolicy
+from reeloom.server.config import (
+    ApplyPolicy,
+    SubtitleAcquisitionPolicy,
+)
+from reeloom.server.agent_worker import AgentWorkKind, AgentWorkResult
 from reeloom.server.errors import ServerError, ServerErrorCode
 
 
@@ -180,6 +184,72 @@ class _ManualConfigs:
     def get(self, revision: int) -> object:
         del revision
         return SimpleNamespace(apply_policy=ApplyPolicy.PLAN_ONLY)
+
+
+class _SubtitleWorker:
+    async def run_result(self, *, run_id: str) -> AgentWorkResult:
+        del run_id
+        return AgentWorkResult(
+            AgentWorkKind.SUBTITLE_ACQUISITION,
+            "sha256:" + "s" * 64,
+        )
+
+
+class _SubtitleConfigs:
+    def __init__(self, policy: SubtitleAcquisitionPolicy) -> None:
+        self.policy = policy
+
+    def get(self, revision: int) -> object:
+        del revision
+        return SimpleNamespace(
+            apply_policy=ApplyPolicy.PLAN_ONLY,
+            subtitle_acquisition_policy=self.policy,
+        )
+
+
+class _SubtitleCoordinator:
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, str, bool]] = []
+
+    def approve_and_execute(self, **kwargs: object) -> object:
+        self.executed.append(
+            (
+                str(kwargs["run_id"]),
+                str(kwargs["plan_hash"]),
+                bool(kwargs["automatic"]),
+            )
+        )
+        return SimpleNamespace(status="published")
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_execution", "expected_settlement"),
+    (
+        (SubtitleAcquisitionPolicy.AUTOMATIC, 1, ()),
+        (SubtitleAcquisitionPolicy.MANUAL, 0, (True,)),
+        (SubtitleAcquisitionPolicy.PLAN_ONLY, 0, (True,)),
+    ),
+)
+def test_subtitle_acquisition_uses_independent_policy_and_never_media_apply(
+    policy: SubtitleAcquisitionPolicy,
+    expected_execution: int,
+    expected_settlement: tuple[bool, ...],
+) -> None:
+    scheduler = _SettlingScheduler()
+    coordinator = _SubtitleCoordinator()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=_SubtitleConfigs(policy),  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_SubtitleWorker(),  # type: ignore[arg-type]
+        apply=_UnavailableApply(),  # type: ignore[arg-type]
+        subtitle_acquisitions=coordinator,  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert len(coordinator.executed) == expected_execution
+    assert tuple(scheduler.settled) == expected_settlement
 
 
 class _FolderDispositions:

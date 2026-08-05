@@ -6,6 +6,9 @@ from pathlib import Path
 
 from reeloom.adapters.agent_session import FilesystemAgentSession
 from reeloom.agents.organizer import (
+    ANIME_ORGANIZER_INSTRUCTIONS,
+    EPISODE_ORGANIZER_INSTRUCTIONS,
+    _create_agent,
     create_organizer_context,
     run_episode_organizer,
 )
@@ -14,7 +17,32 @@ from reeloom.agents.scripted_model import (
     ScriptedModel,
     ToolCallStep,
 )
-from reeloom.kernel.candidates import CandidateSnapshot
+from dataclasses import dataclass
+
+from reeloom.kernel.candidates import (
+    Candidate,
+    CandidateId,
+    CandidateKind,
+    CandidateSnapshot,
+)
+from reeloom.kernel.subtitle_acquisition import (
+    CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
+    CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION,
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleInspection,
+    EmbeddedSubtitleProbeStatus,
+    SubtitleArchiveFormat,
+    SubtitleArchiveSetCapability,
+    SubtitleArchiveSetId,
+    SubtitleArchiveSetSummary,
+    SubtitleReleaseId,
+    SubtitleReleaseSummary,
+    SubtitleSearchPage,
+)
+from reeloom.ports.subtitle_acquisition import (
+    SubtitleSearchRequest,
+    SubtitleSearchResult,
+)
 from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
@@ -25,7 +53,7 @@ from reeloom.kernel.tmdb import (
     TmdbWorkType,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
-from reeloom.runtime.state import Phase
+from reeloom.runtime.state import Phase, RunStatus, StopReason
 from reeloom.tools.candidates import SnapshotCandidateSource
 
 
@@ -118,6 +146,8 @@ class _ToolCapturingModel(ScriptedModel):
     def __init__(self, steps) -> None:
         super().__init__(steps)
         self.tool_names_by_turn: list[tuple[str, ...]] = []
+        self.tool_descriptions_by_turn: list[tuple[str, ...]] = []
+        self.system_instructions_by_turn: list[str | None] = []
 
     async def get_response(self, *args, **kwargs):
         tools = kwargs.get("tools")
@@ -126,7 +156,101 @@ class _ToolCapturingModel(ScriptedModel):
         self.tool_names_by_turn.append(
             tuple(tool.name for tool in tools)
         )
+        self.tool_descriptions_by_turn.append(
+            tuple(tool.description for tool in tools)
+        )
+        instructions = kwargs.get("system_instructions")
+        if instructions is None and args:
+            instructions = args[0]
+        self.system_instructions_by_turn.append(instructions)
         return await super().get_response(*args, **kwargs)
+
+
+@dataclass(frozen=True)
+class _AbsentInspector:
+    snapshot_id: str
+    candidate_count: int
+
+    async def inspect(
+        self, video_id: CandidateId, *, season_number: int
+    ) -> EmbeddedSubtitleInspection:
+        return EmbeddedSubtitleInspection(
+            video_id,
+            season_number,
+            EmbeddedSubtitleProbeStatus.ABSENT,
+            EmbeddedChineseStatus.ABSENT,
+            (),
+        )
+
+
+@dataclass(frozen=True)
+class _IndeterminateInspector:
+    snapshot_id: str
+    candidate_count: int
+
+    async def inspect(
+        self, video_id: CandidateId, *, season_number: int
+    ) -> EmbeddedSubtitleInspection:
+        return EmbeddedSubtitleInspection(
+            video_id,
+            season_number,
+            EmbeddedSubtitleProbeStatus.INDETERMINATE,
+            EmbeddedChineseStatus.UNKNOWN,
+            (),
+        )
+
+
+class _OneSubtitleSearchProvider:
+    provider_version = (
+        f"{CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION}+"
+        f"{CURRENT_SUBTITLE_SEARCH_PARSER_VERSION}"
+    )
+
+    async def search(
+        self, request: SubtitleSearchRequest
+    ) -> SubtitleSearchResult:
+        assert request.title_aliases == ("正确动画",)
+        assert request.season_number == 0
+        archive_id = SubtitleArchiveSetId(1)
+        release_id = SubtitleReleaseId(1)
+        return SubtitleSearchResult(
+            SubtitleSearchPage(
+                (
+                    SubtitleReleaseSummary(
+                        release_id,
+                        (
+                            SubtitleArchiveSetSummary(
+                                archive_id,
+                                SubtitleArchiveFormat.SEVEN_Z,
+                                1,
+                                1024,
+                            ),
+                        ),
+                        "正确动画 字幕",
+                        "帖子回复中的原生附件",
+                        "S00",
+                        ("简体中文",),
+                        (),
+                        ("标题匹配",),
+                        (),
+                        True,
+                    ),
+                ),
+                None,
+                True,
+            ),
+            (
+                SubtitleArchiveSetCapability(
+                    archive_id,
+                    release_id,
+                    SubtitleArchiveFormat.SEVEN_Z,
+                    10081,
+                    95257,
+                    (34768,),
+                    1024,
+                ),
+            ),
+        )
 
 
 def _context(
@@ -220,6 +344,225 @@ def test_fake_agent_identifies_series_and_enters_mapping_phase() -> None:
     )
     assert model.tool_names_by_turn[:3] == [identify_tools] * 3
     assert model.tool_names_by_turn[3:] == [mapping_tools] * 2
+    assert all(
+        description
+        for turn in model.tool_descriptions_by_turn
+        for description in turn
+    )
+
+
+def test_anime_tool_registration_matches_subtitle_capability() -> None:
+    disabled = _create_agent(
+        ScriptedModel((FinalStep("done"),)),
+        work_type=TmdbWorkType.ANIME,
+        remaining_tokens=100,
+        subtitle_acquisition_enabled=False,
+    )
+    enabled = _create_agent(
+        ScriptedModel((FinalStep("done"),)),
+        work_type=TmdbWorkType.ANIME,
+        remaining_tokens=100,
+        subtitle_acquisition_enabled=True,
+    )
+
+    disabled_names = {tool.name for tool in disabled.tools}
+    enabled_names = {tool.name for tool in enabled.tools}
+    assert {
+        "check_sub_from_video",
+        "search_sub",
+        "select_subtitle_release",
+    }.isdisjoint(disabled_names)
+    assert {
+        "check_sub_from_video",
+        "search_sub",
+        "select_subtitle_release",
+    } <= enabled_names
+    assert str(disabled.instructions).startswith(EPISODE_ORGANIZER_INSTRUCTIONS)
+    assert str(enabled.instructions).startswith(ANIME_ORGANIZER_INSTRUCTIONS)
+    assert all(tool.description for tool in enabled.tools)
+
+
+def test_anime_agent_must_explicitly_select_single_subtitle_archive() -> None:
+    snapshot = CandidateSnapshot.create(
+        (
+            Candidate(
+                CandidateId(CandidateKind.VIDEO, 1),
+                CandidateKind.VIDEO,
+                "Correct Anime OAD.mkv",
+            ),
+        )
+    )
+    source = SnapshotCandidateSource(snapshot)
+    context = create_organizer_context(
+        run_id="run-subtitle-search",
+        candidate_source=source,
+        work_type=TmdbWorkType.ANIME,
+        tmdb_provider=_FakeTmdb(),
+        video_subtitle_inspector=_AbsentInspector(
+            source.snapshot_id, source.candidate_count
+        ),
+        subtitle_search_provider=_OneSubtitleSearchProvider(),
+    )
+    model = _ToolCapturingModel(
+        (
+            ToolCallStep(
+                "search_tmdb",
+                {"query": "Correct Anime", "work_type": "anime"},
+                "sub-search-tmdb",
+            ),
+            ToolCallStep(
+                "get_tmdb_series",
+                {
+                    "tmdb_id": 200,
+                    "work_type": "anime",
+                    "language": "zh-CN",
+                },
+                "sub-series",
+            ),
+            ToolCallStep(
+                "select_series",
+                {"tmdb_id": 200, "work_type": "anime"},
+                "sub-select-series",
+            ),
+            ToolCallStep(
+                "get_tmdb_season",
+                {
+                    "tmdb_id": 200,
+                    "work_type": "anime",
+                    "season_number": 0,
+                    "language": "zh-CN",
+                },
+                "sub-season",
+            ),
+            ToolCallStep(
+                "check_sub_from_video",
+                {"video_id": "video:1", "season_number": 0},
+                "sub-probe",
+            ),
+            ToolCallStep(
+                "search_sub",
+                {"season_number": 0, "cursor": None},
+                "sub-forum-search",
+                expect_input_contains='"chinese_status":"absent"',
+            ),
+            ToolCallStep(
+                "select_subtitle_release",
+                {
+                    "selections": [
+                        {
+                            "season_number": 0,
+                            "archive_set_id": "subarchive:1",
+                        }
+                    ],
+                    "needs_attention_reason": None,
+                },
+                "sub-release-select",
+                expect_input_contains='"archive_set_id":"subarchive:1"',
+            ),
+        )
+    )
+
+    result = asyncio.run(
+        run_episode_organizer(
+            context=context,
+            model=model,
+            prompt="Find a Chinese subtitle release for this anime.",
+        )
+    )
+
+    assert result.final_output == "Subtitle release selection accepted."
+    assert result.state.phase is Phase.BUILD_SUBTITLE_ACQUISITION_PLAN
+    assert result.state.status is RunStatus.RUNNING
+    assert result.state.subtitle_selection_decision is not None
+    assert result.state.subtitle_selection_decision.selections[0].season_number == 0
+    assert "submit_mapping" not in model.tool_names_by_turn[4]
+    assert "check_sub_from_video" in model.tool_names_by_turn[4]
+    assert "search_sub" in model.tool_names_by_turn[5]
+    assert "select_subtitle_release" not in model.tool_names_by_turn[5]
+    assert "submit_mapping" not in model.tool_names_by_turn[5]
+    assert "search_sub" not in model.tool_names_by_turn[6]
+    assert "select_subtitle_release" in model.tool_names_by_turn[6]
+    assert "submit_mapping" not in model.tool_names_by_turn[6]
+    assert all(
+        description
+        for turn in model.tool_descriptions_by_turn
+        for description in turn
+    )
+
+
+def test_indeterminate_probe_reaches_structured_needs_attention() -> None:
+    snapshot = CandidateSnapshot.create(
+        (
+            Candidate(
+                CandidateId(CandidateKind.VIDEO, 1),
+                CandidateKind.VIDEO,
+                "Correct Anime OAD.mkv",
+            ),
+        )
+    )
+    source = SnapshotCandidateSource(snapshot)
+    context = create_organizer_context(
+        run_id="run-subtitle-indeterminate",
+        candidate_source=source,
+        work_type=TmdbWorkType.ANIME,
+        tmdb_provider=_FakeTmdb(),
+        video_subtitle_inspector=_IndeterminateInspector(
+            source.snapshot_id, source.candidate_count
+        ),
+        subtitle_search_provider=_OneSubtitleSearchProvider(),
+    )
+    model = _ToolCapturingModel(
+        (
+            ToolCallStep(
+                "search_tmdb",
+                {"query": "Correct Anime", "work_type": "anime"},
+                "ind-search",
+            ),
+            ToolCallStep(
+                "select_series",
+                {"tmdb_id": 200, "work_type": "anime"},
+                "ind-select-series",
+            ),
+            ToolCallStep(
+                "get_tmdb_season",
+                {
+                    "tmdb_id": 200,
+                    "work_type": "anime",
+                    "season_number": 0,
+                    "language": "zh-CN",
+                },
+                "ind-season",
+            ),
+            ToolCallStep(
+                "check_sub_from_video",
+                {"video_id": "video:1", "season_number": 0},
+                "ind-probe",
+            ),
+            ToolCallStep(
+                "select_subtitle_release",
+                {
+                    "selections": [],
+                    "needs_attention_reason": "subtitle_evidence_ambiguous",
+                },
+                "ind-attention",
+                expect_input_contains='"chinese_status":"unknown"',
+            ),
+        )
+    )
+
+    result = asyncio.run(
+        run_episode_organizer(
+            context=context,
+            model=model,
+            prompt="Inspect and organize this anime release.",
+        )
+    )
+
+    assert result.state.status is RunStatus.STOPPED
+    assert result.state.stop_reason is StopReason.NEEDS_ATTENTION
+    assert "search_sub" not in model.tool_names_by_turn[4]
+    assert "select_subtitle_release" in model.tool_names_by_turn[4]
+    assert "submit_mapping" not in model.tool_names_by_turn[4]
 
 
 def test_hidden_known_tool_is_rejected_before_provider() -> None:

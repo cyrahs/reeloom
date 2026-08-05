@@ -33,15 +33,16 @@ trace 与报告不复制不可信正文或凭据。真实网络检查保持显�
 - [x] 指标覆盖 mapping、validator first/final pass、tool/validator rejection、
   input/output/total tokens、calls、latency、显式价格成本估算、人工澄清率、
   unmapped 保留率，以及按 `kind + call_id + code` 标签计算的拒绝误报/漏报。
-- [x] OpenAI adapter 显式使用 official Responses endpoint 和注入配置；不接受
-  base URL，不读取 `.env`，并强制 response `store=False`、顺序 tool calls、
+- [x] OpenAI adapter 显式使用 Responses-compatible HTTPS endpoint 和注入配置；
+  base URL 拒绝凭据/query/fragment，并强制 response `store=False`、顺序 tool calls、
   token budget 与 SDK sensitive tracing disabled；忽略 caller 的
   body/header/query 扩展，并拒绝环境中的 `OPENAI_CUSTOM_HEADERS`。
 - [x] run 的 budget 和绝对 UTC deadline 写入 `RunStarted`；重启只能继续消费
   原预算，不能重新获得 turn/token/time allowance。
 - [x] approval resume 覆盖 issue、`PlanApproved`、`ApplyStarted`、journal 和
   one-time claim 之间的崩溃窗口；重启从持久事件与 executor artifact 幂等继续。
-- [x] live eval 必须传 `--live --model` 并从进程环境读取 `OPENAI_API_KEY`；
+- [x] live eval 必须传 `--live`；key/base URL/model/reasoning 可由受限 loader
+  从进程环境或仓库根固定 `.env` 补齐，model/reasoning 的显式 CLI 值优先；
   输出固定 dataset hash、model settings 与脱敏任务指标。
 
 ## 离线验证
@@ -55,8 +56,8 @@ trace 与报告不复制不可信正文或凭据。真实网络检查保持显�
 - transcript/eval：immutable arguments、malformed arguments、strict dataset、
   stable dataset hash、完整 mapping-correction baseline。
 - trace/metrics：未知模型 token 脱敏、敏感文本不出现、显式 token pricing。
-- OpenAI：固定 official endpoint、显式 client config、非法 model/settings/key、
-  live flag/model/key gate；没有真实网络调用。
+- OpenAI：显式 HTTPS endpoint/client config、非法 URL/model/settings/key、
+  live flag/model/key gate 与合成 dotenv；没有真实网络调用。
 - 完整离线测试：`407 passed`。
 
 ## 真实网络验证边界
@@ -65,8 +66,7 @@ trace 与报告不复制不可信正文或凭据。真实网络检查保持显�
 model 行为时运行：
 
 ```bash
-OPENAI_API_KEY=... PYTHONPATH=src .venv/bin/python \
-  scripts/openai_live_smoke.py --live --model <explicit-model>
+PYTHONPATH=src .venv/bin/python scripts/openai_live_smoke.py --live
 ```
 
 线上结果可能随 model snapshot 和 provider 行为变化，因此报告必须连同

@@ -100,6 +100,37 @@ def test_wrong_binding_does_not_consume_approval(tmp_path: Path) -> None:
     ) == approval
 
 
+def test_subtitle_scope_cannot_be_claimed_as_media_apply(tmp_path: Path) -> None:
+    store = FilesystemApprovalStore(
+        root=_root(tmp_path),
+        clock=lambda: _NOW,
+    )
+    approval = ApprovalRecord.create(
+        run_id="run-m13",
+        plan_hash=_PLAN_HASH,
+        scope=ApprovalScope.SUBTITLE_ACQUIRE,
+        expires_at=_NOW + timedelta(minutes=5),
+        nonce="s" * 32,
+    )
+    store.issue(approval)
+
+    with pytest.raises(ApprovalError) as raised:
+        store.claim(
+            approval_id=approval.approval_id,
+            run_id="run-m13",
+            plan_hash=_PLAN_HASH,
+            scope=ApprovalScope.APPLY,
+        )
+    assert raised.value.code is ApprovalErrorCode.BINDING_MISMATCH
+
+    assert store.claim(
+        approval_id=approval.approval_id,
+        run_id="run-m13",
+        plan_hash=_PLAN_HASH,
+        scope=ApprovalScope.SUBTITLE_ACQUIRE,
+    ) == approval
+
+
 def test_expired_approval_cannot_be_claimed(tmp_path: Path) -> None:
     now = [_NOW]
     store = FilesystemApprovalStore(

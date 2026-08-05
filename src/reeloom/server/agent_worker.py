@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from agents import MaxTurnsExceeded
@@ -10,6 +11,7 @@ from reeloom.adapters.filesystem import (
     FilesystemPlanCompiler,
     FilesystemScanResult,
     FilesystemSubtitleSampleProvider,
+    FilesystemVideoSubtitleInspector,
 )
 from reeloom.agents.organizer import (
     create_organizer_context,
@@ -21,6 +23,7 @@ from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.archive_directory import ArchiveDirectoryError
 from reeloom.ports.plans import PlanStore
 from reeloom.ports.tmdb import TmdbProvider
+from reeloom.ports.subtitle_acquisition import SubtitleSearchProvider
 from reeloom.runtime.errors import BudgetExceeded
 from reeloom.runtime.events import ApprovalRequested, RunStopped
 from reeloom.runtime.state import Phase, RunStatus, StopReason
@@ -52,6 +55,11 @@ from reeloom.server.session import (
     RepositoryAgentSession,
 )
 from reeloom.server.secrets import FilesystemSecretStore
+from reeloom.server.subtitle_acquisition import (
+    SubtitleAcquisitionPlanner,
+    SubtitleAcquisitionPlanningRequest,
+)
+from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlan
 from reeloom.tools.candidates import SnapshotCandidateSource
 
 _INITIAL_PROMPT = (
@@ -79,6 +87,48 @@ class TmdbLeaseFactory(Protocol):
     def __call__(self) -> TmdbLease: ...
 
 
+class SubtitleSearchLease(Protocol):
+    @property
+    def provider(self) -> SubtitleSearchProvider: ...
+
+    async def close(self) -> None: ...
+
+
+class SubtitleSearchLeaseFactory(Protocol):
+    def __call__(self) -> SubtitleSearchLease: ...
+
+
+class SubtitlePlanningLease(Protocol):
+    @property
+    def planner(self) -> SubtitleAcquisitionPlanner: ...
+
+    async def close(self) -> None: ...
+
+
+class SubtitlePlanningLeaseFactory(Protocol):
+    def __call__(self) -> SubtitlePlanningLease: ...
+
+
+class SubtitlePlanSink(Protocol):
+    def __call__(self, plan: SubtitleAcquisitionPlan) -> object: ...
+
+
+class SubtitleLineageGate(Protocol):
+    def lineage_allows_automatic_acquisition(self, run_id: str) -> bool: ...
+
+
+class AgentWorkKind(StrEnum):
+    MEDIA_PLAN = "media_plan"
+    SUBTITLE_ACQUISITION = "subtitle_acquisition"
+    NEEDS_ATTENTION = "needs_attention"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentWorkResult:
+    kind: AgentWorkKind
+    plan_hash: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class InitialAgentWorker:
     scheduler: PostgresSchedulerRepository
@@ -91,8 +141,18 @@ class InitialAgentWorker:
     tmdb_factory: TmdbLeaseFactory
     pool: ConnectionPool
     notifications: PostgresNotificationProjector | None = None
+    subtitle_search_factory: SubtitleSearchLeaseFactory | None = None
+    subtitle_planning_factory: SubtitlePlanningLeaseFactory | None = None
+    subtitle_plan_sink: SubtitlePlanSink | None = None
+    subtitle_lineage_gate: SubtitleLineageGate | None = None
 
     async def run(self, *, run_id: str) -> str:
+        result = await self.run_result(run_id=run_id)
+        if result.plan_hash is None:
+            raise ValueError("agent work did not produce a plan")
+        return result.plan_hash
+
+    async def run_result(self, *, run_id: str) -> AgentWorkResult:
         job = self.scheduler.get_job_context(run_id=run_id)
         config = self.configs.get(job.registration.config_revision)
         watch, work_type = self._resolve_scope(job, config)
@@ -129,8 +189,38 @@ class InitialAgentWorker:
                 event_store.append(
                     RunStopped(reason=StopReason.AWAITING_APPROVAL)
                 )
-            return state.plan_hash
-        current_definition = organizer_definition(work_type)
+            return AgentWorkResult(
+                AgentWorkKind.MEDIA_PLAN, state.plan_hash
+            )
+        if (
+            state is not None
+            and state.phase is Phase.BUILD_SUBTITLE_ACQUISITION_PLAN
+        ):
+            plan = await self._build_subtitle_acquisition_plan(
+                job=job,
+                config=config,
+                compiler=compiler,
+                state=state,
+            )
+            return AgentWorkResult(
+                AgentWorkKind.SUBTITLE_ACQUISITION,
+                plan.plan_hash,
+            )
+        if state is not None and state.stop_reason is StopReason.NEEDS_ATTENTION:
+            return AgentWorkResult(AgentWorkKind.NEEDS_ATTENTION)
+        search_enabled = (
+            work_type is TmdbWorkType.ANIME
+            and config.acgrip.enabled
+            and (
+                self.subtitle_lineage_gate is None
+                or self.subtitle_lineage_gate
+                .lineage_allows_automatic_acquisition(run_id)
+            )
+        )
+        current_definition = organizer_definition(
+            work_type,
+            subtitle_acquisition_enabled=search_enabled,
+        )
         try:
             definition, bound_session_id = self.definitions.load_bound(
                 run_id=run_id
@@ -155,10 +245,16 @@ class InitialAgentWorker:
             run_id=run_id,
             session_id=session_id,
         )
+        if search_enabled and self.subtitle_search_factory is None:
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         secret = self.secrets.load(config.provider.secret_ref)
         model = self.model_factory(config, secret)
         tmdb = self.tmdb_factory()
+        subtitle_search = None
         try:
+            if search_enabled:
+                assert self.subtitle_search_factory is not None
+                subtitle_search = self.subtitle_search_factory()
             context = create_organizer_context(
                 run_id=run_id,
                 candidate_source=candidates,
@@ -169,6 +265,17 @@ class InitialAgentWorker:
                     root=output_root,
                 ),
                 subtitle_provider=subtitle_provider,
+                video_subtitle_inspector=(
+                    FilesystemVideoSubtitleInspector(scan)
+                    if search_enabled
+                    else None
+                ),
+                subtitle_search_provider=(
+                    None
+                    if subtitle_search is None
+                    else subtitle_search.provider
+                ),
+                subtitle_acquisition_enabled=search_enabled,
                 plan_compiler=compiler,
                 plan_store=self.plans,
                 budget=config.agent_budget,
@@ -182,6 +289,7 @@ class InitialAgentWorker:
                     model_settings=model.model_settings,
                     prompt=_INITIAL_PROMPT,
                     instructions=definition.instructions,
+                    tool_names=definition.tools,
                 )
             except (MaxTurnsExceeded, BudgetExceeded) as error:
                 if (
@@ -193,15 +301,83 @@ class InitialAgentWorker:
                         retryable=True,
                     ) from error
                 raise
+            if result.state.stop_reason is StopReason.NEEDS_ATTENTION:
+                return AgentWorkResult(AgentWorkKind.NEEDS_ATTENTION)
+            if (
+                result.state.phase
+                is Phase.BUILD_SUBTITLE_ACQUISITION_PLAN
+            ):
+                plan = await self._build_subtitle_acquisition_plan(
+                    job=job,
+                    config=config,
+                    compiler=compiler,
+                    state=result.state,
+                )
+                return AgentWorkResult(
+                    AgentWorkKind.SUBTITLE_ACQUISITION,
+                    plan.plan_hash,
+                )
             if (
                 result.state.phase is not Phase.AWAITING_APPROVAL
                 or result.state.plan_hash is None
             ):
                 raise ValueError("initial agent did not produce an approvable plan")
-            return result.state.plan_hash
+            return AgentWorkResult(
+                AgentWorkKind.MEDIA_PLAN,
+                result.state.plan_hash,
+            )
         finally:
+            if subtitle_search is not None:
+                await subtitle_search.close()
             await tmdb.close()
             await model.close()
+
+    async def _build_subtitle_acquisition_plan(
+        self,
+        *,
+        job: AgentJobContext,
+        config: ConfigRevision,
+        compiler: FilesystemPlanCompiler,
+        state: object,
+    ) -> SubtitleAcquisitionPlan:
+        decision = getattr(state, "subtitle_selection_decision", None)
+        selected = getattr(state, "selected_series", None)
+        capabilities = getattr(state, "subtitle_archive_capabilities", None)
+        discovery = job.discovery
+        if (
+            self.subtitle_planning_factory is None
+            or self.subtitle_plan_sink is None
+            or decision is None
+            or selected is None
+            or not isinstance(capabilities, tuple)
+            or discovery.source_folder is None
+            or discovery.folder_generation_id is None
+            or discovery.source_folder_device is None
+            or discovery.source_folder_inode is None
+        ):
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+        lease = self.subtitle_planning_factory()
+        try:
+            plan = await lease.planner.build(
+                SubtitleAcquisitionPlanningRequest(
+                    run_id=job.registration.run_id,
+                    config_revision_id=config.revision_id,
+                    created_at=discovery.discovered_at,
+                    source_root=compiler.source_root_binding,
+                    source_folder=discovery.source_folder,
+                    source_folder_device=discovery.source_folder_device,
+                    source_folder_inode=discovery.source_folder_inode,
+                    folder_generation_id=discovery.folder_generation_id,
+                    candidate_snapshot_id=discovery.snapshot_id,
+                    tmdb_id=selected.tmdb_id,
+                    decision=decision,
+                    capabilities=capabilities,
+                )
+            )
+            self.subtitle_plan_sink(plan)
+            return plan
+        finally:
+            await lease.close()
 
     @staticmethod
     def _resolve_scope(

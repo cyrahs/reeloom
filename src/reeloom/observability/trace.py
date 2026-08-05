@@ -13,6 +13,9 @@ from reeloom.runtime.events import (
     ApprovalRequested,
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
+    EmbeddedSubtitlesInspected,
+    SubtitleSearchObserved,
+    SubtitleSelectionSubmitted,
     MappingRejected,
     MappingReviewCaptured,
     MappingSubmitted,
@@ -42,6 +45,9 @@ _SCHEMA_VERSION = "redacted-trace-v1"
 _ALLOWED_TOOLS = frozenset(
     {
         "detect_subtitle_variant",
+        "check_sub_from_video",
+        "search_sub",
+        "select_subtitle_release",
         "get_existing_inventory",
         "list_dir",
         "get_tmdb_season",
@@ -171,6 +177,26 @@ def _attributes(event: RuntimeEvent) -> dict[str, TraceValue]:
         }
     if isinstance(event, SubtitleVariantDetected):
         return {"variant": event.variant.value}
+    if isinstance(event, EmbeddedSubtitlesInspected):
+        return {
+            "chinese_status": event.inspection.chinese_status.value,
+            "probe_status": event.inspection.probe_status.value,
+            "season_number": event.inspection.season_number,
+            "track_count": len(event.inspection.tracks),
+        }
+    if isinstance(event, SubtitleSearchObserved):
+        return {
+            "archive_set_count": len(event.capabilities),
+            "complete": event.record.page.complete,
+            "has_next_cursor": event.record.page.next_cursor is not None,
+            "release_count": len(event.record.page.items),
+            "season_number": event.record.season_number,
+        }
+    if isinstance(event, SubtitleSelectionSubmitted):
+        return {
+            "selection_count": len(event.decision.selections),
+            "status": event.decision.status.value,
+        }
     if isinstance(event, MappingRejected):
         return {"code": _safe_code(event.issue.code)}
     if isinstance(event, MappingReviewCaptured):

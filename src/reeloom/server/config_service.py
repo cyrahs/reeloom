@@ -69,6 +69,11 @@ class ConfigService:
             ),
             apply_policy=value.apply_policy,
             agent_budget=value.agent_budget,
+            telegram=value.telegram,
+            acgrip=value.acgrip,
+            subtitle_acquisition_policy=(
+                value.subtitle_acquisition_policy
+            ),
         )
         return self.compare_and_append_draft(
             expected_revision=expected_revision,
@@ -120,6 +125,10 @@ class ConfigService:
                 apply_policy=draft.apply_policy,
                 agent_budget=draft.agent_budget,
                 telegram=draft.telegram,
+                acgrip=draft.acgrip,
+                subtitle_acquisition_policy=(
+                    draft.subtitle_acquisition_policy
+                ),
             )
         if replacement_telegram_token is not None:
             telegram_secret_ref = self._secrets.put(
@@ -135,6 +144,10 @@ class ConfigService:
                     notification_types=draft.telegram.notification_types,
                     chat_id=draft.telegram.chat_id,
                     secret_ref=telegram_secret_ref,
+                ),
+                acgrip=draft.acgrip,
+                subtitle_acquisition_policy=(
+                    draft.subtitle_acquisition_policy
                 ),
             )
         revision = ConfigRevision.create(

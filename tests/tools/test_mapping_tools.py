@@ -27,6 +27,7 @@ from reeloom.runtime.events import (
     MappingSubmitted,
     RunStarted,
     SeriesSelected,
+    SubtitleAcquisitionConfigured,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
 )
@@ -64,11 +65,18 @@ def _candidates(*, with_subtitle: bool = False) -> CandidateSnapshot:
 
 def _runtime(
     candidates: CandidateSnapshot,
+    *,
+    subtitle_acquisition_enabled: bool = False,
 ) -> tuple[ToolRuntime, SnapshotCandidateSource]:
     source = SnapshotCandidateSource(candidates)
     store = InMemoryEventStore()
     store.append(
         RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME)
+    )
+    store.append(
+        SubtitleAcquisitionConfigured(
+            enabled=subtitle_acquisition_enabled
+        )
     )
     store.append(
         CandidateSnapshotCreated(
@@ -255,6 +263,31 @@ def test_mapping_feedback_loop_rejects_then_accepts_correction() -> None:
     assert runtime.state.phase is Phase.BUILD_PLAN
     assert runtime.state.mapping_draft is not None
     assert runtime.state.validation_issues == ()
+
+
+def test_mapping_cannot_bypass_enabled_subtitle_workflow() -> None:
+    runtime, source = _runtime(
+        _candidates(),
+        subtitle_acquisition_enabled=True,
+    )
+    asyncio.run(_observe_archive(runtime))
+
+    rejected = json.loads(
+        asyncio.run(
+            submit_mapping(
+                runtime,
+                source,
+                call_id="mapping-before-probe",
+                payload=_payload(episode=1),
+            )
+        )
+    )
+
+    assert rejected["error"] == {
+        "code": "subtitle_workflow_incomplete",
+        "retryable": True,
+    }
+    assert runtime.state.phase is Phase.MAP_EPISODES
 
 
 def test_archive_search_capability_must_be_explicit() -> None:

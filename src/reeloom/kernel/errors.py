@@ -62,6 +62,13 @@ class ErrorCode(StrEnum):
     SCAN_LIMIT_EXCEEDED = "scan_limit_exceeded"
     INVALID_TMDB_DATA = "invalid_tmdb_data"
     INVALID_TMDB_LANGUAGE = "invalid_tmdb_language"
+    INVALID_EMBEDDED_SUBTITLE_DATA = "invalid_embedded_subtitle_data"
+    INVALID_SUBTITLE_SEARCH_DATA = "invalid_subtitle_search_data"
+    INVALID_SUBTITLE_SELECTION = "invalid_subtitle_selection"
+    INVALID_SUBTITLE_ACQUISITION_PLAN = (
+        "invalid_subtitle_acquisition_plan"
+    )
+    SUBTITLE_ACQUISITION_COLLISION = "subtitle_acquisition_collision"
 
     @property
     def category(self) -> ErrorCategory:
@@ -78,6 +85,7 @@ class ErrorCode(StrEnum):
             ErrorCode.DESTINATION_COLLISION,
             ErrorCode.PLAN_MAPPING_MISMATCH,
             ErrorCode.PLAN_PREFLIGHT_MISMATCH,
+            ErrorCode.SUBTITLE_ACQUISITION_COLLISION,
         }:
             return ErrorCategory.CONFLICT
         return ErrorCategory.INVALID_INPUT

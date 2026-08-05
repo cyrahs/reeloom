@@ -11,7 +11,7 @@ from reeloom.adapters.openai_model import (
 )
 
 
-def test_provider_uses_explicit_official_responses_configuration(
+def test_provider_uses_explicit_responses_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -32,6 +32,7 @@ def test_provider_uses_explicit_official_responses_configuration(
     monkeypatch.setattr(adapter, "OpenAIResponsesModel", FakeModel)
     config = OpenAIModelConfig(
         model_name="gpt-5.6",
+        base_url="https://gateway.example/openai/v1/",
         request_timeout_seconds=30,
         max_retries=1,
         project="project-1",
@@ -46,7 +47,7 @@ def test_provider_uses_explicit_official_responses_configuration(
     asyncio.run(provider.close())
 
     assert captured["api_key"] == "explicit-secret"
-    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["base_url"] == "https://gateway.example/openai/v1"
     assert captured["timeout"] == 30.0
     assert captured["max_retries"] == 1
     assert captured["project"] == "project-1"
@@ -62,7 +63,10 @@ def test_provider_uses_explicit_official_responses_configuration(
 
 
 def test_model_config_defaults_to_five_retries() -> None:
-    assert OpenAIModelConfig(model_name="gpt-5.6").max_retries == 5
+    config = OpenAIModelConfig(model_name="gpt-5.6")
+
+    assert config.max_retries == 5
+    assert config.base_url == "https://api.openai.com/v1"
 
 
 @pytest.mark.parametrize(
@@ -93,6 +97,20 @@ def test_model_config_rejects_unknown_behavior_settings() -> None:
             model_name="gpt-5.6",
             reasoning_effort="unbounded",
         )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "http://api.example/v1",
+        "https://user:secret@api.example/v1",
+        "https://api.example/v1?query=value",
+        "https://api.example/v1#fragment",
+    ),
+)
+def test_model_config_rejects_unsafe_base_url(base_url: str) -> None:
+    with pytest.raises(ValueError, match="invalid base_url"):
+        OpenAIModelConfig(model_name="gpt-5.6", base_url=base_url)
 
 
 def test_provider_rejects_blank_or_whitespace_credentials() -> None:

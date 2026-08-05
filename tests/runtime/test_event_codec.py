@@ -26,6 +26,25 @@ from reeloom.kernel.rename_plan import (
     RootBinding,
     compile_plan_draft,
 )
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleCodec,
+    EmbeddedSubtitleInspection,
+    EmbeddedSubtitleLanguage,
+    EmbeddedSubtitleProbeStatus,
+    EmbeddedSubtitleTrack,
+    EmbeddedSubtitleTrackId,
+    SubtitleArchiveFormat,
+    SubtitleArchiveSetCapability,
+    SubtitleArchiveSetId,
+    SubtitleArchiveSetSummary,
+    SubtitleReleaseId,
+    SubtitleReleaseSummary,
+    SubtitleSearchPage,
+    SubtitleSearchRecord,
+    SubtitleSelection,
+    SubtitleSelectionDecision,
+)
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError
@@ -37,7 +56,12 @@ from reeloom.runtime.events import (
     ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
+    SubtitleAcquisitionConfigured,
     ExistingInventoryObserved,
+    EmbeddedSubtitlesInspected,
+    SubtitleSearchObserved,
+    SubtitleSearchFailed,
+    SubtitleSelectionSubmitted,
     ExecutionSettled,
     InteractionCompleted,
     MappingRejected,
@@ -210,6 +234,79 @@ def _event_samples() -> tuple[object, ...]:
             "call-3",
             CandidateId(CandidateKind.SUBTITLE, 1),
             SubtitleVariant.CHS,
+        ),
+        EmbeddedSubtitlesInspected(
+            "call-probe",
+            EmbeddedSubtitleInspection(
+                CandidateId(CandidateKind.VIDEO, 1),
+                1,
+                EmbeddedSubtitleProbeStatus.PRESENT,
+                EmbeddedChineseStatus.PRESENT,
+                (
+                    EmbeddedSubtitleTrack(
+                        EmbeddedSubtitleTrackId(1),
+                        EmbeddedSubtitleCodec.ASS,
+                        EmbeddedSubtitleLanguage.ZH_HANS,
+                        True,
+                        False,
+                    ),
+                ),
+            ),
+        ),
+        SubtitleAcquisitionConfigured(True),
+        SubtitleSearchObserved(
+            "call-search-sub",
+            SubtitleSearchRecord(
+                season_number=1,
+                cursor=None,
+                page=SubtitleSearchPage(
+                    items=(
+                        SubtitleReleaseSummary(
+                            release_id=SubtitleReleaseId(1),
+                            archive_sets=(
+                                SubtitleArchiveSetSummary(
+                                    SubtitleArchiveSetId(1),
+                                    SubtitleArchiveFormat.SEVEN_Z,
+                                    1,
+                                    1024,
+                                ),
+                            ),
+                            title="测试字幕",
+                            post_excerpt="简短证据",
+                            coverage_hint="S01",
+                            language_hints=("简体中文",),
+                            release_group_hints=("字幕组",),
+                            match_reasons=("标题匹配",),
+                            warnings=(),
+                            evidence_complete=True,
+                        ),
+                    ),
+                    next_cursor=None,
+                    complete=True,
+                ),
+            ),
+            (
+                SubtitleArchiveSetCapability(
+                    SubtitleArchiveSetId(1),
+                    SubtitleReleaseId(1),
+                    SubtitleArchiveFormat.SEVEN_Z,
+                    10081,
+                    95257,
+                    (34768,),
+                    1024,
+                ),
+            ),
+        ),
+        SubtitleSearchFailed(
+            "call-search-failed",
+            1,
+            "subtitle_search_unavailable",
+        ),
+        SubtitleSelectionSubmitted(
+            "call-select-sub",
+            SubtitleSelectionDecision.selected(
+                (SubtitleSelection(1, SubtitleArchiveSetId(1)),)
+            ),
         ),
         MappingRejected(
             "call-4",

@@ -96,6 +96,7 @@ export const runSchema = z
         "settle_folder",
         "dispose_failed_folder",
         "recover_folder_disposition",
+        "approve_subtitle_acquisition",
         "delete_run",
       ]),
     ),
@@ -166,6 +167,22 @@ export const runSchema = z
       })
       .strict()
       .nullable(),
+    subtitle_acquisition: z
+      .object({
+        plan_hash: z.string(),
+        policy: z.enum(["plan_only", "manual", "automatic"]),
+        status: z.enum(["planned", "approved", "published", "blocked"]),
+        approval_id: z.string().nullable(),
+        transaction_id: z.string().nullable(),
+        failure_code: z.string().nullable(),
+        successor_status: z
+          .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
+          .nullable()
+          .default(null),
+      })
+      .strict()
+      .nullable()
+      .default(null),
   })
   .strict();
 
@@ -351,7 +368,14 @@ export const configSchema = z
         destination_configured: z.boolean(),
       })
       .strict(),
+    acgrip: z
+      .object({ enabled: z.boolean() })
+      .strict()
+      .default({ enabled: false }),
     apply_policy: z.enum(["plan_only", "manual", "automatic"]),
+    subtitle_acquisition_policy: z
+      .enum(["plan_only", "manual", "automatic"])
+      .default("automatic"),
     agent_budget: agentBudgetSchema,
   })
   .strict();
@@ -433,6 +457,22 @@ export const applyResultSchema = z
       })
       .strict()
       .nullable(),
+  })
+  .strict();
+
+export const subtitleAcquisitionResultSchema = z
+  .object({
+    run_id: z.string(),
+    plan_hash: z.string(),
+    policy: z.enum(["plan_only", "manual", "automatic"]),
+    status: z.enum(["planned", "approved", "published", "blocked"]),
+    approval_id: z.string().nullable(),
+    transaction_id: z.string().nullable(),
+    failure_code: z.string().nullable(),
+    successor_status: z
+      .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
+      .nullable()
+      .default(null),
   })
   .strict();
 

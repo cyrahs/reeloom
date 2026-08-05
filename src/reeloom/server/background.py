@@ -15,7 +15,11 @@ from reeloom.kernel.candidates import CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.errors import BudgetExceeded, RuntimeDomainError, RuntimeErrorCode
-from reeloom.server.agent_worker import InitialAgentWorker
+from reeloom.server.agent_worker import (
+    AgentWorkKind,
+    AgentWorkResult,
+    InitialAgentWorker,
+)
 from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.config_repository import PostgresConfigRepository
@@ -28,6 +32,10 @@ from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
 from reeloom.server.watcher import NoFollowWatcher
+from reeloom.server.subtitle_acquisition_service import (
+    SubtitleAcquisitionCoordinator,
+)
+from reeloom.server.subtitle_successor import SubtitleSuccessorWorker
 
 _LOG = logging.getLogger(__name__)
 _MAX_FOLDER_FAILURE_RETRIES = 3
@@ -44,6 +52,8 @@ class BackgroundServices:
     apply: ApplyCoordinator
     folder_dispositions: FolderDispositionCoordinator | None = None
     notifications: ConfiguredNotificationDelivery | None = None
+    subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
+    subtitle_successors: SubtitleSuccessorWorker | None = None
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -103,6 +113,14 @@ class BackgroundServices:
                     self._execute_job(claimed.job_id, claimed.run_id)
                 if self.notifications is not None:
                     progressed = self.notifications.run_once() or progressed
+                if self.subtitle_successors is not None:
+                    progressed = (
+                        self.subtitle_successors.process_one(
+                            worker_id=self.boot_id,
+                            now=datetime.now(UTC),
+                        )
+                        is not None
+                    ) or progressed
             except Exception as error:
                 _LOG.error(
                     "background_cycle_failed error_type=%s",
@@ -202,6 +220,8 @@ class BackgroundServices:
         retry = False
         restarted = False
         folder_run = False
+        subtitle_work = False
+        job_already_settled = False
         database_error: ServerError | None = None
         try:
             context = self.scheduler.get_job_context(run_id=run_id)
@@ -223,7 +243,42 @@ class BackgroundServices:
                 )
                 succeeded = True
                 return
-            plan_hash = asyncio.run(self.worker.run(run_id=run_id))
+            if hasattr(self.worker, "run_result"):
+                work = asyncio.run(self.worker.run_result(run_id=run_id))
+            else:
+                work = AgentWorkResult(
+                    AgentWorkKind.MEDIA_PLAN,
+                    asyncio.run(self.worker.run(run_id=run_id)),
+                )
+            if work.kind is AgentWorkKind.NEEDS_ATTENTION:
+                succeeded = True
+                return
+            if work.plan_hash is None:
+                raise RuntimeError("agent work omitted plan hash")
+            plan_hash = work.plan_hash
+            subtitle_work = (
+                work.kind is AgentWorkKind.SUBTITLE_ACQUISITION
+            )
+            if subtitle_work:
+                if self.subtitle_acquisitions is None:
+                    raise RuntimeError(
+                        "subtitle acquisition service unavailable"
+                    )
+                config = self.configs.get(
+                    context.registration.config_revision
+                )
+                if (
+                    config.subtitle_acquisition_policy.value
+                    == "automatic"
+                ):
+                    request = self.subtitle_acquisitions.approve_and_execute(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                        automatic=True,
+                    )
+                    job_already_settled = request.status == "published"
+                succeeded = True
+                return
             disposition = (
                 None
                 if self.folder_dispositions is None
@@ -279,9 +334,19 @@ class BackgroundServices:
                 and error.code is ServerErrorCode.DATABASE_UNAVAILABLE
             ):
                 database_error = error
-            reason_code = self._failure_reason(error)
+            reason_code = (
+                None if subtitle_work else self._failure_reason(error)
+            )
+            if subtitle_work and self.subtitle_acquisitions is not None:
+                request = self.subtitle_acquisitions.resolve(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+                if request is not None and request.status == "blocked":
+                    succeeded = True
             execution_blocked = (
-                isinstance(error, ExecutorError)
+                not subtitle_work
+                and isinstance(error, ExecutorError)
                 and error.code
                 not in {
                     ExecutorErrorCode.DESTINATION_COLLISION,
@@ -292,7 +357,9 @@ class BackgroundServices:
                 isinstance(error, ExecutorError)
                 and error.code is ExecutorErrorCode.SOURCE_DRIFT
             )
-            if execution_blocked:
+            if subtitle_work and succeeded:
+                pass
+            elif execution_blocked:
                 succeeded = True
             elif reason_code is not None:
                 try:
@@ -408,7 +475,9 @@ class BackgroundServices:
                 ),
             )
         finally:
-            if restarted:
+            if job_already_settled:
+                pass
+            elif restarted:
                 pass
             elif retry:
                 self.scheduler.retry_job(

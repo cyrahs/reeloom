@@ -273,7 +273,14 @@ class PostgresQueries:
                                AND s.tool_calls < s.max_tool_calls
                                AND s.failures < s.max_failures,
                                false
-                           ) AS interaction_budget_available
+                           ) AS interaction_budget_available,
+                           acquisition.plan_hash,
+                           acquisition.policy,
+                           acquisition.status,
+                           acquisition.approval_id,
+                           acquisition.transaction_id,
+                           acquisition.failure_code,
+                           successor.state
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -344,6 +351,14 @@ class PostgresQueries:
                         ORDER BY p.created_at DESC, p.plan_hash DESC
                         LIMIT 1
                     ) AS folder ON true
+                    LEFT JOIN subtitle_acquisition_requests AS acquisition
+                      ON acquisition.run_id = r.run_id
+                    LEFT JOIN subtitle_acquisition_settlements
+                        AS acquisition_settlement
+                      ON acquisition_settlement.origin_run_id = r.run_id
+                    LEFT JOIN subtitle_successor_outbox AS successor
+                      ON successor.lineage_key =
+                         acquisition_settlement.lineage_key
                     WHERE r.run_id = %s
                       AND NOT EXISTS (
                           SELECT 1 FROM run_deletions AS deleted
@@ -408,6 +423,16 @@ class PostgresQueries:
             and row[29] is not None
         ):
             actions.append("recover_folder_disposition")
+        acquisition_plan_hash = row[37]
+        acquisition_policy = None if row[38] is None else str(row[38])
+        acquisition_status = None if row[39] is None else str(row[39])
+        if (
+            not busy
+            and acquisition_plan_hash is not None
+            and acquisition_policy == "manual"
+            and acquisition_status in {"planned", "approved"}
+        ):
+            actions.append("approve_subtitle_acquisition")
         if bool(row[32]):
             actions.append("delete_run")
         return {
@@ -471,6 +496,27 @@ class PostgresQueries:
                 row[34]
                 if isinstance(row[34], dict)
                 else archive_report_from_projection(row[33])
+            ),
+            "subtitle_acquisition": (
+                None
+                if acquisition_plan_hash is None
+                else {
+                    "plan_hash": str(acquisition_plan_hash),
+                    "policy": acquisition_policy,
+                    "status": acquisition_status,
+                    "approval_id": (
+                        None if row[40] is None else str(row[40])
+                    ),
+                    "transaction_id": (
+                        None if row[41] is None else str(row[41])
+                    ),
+                    "failure_code": (
+                        None if row[42] is None else str(row[42])
+                    ),
+                    "successor_status": (
+                        None if row[43] is None else str(row[43])
+                    ),
+                }
             ),
         }
 

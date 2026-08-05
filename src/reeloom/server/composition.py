@@ -7,7 +7,7 @@ import stat
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI
 
@@ -15,8 +15,25 @@ from reeloom.adapters.journal import FilesystemJournalStore
 from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.adapters.telegram import TelegramHttpAdapter
+from reeloom.adapters.acgrip import (
+    AcgripSubtitleArchiveFetcher,
+    AcgripSubtitleSearchProvider,
+)
+from reeloom.adapters.approval import FilesystemApprovalStore
+from reeloom.adapters.subtitle_archive import (
+    FilesystemSubtitleArchiveInspector,
+)
+from reeloom.adapters.subtitle_journal import (
+    FilesystemSubtitleAcquisitionJournalStore,
+)
+from reeloom.adapters.subtitle_plan_store import (
+    FilesystemSubtitleAcquisitionPlanStore,
+)
 from reeloom.executor.apply import FilesystemExecutor
 from reeloom.executor.folder_disposition import FolderDispositionExecutor
+from reeloom.executor.subtitle_acquisition import (
+    SubtitleAcquisitionExecutor,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.api import ApiDependencies, create_api
 from reeloom.server.agent_repository import (
@@ -27,6 +44,19 @@ from reeloom.server.agent_worker import (
     ModelLeaseFactory,
     TmdbLeaseFactory,
 )
+from reeloom.server.subtitle_acquisition import SubtitleAcquisitionPlanner
+from reeloom.server.subtitle_acquisition_service import (
+    SubtitleAcquisitionCoordinator,
+)
+from reeloom.server.subtitle_successor import (
+    SubtitleFreshScanError,
+    SubtitleSuccessorClaim,
+    SubtitleSuccessorWorker,
+)
+from reeloom.server.subtitle_successor_repository import (
+    PostgresSubtitleSuccessorOutbox,
+)
+from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
 from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.archive_directory import run_directory_io
 from reeloom.server.approval_repository import PostgresApprovalStore
@@ -81,12 +111,16 @@ from reeloom.server.organizer_definition import (
     LEGACY_ORGANIZER_SCHEMA_VERSION,
     PREVIOUS_MOVIE_ORGANIZER_SCHEMA_VERSION,
     PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+    V5_ORGANIZER_SCHEMA_VERSION,
+    V4_ORGANIZER_SCHEMA_VERSION,
+    V3_ORGANIZER_SCHEMA_VERSION,
     V2_MOVIE_ORGANIZER_SCHEMA_VERSION,
     V2_ORGANIZER_SCHEMA_VERSION,
 )
 from reeloom.server.secrets import FilesystemSecretStore
 from reeloom.server.config import (
     ConfigRevision,
+    ServerWorkType,
 )
 from reeloom.server.config_edit import ConfigEdit, parse_config_edit
 from reeloom.server.config_repository import PostgresConfigRepository
@@ -110,6 +144,68 @@ class ApplicationHealth:
     notification_pending: int
     notification_dead: int
     telegram_configured: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _AcgripSearchLease:
+    provider: AcgripSubtitleSearchProvider
+
+    async def close(self) -> None:
+        await self.provider.aclose()
+
+
+@dataclass(frozen=True, slots=True)
+class _AcgripPlanningLease:
+    fetcher: AcgripSubtitleArchiveFetcher
+    planner: SubtitleAcquisitionPlanner
+
+    async def close(self) -> None:
+        await self.fetcher.aclose()
+
+
+@dataclass(frozen=True, slots=True)
+class _AcgripExecutorLease:
+    fetcher: AcgripSubtitleArchiveFetcher
+    executor: SubtitleAcquisitionExecutor
+
+    async def close(self) -> None:
+        await self.fetcher.aclose()
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfiguredSubtitleFreshScanner:
+    configs: PostgresConfigRepository
+    watcher: NoFollowWatcher = NoFollowWatcher()
+
+    def scan(self, claim: SubtitleSuccessorClaim) -> FolderSnapshot:
+        try:
+            config = self.configs.get(claim.config_revision)
+            watch = next(
+                (
+                    item
+                    for item in config.watches
+                    if item.watch_id == claim.watch_id
+                    and item.work_type is ServerWorkType.ANIME
+                ),
+                None,
+            )
+            if watch is None:
+                raise SubtitleFreshScanError(retryable=False)
+            return self.watcher.scan_folder(
+                AuthorizedRoot.create(watch.root),
+                PurePosixPath(claim.settlement.source_folder),
+                logical_name=claim.settlement.source_folder,
+            )
+        except SubtitleFreshScanError:
+            raise
+        except ServerError as error:
+            raise SubtitleFreshScanError(
+                retryable=(
+                    error.code is ServerErrorCode.DATABASE_UNAVAILABLE
+                )
+            ) from None
+        except Exception:
+            raise SubtitleFreshScanError(retryable=True) from None
 
 
 def _state_subdirectory(root: Path, name: str) -> AuthorizedRoot:
@@ -187,6 +283,7 @@ def _retire_unplanned_folder_runs(
                 LEGACY_MOVIE_ORGANIZER_SCHEMA_VERSION,
             ),
             "retired_tool_call",
+            tuple(ServerWorkType),
         ),
         (
             (
@@ -194,18 +291,31 @@ def _retire_unplanned_folder_runs(
                 V2_MOVIE_ORGANIZER_SCHEMA_VERSION,
             ),
             "retired_agent_definition",
+            tuple(ServerWorkType),
         ),
         (
             (
-                PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+                V3_ORGANIZER_SCHEMA_VERSION,
                 PREVIOUS_MOVIE_ORGANIZER_SCHEMA_VERSION,
             ),
             "retired_invalid_tool_schema",
+            tuple(ServerWorkType),
+        ),
+        (
+            (V4_ORGANIZER_SCHEMA_VERSION, V5_ORGANIZER_SCHEMA_VERSION),
+            "retired_m13_probe_schema",
+            (ServerWorkType.ANIME,),
+        ),
+        (
+            (PREVIOUS_ORGANIZER_SCHEMA_VERSION,),
+            "retired_m13_agent_loop_schema",
+            (ServerWorkType.ANIME,),
         ),
     )
-    for schema_versions, failure_code in retired:
+    for schema_versions, failure_code, work_types in retired:
         for run_id in scheduler.retired_unplanned_folder_runs(
-            schema_versions=schema_versions
+            schema_versions=schema_versions,
+            work_types=work_types,
         ):
             event_store = PostgresEventStore(
                 database.pool,
@@ -262,6 +372,18 @@ def build_application(
         )
         folder_journal_root = _state_subdirectory(
             settings.state_root, "folder-journals"
+        )
+        subtitle_plan_root = _state_subdirectory(
+            settings.state_root, "subtitle-plans"
+        )
+        subtitle_approval_root = _state_subdirectory(
+            settings.state_root, "subtitle-approvals"
+        )
+        subtitle_journal_root = _state_subdirectory(
+            settings.state_root, "subtitle-journals"
+        )
+        subtitle_workspace = _state_subdirectory(
+            settings.state_root, "subtitle-workspace"
         )
         secrets = FilesystemSecretStore(secret_root)
         plans = FilesystemPlanStore(plan_root)
@@ -326,6 +448,56 @@ def build_application(
             scheduler=scheduler,
         )
         config_repository = PostgresConfigRepository(database.pool)
+        subtitle_plans = FilesystemSubtitleAcquisitionPlanStore(
+            subtitle_plan_root
+        )
+        subtitle_approvals = FilesystemApprovalStore(
+            subtitle_approval_root
+        )
+        subtitle_journals = FilesystemSubtitleAcquisitionJournalStore(
+            subtitle_journal_root
+        )
+        subtitle_inspector = FilesystemSubtitleArchiveInspector()
+        subtitle_successor_outbox = PostgresSubtitleSuccessorOutbox(
+            database.pool
+        )
+
+        def subtitle_planning_factory() -> _AcgripPlanningLease:
+            fetcher = AcgripSubtitleArchiveFetcher(subtitle_workspace)
+            return _AcgripPlanningLease(
+                fetcher,
+                SubtitleAcquisitionPlanner(
+                    fetcher,
+                    subtitle_inspector,
+                    subtitle_plans,
+                ),
+            )
+
+        def subtitle_executor_factory() -> _AcgripExecutorLease:
+            fetcher = AcgripSubtitleArchiveFetcher(subtitle_workspace)
+            return _AcgripExecutorLease(
+                fetcher,
+                SubtitleAcquisitionExecutor(
+                    subtitle_plans,
+                    subtitle_approvals,
+                    subtitle_journals,
+                    fetcher,
+                    subtitle_inspector,
+                ),
+            )
+
+        subtitle_acquisitions = SubtitleAcquisitionCoordinator(
+            pool=database.pool,
+            plans=subtitle_plans,
+            approvals=subtitle_approvals,
+            executor_factory=subtitle_executor_factory,
+            successors=subtitle_successor_outbox,
+        )
+        subtitle_acquisitions.reconcile_approved()
+        subtitle_successor_worker = SubtitleSuccessorWorker(
+            outbox=subtitle_successor_outbox,
+            scanner=_ConfiguredSubtitleFreshScanner(config_repository),
+        )
         config_service = ConfigService(
             configs=config_repository,
             secrets=secrets,
@@ -397,6 +569,9 @@ def build_application(
                     )
                 )
                 or telegram.enabled != expected.draft.telegram.enabled
+                or revision.acgrip != expected.draft.acgrip
+                or revision.subtitle_acquisition_policy
+                is not expected.draft.subtitle_acquisition_policy
                 or telegram.notification_types
                 != expected.draft.telegram.notification_types
                 or telegram.chat_id != expected.draft.telegram.chat_id
@@ -533,6 +708,12 @@ def build_application(
             tmdb_factory=effective_tmdb_factory,
             pool=database.pool,
             notifications=notification_projector,
+            subtitle_search_factory=lambda: _AcgripSearchLease(
+                AcgripSubtitleSearchProvider()
+            ),
+            subtitle_planning_factory=subtitle_planning_factory,
+            subtitle_plan_sink=subtitle_acquisitions.register_plan,
+            subtitle_lineage_gate=subtitle_successor_outbox,
         )
         background = BackgroundServices(
             boot_id=boot_id,
@@ -548,6 +729,8 @@ def build_application(
                 sender_factory=effective_telegram_factory,
                 worker_id=boot_id,
             ),
+            subtitle_acquisitions=subtitle_acquisitions,
+            subtitle_successors=subtitle_successor_worker,
         )
 
         def health() -> object:
@@ -573,6 +756,7 @@ def build_application(
                 interactions=interactions,
                 apply=apply,
                 folder_dispositions=folder_dispositions,
+                subtitle_acquisitions=subtitle_acquisitions,
                 health=health,
                 config_update=update_config,
                 config_resolve=resolve_config,

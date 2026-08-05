@@ -5,7 +5,9 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "../src/reeloom/server/static",
-    emptyOutDir: true,
+    // Hashed assets may still be served by an already-open browser during an
+    // upgrade. Preserve prior bundles; the repository also forbids deletion.
+    emptyOutDir: false,
     manifest: "manifest.json",
     assetsDir: "assets",
   },

@@ -1095,9 +1095,10 @@ web、MCP、shell、文件或 apply capability。SDK conversation 使用独立
 `FilesystemAgentSession`：`add/pop/clear` 都原子发布新的 no-follow immutable
 record，从不删除旧会话文件；它可恢复模型历史，但不能改变领域 `RunState`。
 
-`scripts/openai_live_smoke.py` 必须显式传 `--live --model`，且只从进程环境读取
-`OPENAI_API_KEY`。它在与离线基线相同的 dataset/scenario 上运行真实 model，
-输出 dataset hash、model settings 和脱敏指标；pytest 永远不会调用它的网络
-路径。模型选择与工具调用遵循 OpenAI 当前的
+`scripts/openai_live_smoke.py` 必须显式传 `--live`。key/base URL/model/reasoning
+可以从进程环境或仓库根固定 `.env` 的受限 allowlist 读取，CLI model/reasoning
+优先。它在与离线基线相同的 dataset/scenario 上运行真实 model，输出 dataset
+hash、model settings 和脱敏指标；pytest 永远不会调用它的网络路径。模型选择与
+工具调用遵循 OpenAI 当前的
 [model guidance](https://developers.openai.com/api/docs/guides/latest-model)
 和 [Responses tools guidance](https://developers.openai.com/api/docs/guides/tools)。

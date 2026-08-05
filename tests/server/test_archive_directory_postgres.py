@@ -38,12 +38,17 @@ from reeloom.server.folder_disposition import (
     PostgresFolderDispositionRepository,
 )
 from reeloom.server.organizer_definition import (
+    ANIME_ORGANIZER_TOOL_NAMES,
     EPISODE_ORGANIZER_TOOL_NAMES,
     LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
     LEGACY_ORGANIZER_SCHEMA_VERSION,
+    M13_PROBE_ORGANIZER_TOOL_NAMES,
     ORGANIZER_NAME,
     ORGANIZER_SCHEMA_VERSION,
     PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+    V5_ORGANIZER_SCHEMA_VERSION,
+    V4_ORGANIZER_SCHEMA_VERSION,
+    V3_ORGANIZER_SCHEMA_VERSION,
     V2_ORGANIZER_SCHEMA_VERSION,
     organizer_definition,
 )
@@ -80,8 +85,8 @@ class _FolderRun:
 def _folder_run(
     tmp_path: Path,
     *,
-    schema_version: str = PREVIOUS_ORGANIZER_SCHEMA_VERSION,
-    tools: tuple[str, ...] = EPISODE_ORGANIZER_TOOL_NAMES,
+    schema_version: str = V5_ORGANIZER_SCHEMA_VERSION,
+    tools: tuple[str, ...] = M13_PROBE_ORGANIZER_TOOL_NAMES,
 ) -> _FolderRun:
     control = PostgresControlPlane(_dsn())
     control.open()
@@ -289,9 +294,24 @@ def _add_retirement_blocker(case: _FolderRun, blocker: str) -> None:
             "retired_agent_definition",
         ),
         (
-            PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+            V3_ORGANIZER_SCHEMA_VERSION,
             EPISODE_ORGANIZER_TOOL_NAMES,
             "retired_invalid_tool_schema",
+        ),
+        (
+            V4_ORGANIZER_SCHEMA_VERSION,
+            EPISODE_ORGANIZER_TOOL_NAMES,
+            "retired_m13_probe_schema",
+        ),
+        (
+            V5_ORGANIZER_SCHEMA_VERSION,
+            M13_PROBE_ORGANIZER_TOOL_NAMES,
+            "retired_m13_probe_schema",
+        ),
+        (
+            PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+            ANIME_ORGANIZER_TOOL_NAMES,
+            "retired_m13_agent_loop_schema",
         ),
     ),
 )
@@ -439,7 +459,7 @@ def test_retired_folder_run_preserves_durable_work(
     try:
         _add_retirement_blocker(case, blocker)
         assert case.scheduler.retired_unplanned_folder_runs(
-            schema_versions=(PREVIOUS_ORGANIZER_SCHEMA_VERSION,)
+            schema_versions=(V5_ORGANIZER_SCHEMA_VERSION,)
         ) == ()
     finally:
         case.control.close()

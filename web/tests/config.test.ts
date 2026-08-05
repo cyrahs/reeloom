@@ -26,6 +26,8 @@ test("round-trips existing capabilities through explicit retain modes", () => {
     telegramBotToken: "",
     telegramChatId: "",
     apply_policy: "manual",
+    acgripEnabled: false,
+    subtitle_acquisition_policy: "automatic",
     agent_budget: {
       max_model_turns: 64,
       max_tool_calls: 64,
@@ -66,6 +68,8 @@ test("includes replacement values only after an explicit replace choice", () => 
     telegramBotToken: "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
     telegramChatId: "-1001234567890",
     apply_policy: "plan_only",
+    acgripEnabled: true,
+    subtitle_acquisition_policy: "manual",
     agent_budget: {
       max_model_turns: 32,
       max_tool_calls: 48,
@@ -131,6 +135,8 @@ test("cannot retain a capability after changing its exact identity", () => {
       telegramBotToken: "",
       telegramChatId: "",
       apply_policy: "manual",
+      acgripEnabled: false,
+      subtitle_acquisition_policy: "automatic",
       agent_budget: {
         max_model_turns: 64,
         max_tool_calls: 64,
@@ -165,6 +171,8 @@ test("cannot retain a capability after changing its exact identity", () => {
         destination_configured: false,
       },
       apply_policy: "manual",
+      acgrip: { enabled: false },
+      subtitle_acquisition_policy: "automatic",
       agent_budget: {
         max_model_turns: 64,
         max_tool_calls: 64,

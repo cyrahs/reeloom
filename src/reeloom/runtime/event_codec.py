@@ -30,7 +30,28 @@ from reeloom.kernel.naming import (
 )
 from reeloom.kernel.initial_plan import parse_initial_plan
 from reeloom.kernel.rename_plan import RootBinding
-from reeloom.kernel.schema import check_fields
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleCodec,
+    EmbeddedSubtitleInspection,
+    EmbeddedSubtitleLanguage,
+    EmbeddedSubtitleProbeStatus,
+    EmbeddedSubtitleTrack,
+    EmbeddedSubtitleTrackId,
+    SubtitleArchiveFormat,
+    SubtitleArchiveSetCapability,
+    SubtitleArchiveSetId,
+    SubtitleArchiveSetSummary,
+    SubtitleReleaseId,
+    SubtitleReleaseSummary,
+    SubtitleSearchCursorId,
+    SubtitleSearchPage,
+    SubtitleSearchRecord,
+    SubtitleSelection,
+    SubtitleSelectionDecision,
+    SubtitleSelectionStatus,
+)
+from reeloom.kernel.schema import check_fields, require_object
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.budget import RunBudget
@@ -41,6 +62,7 @@ from reeloom.runtime.events import (
     ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
+    SubtitleAcquisitionConfigured,
     ExistingInventoryObserved,
     ExecutionSettled,
     InteractionCompleted,
@@ -60,6 +82,10 @@ from reeloom.runtime.events import (
     RunStopped,
     RuntimeEvent,
     SeriesSelected,
+    EmbeddedSubtitlesInspected,
+    SubtitleSearchObserved,
+    SubtitleSearchFailed,
+    SubtitleSelectionSubmitted,
     SubtitleVariantDetected,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
@@ -244,6 +270,390 @@ def _work_type(value: object) -> TmdbWorkType:
 
 def _candidate_id(value: object) -> CandidateId:
     return CandidateId.parse(value)
+
+
+def _embedded_inspection_payload(
+    value: EmbeddedSubtitleInspection,
+) -> dict[str, object]:
+    return {
+        "chinese_status": value.chinese_status.value,
+        "probe_status": value.probe_status.value,
+        "season_number": value.season_number,
+        "tracks": [
+            {
+                "codec": item.codec.value,
+                "default": item.default,
+                "forced": item.forced,
+                "language": item.language.value,
+                "track_id": str(item.track_id),
+            }
+            for item in value.tracks
+        ],
+        "video_id": str(value.video_id),
+    }
+
+
+def _embedded_inspection(value: object) -> EmbeddedSubtitleInspection:
+    payload = check_fields(
+        value,
+        frozenset(
+            {
+                "chinese_status",
+                "probe_status",
+                "season_number",
+                "tracks",
+                "video_id",
+            }
+        ),
+        field="embedded_subtitle_inspection",
+    )
+    tracks: list[EmbeddedSubtitleTrack] = []
+    for index, raw_track in enumerate(_list(payload["tracks"])):
+        track = check_fields(
+            raw_track,
+            frozenset(
+                {
+                    "codec",
+                    "default",
+                    "forced",
+                    "language",
+                    "track_id",
+                }
+            ),
+            field=f"embedded_subtitle_inspection.tracks[{index}]",
+        )
+        try:
+            tracks.append(
+                EmbeddedSubtitleTrack(
+                    track_id=EmbeddedSubtitleTrackId.parse(
+                        track["track_id"]
+                    ),
+                    codec=EmbeddedSubtitleCodec(_str(track["codec"])),
+                    language=EmbeddedSubtitleLanguage(
+                        _str(track["language"])
+                    ),
+                    default=_bool(track["default"]),
+                    forced=_bool(track["forced"]),
+                )
+            )
+        except ValueError:
+            _invalid()
+    try:
+        return EmbeddedSubtitleInspection(
+            video_id=_candidate_id(payload["video_id"]),
+            season_number=_int(payload["season_number"]),
+            probe_status=EmbeddedSubtitleProbeStatus(
+                _str(payload["probe_status"])
+            ),
+            chinese_status=EmbeddedChineseStatus(
+                _str(payload["chinese_status"])
+            ),
+            tracks=tuple(tracks),
+        )
+    except ValueError:
+        _invalid()
+
+
+def _subtitle_archive_summary_payload(
+    value: SubtitleArchiveSetSummary,
+) -> dict[str, object]:
+    return {
+        "archive_set_id": str(value.archive_set_id),
+        "declared_size": value.declared_size,
+        "format": value.format.value,
+        "label_hint": value.label_hint,
+        "coverage_hint": value.coverage_hint,
+        "language_hints": list(value.language_hints),
+        "release_group_hints": list(value.release_group_hints),
+        "warnings": list(value.warnings),
+        "volume_count": value.volume_count,
+    }
+
+
+def _subtitle_archive_summary(value: object) -> SubtitleArchiveSetSummary:
+    legacy_fields = frozenset(
+        {"archive_set_id", "declared_size", "format", "volume_count"}
+    )
+    current_fields = legacy_fields | {
+        "coverage_hint",
+        "label_hint",
+        "language_hints",
+        "release_group_hints",
+        "warnings",
+    }
+    raw = require_object(value, field="subtitle_archive_set_summary")
+    fields = frozenset(raw)
+    if fields not in {legacy_fields, current_fields}:
+        _invalid()
+    payload = check_fields(
+        raw,
+        fields,
+        field="subtitle_archive_set_summary",
+    )
+    try:
+        return SubtitleArchiveSetSummary(
+            archive_set_id=SubtitleArchiveSetId.parse(
+                payload["archive_set_id"]
+            ),
+            format=SubtitleArchiveFormat(_str(payload["format"])),
+            volume_count=_int(payload["volume_count"]),
+            declared_size=_int(payload["declared_size"]),
+            label_hint=(
+                "" if fields == legacy_fields else _str(payload["label_hint"])
+            ),
+            coverage_hint=(
+                ""
+                if fields == legacy_fields
+                else _str(payload["coverage_hint"])
+            ),
+            language_hints=(
+                ()
+                if fields == legacy_fields
+                else tuple(_str(item) for item in _list(payload["language_hints"]))
+            ),
+            release_group_hints=(
+                ()
+                if fields == legacy_fields
+                else tuple(
+                    _str(item)
+                    for item in _list(payload["release_group_hints"])
+                )
+            ),
+            warnings=(
+                ()
+                if fields == legacy_fields
+                else tuple(_str(item) for item in _list(payload["warnings"]))
+            ),
+        )
+    except (DomainError, ValueError):
+        _invalid()
+
+
+def _subtitle_release_payload(
+    value: SubtitleReleaseSummary,
+) -> dict[str, object]:
+    return {
+        "archive_sets": [
+            _subtitle_archive_summary_payload(item)
+            for item in value.archive_sets
+        ],
+        "coverage_hint": value.coverage_hint,
+        "evidence_complete": value.evidence_complete,
+        "language_hints": list(value.language_hints),
+        "match_reasons": list(value.match_reasons),
+        "post_excerpt": value.post_excerpt,
+        "release_group_hints": list(value.release_group_hints),
+        "release_id": str(value.release_id),
+        "title": value.title,
+        "warnings": list(value.warnings),
+    }
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    return tuple(_str(item) for item in _list(value))
+
+
+def _subtitle_release(value: object) -> SubtitleReleaseSummary:
+    payload = check_fields(
+        value,
+        frozenset(
+            {
+                "archive_sets",
+                "coverage_hint",
+                "evidence_complete",
+                "language_hints",
+                "match_reasons",
+                "post_excerpt",
+                "release_group_hints",
+                "release_id",
+                "title",
+                "warnings",
+            }
+        ),
+        field="subtitle_release_summary",
+    )
+    try:
+        return SubtitleReleaseSummary(
+            release_id=SubtitleReleaseId.parse(payload["release_id"]),
+            archive_sets=tuple(
+                _subtitle_archive_summary(item)
+                for item in _list(payload["archive_sets"])
+            ),
+            title=_str(payload["title"]),
+            post_excerpt=_str(payload["post_excerpt"]),
+            coverage_hint=_str(payload["coverage_hint"]),
+            language_hints=_string_tuple(payload["language_hints"]),
+            release_group_hints=_string_tuple(
+                payload["release_group_hints"]
+            ),
+            match_reasons=_string_tuple(payload["match_reasons"]),
+            warnings=_string_tuple(payload["warnings"]),
+            evidence_complete=_bool(payload["evidence_complete"]),
+        )
+    except (DomainError, ValueError):
+        _invalid()
+
+
+def _subtitle_page_payload(value: SubtitleSearchPage) -> dict[str, object]:
+    return {
+        "complete": value.complete,
+        "items": [_subtitle_release_payload(item) for item in value.items],
+        "next_cursor": (
+            None if value.next_cursor is None else str(value.next_cursor)
+        ),
+    }
+
+
+def _subtitle_page(value: object) -> SubtitleSearchPage:
+    payload = check_fields(
+        value,
+        frozenset({"complete", "items", "next_cursor"}),
+        field="subtitle_search_page",
+    )
+    raw_cursor = payload["next_cursor"]
+    try:
+        return SubtitleSearchPage(
+            items=tuple(
+                _subtitle_release(item) for item in _list(payload["items"])
+            ),
+            next_cursor=(
+                None
+                if raw_cursor is None
+                else SubtitleSearchCursorId.parse(raw_cursor)
+            ),
+            complete=_bool(payload["complete"]),
+        )
+    except (DomainError, ValueError):
+        _invalid()
+
+
+def _subtitle_search_record_payload(
+    value: SubtitleSearchRecord,
+) -> dict[str, object]:
+    return {
+        "cursor": None if value.cursor is None else str(value.cursor),
+        "page": _subtitle_page_payload(value.page),
+        "season_number": value.season_number,
+    }
+
+
+def _subtitle_search_record(value: object) -> SubtitleSearchRecord:
+    payload = check_fields(
+        value,
+        frozenset({"cursor", "page", "season_number"}),
+        field="subtitle_search_record",
+    )
+    raw_cursor = payload["cursor"]
+    try:
+        return SubtitleSearchRecord(
+            season_number=_int(payload["season_number"]),
+            cursor=(
+                None
+                if raw_cursor is None
+                else SubtitleSearchCursorId.parse(raw_cursor)
+            ),
+            page=_subtitle_page(payload["page"]),
+        )
+    except (DomainError, ValueError):
+        _invalid()
+
+
+def _subtitle_capability_payload(
+    value: SubtitleArchiveSetCapability,
+) -> dict[str, object]:
+    return {
+        "archive_set_id": str(value.archive_set_id),
+        "attachment_ids": list(value.attachment_ids),
+        "declared_size": value.declared_size,
+        "format": value.format.value,
+        "post_id": value.post_id,
+        "release_id": str(value.release_id),
+        "thread_id": value.thread_id,
+    }
+
+
+def _subtitle_capability(value: object) -> SubtitleArchiveSetCapability:
+    payload = check_fields(
+        value,
+        frozenset(
+            {
+                "archive_set_id",
+                "attachment_ids",
+                "declared_size",
+                "format",
+                "post_id",
+                "release_id",
+                "thread_id",
+            }
+        ),
+        field="subtitle_archive_capability",
+    )
+    try:
+        return SubtitleArchiveSetCapability(
+            archive_set_id=SubtitleArchiveSetId.parse(
+                payload["archive_set_id"]
+            ),
+            release_id=SubtitleReleaseId.parse(payload["release_id"]),
+            format=SubtitleArchiveFormat(_str(payload["format"])),
+            thread_id=_int(payload["thread_id"]),
+            post_id=_int(payload["post_id"]),
+            attachment_ids=tuple(
+                _int(item) for item in _list(payload["attachment_ids"])
+            ),
+            declared_size=_int(payload["declared_size"]),
+        )
+    except (DomainError, ValueError):
+        _invalid()
+
+
+def _subtitle_selection_payload(
+    value: SubtitleSelectionDecision,
+) -> dict[str, object]:
+    return {
+        "reason_code": value.reason_code,
+        "selections": [
+            {
+                "archive_set_id": str(item.archive_set_id),
+                "season_number": item.season_number,
+            }
+            for item in value.selections
+        ],
+        "status": value.status.value,
+    }
+
+
+def _subtitle_selection(value: object) -> SubtitleSelectionDecision:
+    payload = check_fields(
+        value,
+        frozenset({"reason_code", "selections", "status"}),
+        field="subtitle_selection_decision",
+    )
+    raw_reason = payload["reason_code"]
+    if raw_reason is not None and not isinstance(raw_reason, str):
+        _invalid()
+    selections: list[SubtitleSelection] = []
+    for item in _list(payload["selections"]):
+        raw = check_fields(
+            item,
+            frozenset({"archive_set_id", "season_number"}),
+            field="subtitle_selection",
+        )
+        selections.append(
+            SubtitleSelection(
+                season_number=_int(raw["season_number"]),
+                archive_set_id=SubtitleArchiveSetId.parse(
+                    raw["archive_set_id"]
+                ),
+            )
+        )
+    try:
+        return SubtitleSelectionDecision(
+            status=SubtitleSelectionStatus(_str(payload["status"])),
+            selections=tuple(selections),
+            reason_code=raw_reason,
+        )
+    except (DomainError, ValueError):
+        _invalid()
 
 
 def _root_payload(root: RootBinding) -> dict[str, object]:
@@ -466,6 +876,10 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
                 else None
             ),
         }
+    if isinstance(event, SubtitleAcquisitionConfigured):
+        return "subtitle_acquisition_configured", {
+            "enabled": event.enabled,
+        }
     if isinstance(event, TmdbCandidatesObserved):
         return "tmdb_candidates_observed", {
             "candidates": _candidate_refs_payload(event.candidates)
@@ -537,6 +951,33 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "call_id": event.call_id,
             "subtitle_id": str(event.subtitle_id),
             "variant": event.variant.value,
+        }
+    if isinstance(event, EmbeddedSubtitlesInspected):
+        return "embedded_subtitles_inspected", {
+            "call_id": event.call_id,
+            "inspection": _embedded_inspection_payload(
+                event.inspection
+            ),
+        }
+    if isinstance(event, SubtitleSearchObserved):
+        return "subtitle_search_observed", {
+            "call_id": event.call_id,
+            "capabilities": [
+                _subtitle_capability_payload(item)
+                for item in event.capabilities
+            ],
+            "record": _subtitle_search_record_payload(event.record),
+        }
+    if isinstance(event, SubtitleSearchFailed):
+        return "subtitle_search_failed", {
+            "call_id": event.call_id,
+            "reason_code": event.reason_code,
+            "season_number": event.season_number,
+        }
+    if isinstance(event, SubtitleSelectionSubmitted):
+        return "subtitle_selection_submitted", {
+            "call_id": event.call_id,
+            "decision": _subtitle_selection_payload(event.decision),
         }
     if isinstance(event, MappingRejected):
         return "mapping_rejected", {
@@ -700,6 +1141,9 @@ def _event_from_payload(
                 else None
             ),
         )
+    if event_type == "subtitle_acquisition_configured":
+        p = _fields(value, {"enabled"}, field=event_type)
+        return SubtitleAcquisitionConfigured(enabled=_bool(p["enabled"]))
     if event_type == "tmdb_candidates_observed":
         p = _fields(value, {"candidates"}, field=event_type)
         return TmdbCandidatesObserved(_candidate_refs(p["candidates"]))
@@ -880,6 +1324,51 @@ def _event_from_payload(
             _str(p["call_id"]),
             _candidate_id(p["subtitle_id"]),
             variant,
+        )
+    if event_type == "embedded_subtitles_inspected":
+        p = _fields(
+            value,
+            {"call_id", "inspection"},
+            field=event_type,
+        )
+        return EmbeddedSubtitlesInspected(
+            call_id=_str(p["call_id"]),
+            inspection=_embedded_inspection(p["inspection"]),
+        )
+    if event_type == "subtitle_search_observed":
+        p = _fields(
+            value,
+            {"call_id", "capabilities", "record"},
+            field=event_type,
+        )
+        return SubtitleSearchObserved(
+            call_id=_str(p["call_id"]),
+            record=_subtitle_search_record(p["record"]),
+            capabilities=tuple(
+                _subtitle_capability(item)
+                for item in _list(p["capabilities"])
+            ),
+        )
+    if event_type == "subtitle_search_failed":
+        p = _fields(
+            value,
+            {"call_id", "reason_code", "season_number"},
+            field=event_type,
+        )
+        return SubtitleSearchFailed(
+            call_id=_str(p["call_id"]),
+            season_number=_int(p["season_number"]),
+            reason_code=_str(p["reason_code"]),
+        )
+    if event_type == "subtitle_selection_submitted":
+        p = _fields(
+            value,
+            {"call_id", "decision"},
+            field=event_type,
+        )
+        return SubtitleSelectionSubmitted(
+            call_id=_str(p["call_id"]),
+            decision=_subtitle_selection(p["decision"]),
         )
     if event_type == "mapping_rejected":
         p = _fields(value, {"call_id", "issue"}, field=event_type)

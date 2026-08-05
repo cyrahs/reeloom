@@ -1,8 +1,8 @@
 # Reeloom 威胁模型
 
-版本：M7
+版本：M13
 
-日期：2026-07-23
+日期：2026-08-04
 
 ## 1. 安全目标
 
@@ -13,8 +13,8 @@ Reeloom 的核心安全目标不是“让模型尽量谨慎”，而是确保模
 2. 执行时只移动精确计划中已批准的源到目标，永不删除、覆盖或临时改写目标。
 3. Agent 不能选择源路径、目标路径、授权根或网络目的地。
 4. 任意不确定、状态漂移、竞态、校验失败都 fail closed。
-5. `.env*` 永远不进入扫描、工具 observation、trace 或执行范围；唯一例外是
-   显式 live smoke no-follow 读取固定 `.env` 的单一 TMDB key。
+5. `.env*` 永远不进入扫描、工具 observation、trace 或执行范围；仅显式 live
+   smoke 可 no-follow 读取固定 `.env` 中 allowlist 的 TMDB/OpenAI 配置项。
 
 ## 2. 受保护资产
 
@@ -80,12 +80,12 @@ guardrail 可以改善行为，但不能替代 schema、policy、hash、审批�
 | 网络资源耗尽 | 慢响应、超大 body、过量结果或缓存增长 | HTTP timeout、streaming body 上限、结果/文本/observation 上限、TTL/LRU cache | M3 已覆盖 |
 | 资源耗尽 | 超大分页或工具/模型重试循环 | scan/page/display/tool/turn/failure budgets | M1-M2 已覆盖；token/time M4 |
 | 状态伪造 | assistant 文本宣称任务完成 | 只有 typed domain event 能转换 phase | M1 已覆盖 |
-| 敏感信息泄漏 | `.env` 或字幕内容进入 trace | scanner/Agent/executor 拒绝 `.env*`；live smoke 仅 no-follow 读取固定单键；限量 observation、trace 脱敏 | scanner M2、smoke M3；trace M7 |
+| 敏感信息泄漏 | `.env` 或字幕内容进入 trace | scanner/Agent/executor 拒绝 `.env*`；live smoke 仅 no-follow 读取固定 allowlist；限量 observation、trace 脱敏 | scanner M2、smoke M3/M13；trace M7 |
 | TMDB 凭据泄漏 | 凭据进入模型输入、缓存 key 或错误链 | 凭据仅注入 HTTP adapter；live loader 有文件/大小/单键限制；不进入 observation/cache key/repr，网络异常去除 cause | M3 已覆盖 |
 | Checkpoint 篡改 | 替换 event/session record、暴露半写记录或制造 sequence gap | 授权 root、no-follow、匿名 inode 完整写入后 no-replace 原子发布、canonical schema、run binding、连续 sequence 与 digest chain；append 前完整重验和 reducer replay | M7 已覆盖 |
 | 对话记录越权 | SDK session 文本伪造领域成功或批准 | session 与 domain event store 分离；只有 reducer event 能改变 phase，Executor 仍只接受 plan hash 与 approval ID | M7 已覆盖 |
 | Trace 泄漏 | Plan、prompt、tool observation 或未知字符串进入观测系统 | trace 从 event replay 生成显式 allowlist projection；路径、标题、正文、prompt 和未知 token 不复制 | M7 已覆盖 |
-| OpenAI 配置劫持 | base URL、custom header/body/query 改写模型请求 | adapter 固定官方 API endpoint，只接受显式 key/model/scope；caller 扩展不透传并拒绝环境 custom headers；live script 不读取 `.env`，SDK trace 和 response store 关闭 | M7 已覆盖 |
+| OpenAI 配置劫持 | base URL、custom header/body/query 改写模型请求 | adapter 只接受显式 HTTPS base URL，拒绝 URL 凭据/query/fragment 和环境 custom headers；live script 仅在 `--live` 后 no-follow 读取固定 `.env` allowlist；SDK trace 和 response store 关闭 | M7/M13 已覆盖 |
 
 ## 5. Specials/OVA/OAD 的证据规则
 

@@ -940,6 +940,96 @@ button:disabled {
   cursor: default;
 }
 
+.subtitle-provider-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) minmax(260px, 420px);
+  gap: 18px;
+  align-items: end;
+}
+
+.subtitle-feature-button {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 18px;
+  border: 1px solid var(--button-line);
+  color: var(--button-ink);
+  background: var(--button-bg);
+}
+
+.subtitle-feature-button.enabled {
+  border-color: var(--accent-solid);
+  color: var(--on-accent);
+  background: var(--accent-solid);
+}
+
+.subtitle-feature-button.enabled:hover {
+  background: var(--accent-solid-hover);
+}
+
+.subtitle-policy-choice {
+  margin: 22px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.subtitle-policy-choice legend {
+  margin-bottom: 9px;
+  color: var(--label-ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.segmented-choice {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 720px);
+  overflow: hidden;
+  border: 1px solid var(--button-line);
+  border-radius: 11px;
+  background: var(--button-bg);
+}
+
+.segmented-option {
+  position: relative;
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  padding: 10px 16px;
+  color: var(--button-ink);
+  cursor: pointer;
+  text-align: center;
+}
+
+.segmented-option + .segmented-option {
+  border-left: 1px solid var(--button-line);
+}
+
+.segmented-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.segmented-option:has(input:checked) {
+  color: var(--on-accent);
+  background: var(--accent-solid);
+}
+
+.segmented-option:has(input:focus-visible) {
+  z-index: 1;
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+
+.subtitle-policy-choice:disabled .segmented-choice {
+  opacity: 0.55;
+}
+
+.subtitle-policy-choice:disabled .segmented-option {
+  cursor: default;
+}
+
 .path-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1955,6 +2045,18 @@ button.armed:hover:not(:disabled) {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .subtitle-provider-row {
+    grid-template-columns: 1fr;
+  }
+
+  .subtitle-provider-row .subtitle-feature-button {
+    width: min(100%, 190px);
+  }
+
+  .subtitle-provider-row .field:last-child {
+    max-width: 420px;
   }
 
   .config-section {

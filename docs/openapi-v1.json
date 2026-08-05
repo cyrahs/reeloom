@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "AcgripConfigRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "AcgripConfigRequest",
+        "type": "object"
+      },
       "ApplyResponse": {
         "additionalProperties": false,
         "properties": {
@@ -236,6 +250,20 @@
         "title": "ArchiveReportSearch",
         "type": "object"
       },
+      "ConfigAcgripResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ConfigAcgripResponse",
+        "type": "object"
+      },
       "ConfigAgentBudget": {
         "additionalProperties": false,
         "properties": {
@@ -331,6 +359,9 @@
       "ConfigResponse": {
         "additionalProperties": false,
         "properties": {
+          "acgrip": {
+            "$ref": "#/components/schemas/ConfigAcgripResponse"
+          },
           "agent_budget": {
             "$ref": "#/components/schemas/ConfigAgentBudget"
           },
@@ -355,6 +386,15 @@
             "title": "Revision Id",
             "type": "string"
           },
+          "subtitle_acquisition_policy": {
+            "enum": [
+              "plan_only",
+              "manual",
+              "automatic"
+            ],
+            "title": "Subtitle Acquisition Policy",
+            "type": "string"
+          },
           "telegram": {
             "$ref": "#/components/schemas/ConfigTelegramResponse"
           },
@@ -372,7 +412,9 @@
           "watches",
           "provider",
           "telegram",
+          "acgrip",
           "apply_policy",
+          "subtitle_acquisition_policy",
           "agent_budget"
         ],
         "title": "ConfigResponse",
@@ -413,6 +455,16 @@
       "ConfigUpdateRequest": {
         "additionalProperties": false,
         "properties": {
+          "acgrip": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AcgripConfigRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "agent_budget": {
             "anyOf": [
               {
@@ -442,6 +494,22 @@
               }
             ],
             "title": "Provider"
+          },
+          "subtitle_acquisition_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan_only",
+                  "manual",
+                  "automatic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Acquisition Policy"
           },
           "telegram": {
             "anyOf": [
@@ -2071,6 +2139,7 @@
                 "settle_folder",
                 "dispose_failed_folder",
                 "recover_folder_disposition",
+                "approve_subtitle_acquisition",
                 "delete_run"
               ],
               "type": "string"
@@ -2180,6 +2249,16 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "subtitle_acquisition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleAcquisitionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tool_calls": {
             "minimum": 0.0,
@@ -2434,6 +2513,195 @@
           "role"
         ],
         "title": "SessionResponse",
+        "type": "object"
+      },
+      "SubtitleAcquisitionApprovalRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "SubtitleAcquisitionApprovalRequest",
+        "type": "object"
+      },
+      "SubtitleAcquisitionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "policy": {
+            "enum": [
+              "plan_only",
+              "manual",
+              "automatic"
+            ],
+            "title": "Policy",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "approved",
+              "published",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "successor_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "retry_wait",
+                  "leased",
+                  "completed",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Status"
+          },
+          "transaction_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Id"
+          }
+        },
+        "required": [
+          "plan_hash",
+          "policy",
+          "status",
+          "approval_id",
+          "transaction_id",
+          "failure_code",
+          "run_id"
+        ],
+        "title": "SubtitleAcquisitionResponse",
+        "type": "object"
+      },
+      "SubtitleAcquisitionView": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "policy": {
+            "enum": [
+              "plan_only",
+              "manual",
+              "automatic"
+            ],
+            "title": "Policy",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "approved",
+              "published",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "successor_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "retry_wait",
+                  "leased",
+                  "completed",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Status"
+          },
+          "transaction_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Id"
+          }
+        },
+        "required": [
+          "plan_hash",
+          "policy",
+          "status",
+          "approval_id",
+          "transaction_id",
+          "failure_code"
+        ],
+        "title": "SubtitleAcquisitionView",
         "type": "object"
       },
       "TelegramConfigRequest": {
@@ -5310,6 +5578,146 @@
           }
         ],
         "summary": "Reapply"
+      }
+    },
+    "/api/v1/runs/{run_id}/subtitle-acquisition/approve": {
+      "post": {
+        "operationId": "approve_subtitle_acquisition_api_v1_runs__run_id__subtitle_acquisition_approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable key for one logical mutation",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable key for one logical mutation",
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "description": "Exact immutable plan hash",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact immutable plan hash",
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleAcquisitionApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubtitleAcquisitionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Approve Subtitle Acquisition"
       }
     },
     "/api/v1/session": {

@@ -5,6 +5,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from agents import ModelSettings
 from agents.models.openai_responses import OpenAIResponsesModel
@@ -15,6 +16,7 @@ _OFFICIAL_BASE_URL = "https://api.openai.com/v1"
 _MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _MAX_CREDENTIAL_BYTES = 4096
 _MAX_SCOPE_BYTES = 256
+_MAX_BASE_URL_BYTES = 2048
 _REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -23,6 +25,33 @@ ReasoningEffort = Literal[
     "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 Verbosity = Literal["low", "medium", "high"]
+
+
+def _base_url(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > _MAX_BASE_URL_BYTES
+        or any(unicodedata.category(char).startswith("C") for char in value)
+    ):
+        raise ValueError("invalid base_url")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("invalid base_url") from None
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ValueError("invalid base_url")
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
 def _scope(value: object, *, field: str) -> str | None:
@@ -40,9 +69,10 @@ def _scope(value: object, *, field: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class OpenAIModelConfig:
-    """Non-secret, reproducible configuration for the official Responses API."""
+    """Non-secret, reproducible configuration for a Responses-compatible API."""
 
     model_name: str
+    base_url: str = _OFFICIAL_BASE_URL
     request_timeout_seconds: float = 60.0
     max_retries: int = 5
     organization: str | None = None
@@ -74,6 +104,7 @@ class OpenAIModelConfig:
             "organization",
             _scope(self.organization, field="organization"),
         )
+        object.__setattr__(self, "base_url", _base_url(self.base_url))
         object.__setattr__(
             self,
             "project",
@@ -92,7 +123,7 @@ class OpenAIModelConfig:
 
 
 class OpenAIModelProvider:
-    """Own one explicit official OpenAI client; never loads configuration files."""
+    """Own one explicitly configured OpenAI client; never loads configuration files."""
 
     def __init__(
         self,
@@ -116,7 +147,7 @@ class OpenAIModelProvider:
             organization=config.organization or "",
             project=config.project or "",
             webhook_secret="",
-            base_url=_OFFICIAL_BASE_URL,
+            base_url=config.base_url,
             timeout=float(config.request_timeout_seconds),
             max_retries=config.max_retries,
         )

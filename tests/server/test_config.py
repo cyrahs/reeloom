@@ -12,11 +12,13 @@ from reeloom.runtime.budget import RunBudget
 from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.config import (
     ApplyPolicy,
+    AcgripConfig,
     ConfigDraft,
     ConfigRevision,
     ProviderConfig,
     ServerWorkType,
     TelegramConfig,
+    SubtitleAcquisitionPolicy,
     WatchConfig,
 )
 from reeloom.server.notifications import NotificationType
@@ -176,7 +178,12 @@ def test_legacy_config_maps_routes_to_each_watch(tmp_path: Path) -> None:
         library.resolve(),
         library.resolve(),
     ]
-    assert '"schema_version":4' in restored.to_json()
+    assert '"schema_version":5' in restored.to_json()
+    assert restored.acgrip == AcgripConfig(enabled=False)
+    assert (
+        restored.subtitle_acquisition_policy
+        is SubtitleAcquisitionPolicy.AUTOMATIC
+    )
     assert restored.agent_budget.max_elapsed_seconds == 600
     assert "archive_routes" not in restored.public_payload()
 
@@ -236,6 +243,8 @@ def test_schema_v3_config_upgrades_with_telegram_disabled(
     payload = json.loads(revision.to_json())
     payload["schema_version"] = 3
     del payload["telegram"]
+    del payload["acgrip"]
+    del payload["subtitle_acquisition_policy"]
 
     restored = ConfigRevision.from_json(json.dumps(payload))
 
@@ -243,6 +252,41 @@ def test_schema_v3_config_upgrades_with_telegram_disabled(
     assert not restored.public_payload()["telegram"][
         "destination_configured"
     ]
+    assert not restored.acgrip.enabled
+    assert (
+        restored.subtitle_acquisition_policy
+        is SubtitleAcquisitionPolicy.AUTOMATIC
+    )
+
+
+def test_acgrip_opt_in_and_independent_policy_round_trip(
+    tmp_path: Path,
+) -> None:
+    draft = _draft(tmp_path)
+    revision = ConfigRevision.create(
+        revision_id="cfg-acgrip",
+        revision=4,
+        created_at=datetime(2026, 8, 4, tzinfo=UTC),
+        draft=ConfigDraft(
+            watches=draft.watches,
+            provider=draft.provider,
+            apply_policy=ApplyPolicy.PLAN_ONLY,
+            acgrip=AcgripConfig(enabled=True),
+            subtitle_acquisition_policy=(
+                SubtitleAcquisitionPolicy.MANUAL
+            ),
+        ),
+    )
+
+    restored = ConfigRevision.from_json(revision.to_json())
+
+    assert restored.acgrip.enabled
+    assert (
+        restored.subtitle_acquisition_policy
+        is SubtitleAcquisitionPolicy.MANUAL
+    )
+    assert restored.apply_policy is ApplyPolicy.PLAN_ONLY
+    assert restored.public_payload()["acgrip"] == {"enabled": True}
 
 
 def test_config_allows_explicit_shared_library_root(

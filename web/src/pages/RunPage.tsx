@@ -47,6 +47,7 @@ import {
   reapplyResultSchema,
   recoveryResultSchema,
   runSchema,
+  subtitleAcquisitionResultSchema,
   type Preview,
   type Run,
   type RunEvent,
@@ -90,10 +91,15 @@ type FolderAttempt = {
   approvalId?: string;
   key: string;
 };
+type SubtitleAttempt = {
+  planHash: string;
+  key: string;
+};
 type UncertainAttempt =
   | { type: "action"; value: ActionAttempt }
   | { type: "apply"; value: ApplyAttempt }
   | { type: "recover"; value: RecoveryAttempt }
+  | { type: "subtitle"; value: SubtitleAttempt }
   | { type: "folder"; value: FolderAttempt };
 
 export function RunPage({ runId }: { runId: string }) {
@@ -428,6 +434,37 @@ export function RunPage({ runId }: { runId: string }) {
     },
   });
 
+  const subtitleAcquisition = useMutation({
+    mutationFn: async ({ planHash, key }: SubtitleAttempt) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/approve`,
+        subtitleAcquisitionResultSchema,
+        {
+          method: "POST",
+          headers: {
+            "If-Match": planHash,
+            "Idempotency-Key": key,
+          },
+          body: {},
+        },
+      ),
+    onSuccess: async () => {
+      setUncertainAttempt(null);
+      await invalidateRun();
+    },
+    onError: async (error, attempt) => {
+      if (error instanceof ApiError && error.code === "network_uncertain") {
+        setActionNotice(
+          "字幕获取结果不确定；已读取服务端持久化状态，只允许复用原请求键。",
+        );
+        await reconcileUncertain({ type: "subtitle", value: attempt });
+      } else {
+        setUncertainAttempt(null);
+        await invalidateRun();
+      }
+    },
+  });
+
   if (run.isLoading) {
     return <main className="page"><p>正在读取运行…</p></main>;
   }
@@ -459,6 +496,8 @@ export function RunPage({ runId }: { runId: string }) {
       apply.mutate(uncertainAttempt.value);
     } else if (uncertainAttempt.type === "recover") {
       recover.mutate(uncertainAttempt.value);
+    } else if (uncertainAttempt.type === "subtitle") {
+      subtitleAcquisition.mutate(uncertainAttempt.value);
     } else {
       folderDisposition.mutate(uncertainAttempt.value);
     }
@@ -559,6 +598,35 @@ export function RunPage({ runId }: { runId: string }) {
             <div className="notice danger" role="alert">
               {errorMessage(run.data.folder_disposition.failure_code)}
               <code>{run.data.folder_disposition.failure_code}</code>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {run.data.subtitle_acquisition ? (
+        <section className="settlement" aria-live="polite">
+          <div>
+            <h2>字幕获取：{run.data.subtitle_acquisition.status}</h2>
+          </div>
+          <dl>
+            <div>
+              <dt>策略</dt>
+              <dd>{run.data.subtitle_acquisition.policy}</dd>
+            </div>
+            <div>
+              <dt>计划</dt>
+              <dd><ShortHash value={run.data.subtitle_acquisition.plan_hash} /></dd>
+            </div>
+          </dl>
+          {run.data.subtitle_acquisition.failure_code ? (
+            <div className="notice danger" role="alert">
+              {errorMessage(run.data.subtitle_acquisition.failure_code)}
+              <code>{run.data.subtitle_acquisition.failure_code}</code>
+            </div>
+          ) : null}
+          {run.data.subtitle_acquisition.successor_status === "blocked" ? (
+            <div className="notice danger" role="alert">
+              字幕已发布，但 fresh scan 或后继运行校验未通过，需要人工检查。
             </div>
           ) : null}
         </section>
@@ -696,6 +764,7 @@ export function RunPage({ runId }: { runId: string }) {
                     action.isPending ||
                     apply.isPending ||
                     recover.isPending ||
+                    subtitleAcquisition.isPending ||
                     folderDisposition.isPending
                   }
                   onClick={retryUncertain}
@@ -752,6 +821,23 @@ export function RunPage({ runId }: { runId: string }) {
                     onClick={() => setApproveOpen(true)}
                   >
                     审批并执行此计划
+                  </button>
+                ) : null}
+                {available.has("approve_subtitle_acquisition") &&
+                run.data.subtitle_acquisition ? (
+                  <button
+                    className="primary wide"
+                    disabled={blocked || subtitleAcquisition.isPending}
+                    onClick={() =>
+                      subtitleAcquisition.mutate({
+                        planHash: run.data.subtitle_acquisition!.plan_hash,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    {subtitleAcquisition.isPending
+                      ? "正在获取并发布字幕…"
+                      : "审批并获取字幕"}
                   </button>
                 ) : null}
                 {run.data.folder_disposition &&

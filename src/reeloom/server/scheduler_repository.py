@@ -736,7 +736,8 @@ class PostgresSchedulerRepository:
                         WHERE d.watch_id = %s
                           AND d.folder_generation_id IS NULL
                           AND r.status NOT IN (
-                              'completed', 'failed', 'rolled_back'
+                              'completed', 'failed', 'rolled_back',
+                              'superseded'
                           )
                         LIMIT 1
                         """,
@@ -1132,6 +1133,8 @@ class PostgresSchedulerRepository:
                                 source_folder=folder.name,
                                 folder_generation_id=generation_id,
                                 inventory_id=folder.inventory_id,
+                                source_folder_device=folder.device,
+                                source_folder_inode=folder.inode,
                             )
                         )
                     return FolderPollResult(
@@ -1272,7 +1275,7 @@ class PostgresSchedulerRepository:
                         """
                         UPDATE jobs AS job
                         SET status = CASE
-                                WHEN run.status = 'completed'
+                                WHEN run.status IN ('completed', 'superseded')
                                 THEN 'completed'
                                 ELSE 'failed'
                             END,
@@ -1282,7 +1285,8 @@ class PostgresSchedulerRepository:
                           AND job.status = 'running'
                           AND job.boot_id IS DISTINCT FROM %s
                           AND run.status IN (
-                              'completed', 'failed', 'rolled_back'
+                              'completed', 'failed', 'rolled_back',
+                              'superseded'
                           )
                         RETURNING job.job_id, job.status
                         """,
@@ -1334,9 +1338,16 @@ class PostgresSchedulerRepository:
         self,
         *,
         schema_versions: tuple[str, ...],
+        work_types: tuple[ServerWorkType, ...] = tuple(ServerWorkType),
     ) -> tuple[str, ...]:
         """Find unplanned folder runs whose retired Agent call cannot resume."""
 
+        if (
+            not work_types
+            or any(not isinstance(item, ServerWorkType) for item in work_types)
+            or len(set(work_types)) != len(work_types)
+        ):
+            raise ServerError(ServerErrorCode.INVALID_CONFIG)
         try:
             with self._pool.connection() as connection:
                 rows = connection.execute(
@@ -1400,9 +1411,13 @@ class PostgresSchedulerRepository:
                       )
                       AND definition.payload->>'schema_version'
                           = ANY(%s)
+                      AND r.work_type = ANY(%s)
                     ORDER BY r.run_id
                     """,
-                    (list(schema_versions),),
+                    (
+                        list(schema_versions),
+                        [item.value for item in work_types],
+                    ),
                 ).fetchall()
             return tuple(str(row[0]) for row in rows)
         except Exception:
@@ -1421,11 +1436,15 @@ class PostgresSchedulerRepository:
                            d.watch_id, d.snapshot_id,
                            d.snapshot_payload, d.discovered_at,
                            d.source_folder, d.folder_generation_id,
-                           d.inventory_id
+                           d.inventory_id,
+                           observed.folder_device,
+                           observed.folder_inode
                     FROM runs AS r
                     JOIN jobs AS j ON j.run_id = r.run_id
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
+                    LEFT JOIN watch_folder_observations AS observed
+                      ON observed.discovery_id = d.discovery_id
                     WHERE r.run_id = %s
                     """,
                     (run_id,),
@@ -1457,6 +1476,12 @@ class PostgresSchedulerRepository:
                 None if row[11] is None else str(row[11])
             ),
             inventory_id=None if row[12] is None else str(row[12]),
+            source_folder_device=(
+                None if row[13] is None else int(row[13])
+            ),
+            source_folder_inode=(
+                None if row[14] is None else int(row[14])
+            ),
         )
         return AgentJobContext(registration, discovery)
 

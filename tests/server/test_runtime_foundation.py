@@ -6,14 +6,19 @@ import json
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.server.agent_definition import AgentDefinitionRevision
 from reeloom.server.organizer_definition import (
+    ANIME_ORGANIZER_TOOL_NAMES,
     EPISODE_ORGANIZER_TOOL_NAMES,
     LEGACY_EPISODE_ORGANIZER_TOOL_NAMES,
     LEGACY_ORGANIZER_SCHEMA_VERSION,
     MOVIE_ORGANIZER_SCHEMA_VERSION,
+    M13_PROBE_ORGANIZER_TOOL_NAMES,
     ORGANIZER_NAME,
     ORGANIZER_SCHEMA_VERSION,
     PREVIOUS_ORGANIZER_SCHEMA_VERSION,
+    V4_ORGANIZER_SCHEMA_VERSION,
+    V5_ORGANIZER_SCHEMA_VERSION,
     V2_ORGANIZER_SCHEMA_VERSION,
+    V3_ORGANIZER_SCHEMA_VERSION,
     is_supported_organizer_definition,
     organizer_definition,
 )
@@ -48,11 +53,26 @@ def test_agent_definition_is_content_addressed() -> None:
     assert changed.definition_hash != first.definition_hash
 
 
-def test_v4_is_current_while_historical_definitions_remain_readable() -> None:
+def test_v7_keeps_m13_capability_explicit_and_history_readable() -> None:
     current = organizer_definition(TmdbWorkType.ANIME)
 
     assert current.schema_version == ORGANIZER_SCHEMA_VERSION
-    assert current.schema_version == "episode-organizer-v4"
+    assert current.schema_version == "episode-organizer-v7"
+    assert current.tools == ANIME_ORGANIZER_TOOL_NAMES
+    assert "check_sub_from_video" in current.tools
+    assert "search_sub" in current.tools
+    assert "select_subtitle_release" in current.tools
+    disabled = organizer_definition(
+        TmdbWorkType.ANIME,
+        subtitle_acquisition_enabled=False,
+    )
+    assert disabled.schema_version == V4_ORGANIZER_SCHEMA_VERSION
+    assert disabled.tools == EPISODE_ORGANIZER_TOOL_NAMES
+    assert "check_sub_from_video" not in disabled.instructions
+    television = organizer_definition(TmdbWorkType.TV_SERIES)
+    assert television.schema_version == "episode-organizer-v4"
+    assert television.tools == EPISODE_ORGANIZER_TOOL_NAMES
+    assert "check_sub_from_video" not in television.tools
     assert (
         organizer_definition(TmdbWorkType.MOVIE).schema_version
         == MOVIE_ORGANIZER_SCHEMA_VERSION
@@ -65,9 +85,16 @@ def test_v4_is_current_while_historical_definitions_remain_readable() -> None:
             True,
         ),
         (V2_ORGANIZER_SCHEMA_VERSION, EPISODE_ORGANIZER_TOOL_NAMES, False),
+        (V3_ORGANIZER_SCHEMA_VERSION, EPISODE_ORGANIZER_TOOL_NAMES, False),
+        (V4_ORGANIZER_SCHEMA_VERSION, EPISODE_ORGANIZER_TOOL_NAMES, False),
+        (
+            V5_ORGANIZER_SCHEMA_VERSION,
+            M13_PROBE_ORGANIZER_TOOL_NAMES,
+            False,
+        ),
         (
             PREVIOUS_ORGANIZER_SCHEMA_VERSION,
-            EPISODE_ORGANIZER_TOOL_NAMES,
+            ANIME_ORGANIZER_TOOL_NAMES,
             False,
         ),
     ):

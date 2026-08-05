@@ -93,7 +93,7 @@ def _completed_run_row(
     layout_matches_current_plan: bool,
     interaction_budget_available: bool = True,
 ) -> tuple[object, ...]:
-    row: list[object] = [None] * 37
+    row: list[object] = [None] * 44
     row[:14] = (
         "run-1",
         "completed",
@@ -114,6 +114,107 @@ def _completed_run_row(
     row[35] = layout_matches_current_plan
     row[36] = interaction_budget_available
     return tuple(row)
+
+
+def test_manual_subtitle_acquisition_exposes_only_independent_action() -> None:
+    row = list(
+        _completed_run_row(
+            layout_matches_current_plan=False,
+            interaction_budget_available=False,
+        )
+    )
+    row[1] = "running"
+    row[3] = "build_subtitle_acquisition_plan"
+    row[10] = None
+    row[37:43] = (
+        "sha256:" + "b" * 64,
+        "manual",
+        "planned",
+        None,
+        None,
+        None,
+    )
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["available_actions"] == ["approve_subtitle_acquisition"]
+    assert run["subtitle_acquisition"] == {
+        "plan_hash": "sha256:" + "b" * 64,
+        "policy": "manual",
+        "status": "planned",
+        "approval_id": None,
+        "transaction_id": None,
+        "failure_code": None,
+        "successor_status": None,
+    }
+
+
+@pytest.mark.parametrize("policy", ("plan_only", "automatic"))
+def test_nonmanual_subtitle_acquisition_has_no_browser_action(
+    policy: str,
+) -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "running"
+    row[3] = "build_subtitle_acquisition_plan"
+    row[10] = None
+    row[37:43] = (
+        "sha256:" + "b" * 64,
+        policy,
+        "planned",
+        None,
+        None,
+        None,
+    )
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert "approve_subtitle_acquisition" not in run["available_actions"]
+
+
+def test_manual_approved_subtitle_request_exposes_recovery_action() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "running"
+    row[3] = "build_subtitle_acquisition_plan"
+    row[10] = None
+    row[37:43] = (
+        "sha256:" + "b" * 64,
+        "manual",
+        "approved",
+        "approval-subtitle-1",
+        None,
+        None,
+    )
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert "approve_subtitle_acquisition" in run["available_actions"]
+
+
+def test_blocked_successor_is_exposed_as_bounded_attention_state() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "superseded"
+    row[37:44] = (
+        "sha256:" + "b" * 64,
+        "automatic",
+        "published",
+        "approval-subtitle-1",
+        "subtitle-txn-v1-" + "c" * 64,
+        None,
+        "blocked",
+    )
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["subtitle_acquisition"]["successor_status"] == "blocked"
+    assert "approve_subtitle_acquisition" not in run["available_actions"]
 
 
 @pytest.mark.parametrize(

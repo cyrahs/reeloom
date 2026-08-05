@@ -19,6 +19,14 @@ from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleInspection,
+    SubtitleArchiveSetCapability,
+    SubtitleSearchRecord,
+    SubtitleSelectionDecision,
+    SubtitleSelectionStatus,
+)
 from reeloom.kernel.tmdb import (
     TmdbCandidateRef,
     TmdbWorkType,
@@ -33,6 +41,7 @@ from reeloom.runtime.events import (
     ArchiveSearchObserved,
     ApprovalRequested,
     CandidateSnapshotCreated,
+    SubtitleAcquisitionConfigured,
     ExistingInventoryObserved,
     ExecutionSettled,
     InteractionCompleted,
@@ -52,6 +61,10 @@ from reeloom.runtime.events import (
     RunStopped,
     RuntimeEvent,
     SeriesSelected,
+    EmbeddedSubtitlesInspected,
+    SubtitleSearchObserved,
+    SubtitleSearchFailed,
+    SubtitleSelectionSubmitted,
     SubtitleVariantDetected,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
@@ -66,6 +79,7 @@ from reeloom.runtime.state import (
     RunStatus,
     StopReason,
 )
+from reeloom.runtime.subtitle_workflow import project_subtitle_workflow
 
 
 def _is_transaction_id(value: object) -> bool:
@@ -378,6 +392,21 @@ def reduce_event(
             candidate_ids=event.candidate_ids,
             authorized_source_root=event.source_root,
             authorized_output_root=event.output_root,
+        )
+
+    if isinstance(event, SubtitleAcquisitionConfigured):
+        if (
+            state.phase is not Phase.BOOTSTRAP
+            or state.candidate_snapshot_id is not None
+            or state.subtitle_acquisition_enabled is not None
+            or type(event.enabled) is not bool
+            or (event.enabled and state.work_type is not TmdbWorkType.ANIME)
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            subtitle_acquisition_enabled=event.enabled,
         )
 
     if isinstance(event, ToolRequested):
@@ -727,6 +756,262 @@ def reduce_event(
             observed_tool_calls=observed,
         )
 
+    if isinstance(event, EmbeddedSubtitlesInspected):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="check_sub_from_video",
+        )
+        inspection = event.inspection
+        catalog_seasons = {
+            season for season, _episode_count in state.episode_catalog_counts
+        }
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or state.work_type is not TmdbWorkType.ANIME
+            or state.subtitle_acquisition_enabled is not True
+            or state.selected_work_type is not TmdbWorkType.ANIME
+            or state.selected_series is None
+            or state.candidate_ids is None
+            or any(
+                item.kind is CandidateKind.SUBTITLE
+                for item in state.candidate_ids
+            )
+            or not isinstance(inspection, EmbeddedSubtitleInspection)
+            or inspection.video_id not in state.candidate_ids
+            or inspection.season_number not in catalog_seasons
+            or any(
+                item.season_number == inspection.season_number
+                or item.video_id == inspection.video_id
+                for item in state.embedded_subtitle_inspections
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            embedded_subtitle_inspections=tuple(
+                sorted(
+                    (
+                        *state.embedded_subtitle_inspections,
+                        inspection,
+                    ),
+                    key=lambda item: item.season_number,
+                )
+            ),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, SubtitleSearchObserved):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="search_sub",
+        )
+        record = event.record
+        eligible_seasons = {
+            item.season_number
+            for item in state.embedded_subtitle_inspections
+            if item.chinese_status is EmbeddedChineseStatus.ABSENT
+        }
+        prior_records = tuple(
+            item
+            for item in state.subtitle_search_records
+            if isinstance(item, SubtitleSearchRecord)
+            and item.season_number == getattr(record, "season_number", None)
+        )
+        expected_cursor = (
+            None if not prior_records else prior_records[-1].page.next_cursor
+        )
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or state.work_type is not TmdbWorkType.ANIME
+            or state.subtitle_acquisition_enabled is not True
+            or state.selected_work_type is not TmdbWorkType.ANIME
+            or state.selected_series is None
+            or state.candidate_ids is None
+            or any(item.kind is CandidateKind.SUBTITLE for item in state.candidate_ids)
+            or not isinstance(record, SubtitleSearchRecord)
+            or record.season_number not in eligible_seasons
+            or record.cursor != expected_cursor
+            or expected_cursor is None and prior_records
+            or not isinstance(event.capabilities, tuple)
+            or any(
+                not isinstance(item, SubtitleArchiveSetCapability)
+                for item in event.capabilities
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        page_archive_ids = {
+            archive.archive_set_id
+            for release in record.page.items
+            if release.evidence_complete
+            for archive in release.archive_sets
+        }
+        if (
+            len(page_archive_ids)
+            != sum(len(item.archive_sets) for item in record.page.items)
+            or page_archive_ids
+            != {item.archive_set_id for item in event.capabilities}
+            or any(not item.evidence_complete for item in record.page.items)
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        capabilities = {
+            item.archive_set_id: item
+            for item in state.subtitle_archive_capabilities
+        }
+        for item in event.capabilities:
+            previous = capabilities.get(item.archive_set_id)
+            if previous is not None and previous != item:
+                raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+            capabilities[item.archive_set_id] = item
+        bindings = set(state.subtitle_archive_search_bindings)
+        bindings.update(
+            (record.season_number, item.archive_set_id)
+            for item in event.capabilities
+        )
+        return replace(
+            state,
+            event_count=event_count,
+            subtitle_search_records=(
+                *state.subtitle_search_records,
+                record,
+            ),
+            subtitle_archive_capabilities=tuple(
+                sorted(capabilities.values())
+            ),
+            subtitle_archive_search_bindings=tuple(sorted(bindings)),
+            observed_tool_calls=observed,
+        )
+
+    if isinstance(event, SubtitleSearchFailed):
+        eligible_seasons = {
+            item.season_number
+            for item in state.embedded_subtitle_inspections
+            if item.chinese_status is EmbeddedChineseStatus.ABSENT
+        }
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or state.work_type is not TmdbWorkType.ANIME
+            or state.subtitle_acquisition_enabled is not True
+            or (event.call_id, "search_sub") not in state.pending_tool_calls
+            or event.season_number not in eligible_seasons
+            or event.reason_code != "subtitle_search_unavailable"
+            or any(
+                season_number == event.season_number
+                for season_number, _reason_code in state.subtitle_search_failures
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            subtitle_search_failures=tuple(
+                sorted(
+                    (
+                        *state.subtitle_search_failures,
+                        (event.season_number, event.reason_code),
+                    )
+                )
+            ),
+        )
+
+    if isinstance(event, SubtitleSelectionSubmitted):
+        observed = _observe_tool_call(
+            state,
+            call_id=event.call_id,
+            tool_name="select_subtitle_release",
+        )
+        decision = event.decision
+        eligible_seasons = {
+            item.season_number
+            for item in state.embedded_subtitle_inspections
+            if item.chinese_status is EmbeddedChineseStatus.ABSENT
+        }
+        valid_ids = {
+            item.archive_set_id
+            for item in state.subtitle_archive_capabilities
+        }
+        bindings = set(state.subtitle_archive_search_bindings)
+        workflow = project_subtitle_workflow(state)
+        attention_reason_valid = (
+            decision.status is SubtitleSelectionStatus.NEEDS_ATTENTION
+            and (
+                (
+                    decision.reason_code == "subtitle_evidence_ambiguous"
+                    and (
+                        bool(workflow.ambiguous_seasons)
+                        or (
+                            workflow.selection_is_ready
+                            and bool(
+                                workflow.candidate_seasons
+                                & workflow.absent_seasons
+                            )
+                        )
+                    )
+                )
+                or (
+                    decision.reason_code == "subtitle_no_candidates"
+                    and workflow.selection_is_ready
+                    and not (
+                        workflow.candidate_seasons
+                        & workflow.absent_seasons
+                    )
+                )
+                or (
+                    decision.reason_code == "subtitle_search_unavailable"
+                    and workflow.searches_complete
+                    and bool(
+                        workflow.failed_search_seasons
+                        & workflow.absent_seasons
+                    )
+                )
+            )
+        )
+        if (
+            state.phase is not Phase.MAP_EPISODES
+            or state.work_type is not TmdbWorkType.ANIME
+            or state.subtitle_acquisition_enabled is not True
+            or state.selected_work_type is not TmdbWorkType.ANIME
+            or state.selected_series is None
+            or state.subtitle_selection_decision is not None
+            or not isinstance(decision, SubtitleSelectionDecision)
+            or not workflow.all_catalog_seasons_inspected
+            or (
+                decision.status is SubtitleSelectionStatus.SELECTED
+                and (
+                    not workflow.selection_is_ready
+                    or bool(workflow.failed_search_seasons)
+                    or {
+                        item.season_number for item in decision.selections
+                    }
+                    != eligible_seasons
+                    or any(
+                        item.archive_set_id not in valid_ids
+                        or (item.season_number, item.archive_set_id)
+                        not in bindings
+                        for item in decision.selections
+                    )
+                )
+            )
+            or (
+                decision.status is SubtitleSelectionStatus.NEEDS_ATTENTION
+                and not attention_reason_valid
+            )
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
+        return replace(
+            state,
+            event_count=event_count,
+            phase=(
+                Phase.BUILD_SUBTITLE_ACQUISITION_PLAN
+                if decision.status is SubtitleSelectionStatus.SELECTED
+                else state.phase
+            ),
+            subtitle_selection_decision=decision,
+            observed_tool_calls=observed,
+        )
+
     if isinstance(event, SubtitleVariantDetected):
         observed = _observe_tool_call(
             state,
@@ -847,6 +1132,7 @@ def reduce_event(
         detected_subtitles = {
             subtitle_id for subtitle_id, _ in state.subtitle_variants
         }
+        subtitle_workflow = project_subtitle_workflow(state)
         if (
             state.phase is not Phase.MAP_EPISODES
             or not isinstance(event.mapping, MappingDraft)
@@ -857,6 +1143,11 @@ def reduce_event(
             or state.inventory_episodes is None
             or state.mapping_review_call_id
             not in {None, event.call_id}
+            or (
+                state.subtitle_acquisition_enabled is True
+                and not subtitle_workflow.has_external_subtitles
+                and not subtitle_workflow.mapping_is_ready
+            )
             or any(
                 subtitle.subtitle_id not in detected_subtitles
                 for subtitle in event.mapping.subtitles

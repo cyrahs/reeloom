@@ -17,6 +17,13 @@ from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedSubtitleInspection,
+    SubtitleArchiveSetCapability,
+    SubtitleArchiveSetId,
+    SubtitleSearchRecord,
+    SubtitleSelectionDecision,
+)
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.budget import RunBudget
 
@@ -28,6 +35,7 @@ class Phase(StrEnum):
     IDENTIFY_MOVIE = "identify_movie"
     MAP_MOVIE = "map_movie"
     BUILD_PLAN = "build_plan"
+    BUILD_SUBTITLE_ACQUISITION_PLAN = "build_subtitle_acquisition_plan"
     AWAITING_APPROVAL = "awaiting_approval"
     APPLYING = "applying"
     COMPLETED = "completed"
@@ -47,6 +55,7 @@ class StopReason(StrEnum):
     MAX_TURNS = "max_turns"
     BUDGET_EXHAUSTED = "budget_exhausted"
     FATAL_ERROR = "fatal_error"
+    NEEDS_ATTENTION = "needs_attention"
 
 
 ValidationValue = int | str | tuple[str, ...]
@@ -113,6 +122,7 @@ class RunState:
     candidate_snapshot_id: str | None = None
     candidate_count: int = 0
     candidate_ids: tuple[CandidateId, ...] | None = None
+    subtitle_acquisition_enabled: bool | None = None
     authorized_source_root: RootBinding | None = None
     authorized_output_root: RootBinding | None = None
     tmdb_candidates: frozenset[TmdbCandidateRef] = frozenset()
@@ -134,6 +144,21 @@ class RunState:
         tuple[CandidateId, SubtitleVariant],
         ...,
     ] = ()
+    embedded_subtitle_inspections: tuple[
+        EmbeddedSubtitleInspection,
+        ...,
+    ] = ()
+    subtitle_search_records: tuple[SubtitleSearchRecord, ...] = ()
+    subtitle_search_failures: tuple[tuple[int, str], ...] = ()
+    subtitle_archive_capabilities: tuple[
+        SubtitleArchiveSetCapability,
+        ...,
+    ] = ()
+    subtitle_archive_search_bindings: tuple[
+        tuple[int, SubtitleArchiveSetId],
+        ...,
+    ] = ()
+    subtitle_selection_decision: SubtitleSelectionDecision | None = None
     mapping_draft: MappingDraft | None = None
     movie_mapping_draft: MovieMappingDraft | None = None
     mapping_review: PlanReview | None = None

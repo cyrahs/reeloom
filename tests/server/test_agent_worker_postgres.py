@@ -343,6 +343,7 @@ def test_initial_worker_runs_real_sdk_loop_and_resumes_identity(
         assert str(row[1]) == registration.run_id
         assert int(row[2]) > 0
         assert EPISODE_ORGANIZER_INSTRUCTIONS in str(row[3])
+        assert "check_sub_from_video" not in str(row[3])
         assert row[4] == "episode-organizer-v4"
         assert row[5]["status"] == "agent_and_system"
         assert row[5]["agent_summary"] == "唯一视频已映射为 S01E01。"

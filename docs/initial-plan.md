@@ -1,10 +1,10 @@
 # Reeloom 初步实施计划
 
-状态：Draft v0.7
+状态：Draft v0.8
 
 日期：2026-08-01
 
-当前进度：M0-M12 已完成。
+当前进度：M0-M13 已完成。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -620,6 +620,72 @@ Telegram adapter、write-only 配置、Admin 测试、health 指标和单 worker
 [M12 threat model](m12-threat-model.md) 和
 [ADR 0006](adr/0006-telegram-outbound-notifications.md)。
 
+### M13：动漫字幕探测与自动获取
+
+当前状态：M13 已完成。已建立 strict frozen embedded-subtitle、论坛搜索
+capability、Agent selection 和 archive inspection 领域 schema，新增
+provider-neutral `VideoSubtitleInspector`、`SubtitleSearchProvider` 与独立
+`SubtitleAcquisitionPlanStore` port，并实现 canonical
+`SubtitleAcquisitionPlan v1`、完整 hash binding、固定资源上限、确定性字幕目标名
+和语义篡改校验。动漫 Agent 现可在 snapshot 完全没有独立字幕时，以 opaque
+`video:N` 每季调用一次 `check_sub_from_video`；adapter 通过 no-follow FD 和
+before/after identity 将固定 `ffprobe` 绑定到 snapshot，结果由 typed event、
+reducer 和 v6 state projection 持久化。FFmpeg 7.1.5 与资源限制 argv 均固定；
+超时、异常输出、不支持格式、symlink 和 identity drift 全部 fail closed 为
+indeterminate 或结构化错误。TV/Movie 工具集未改变，M13.1 不访问论坛且不产生
+文件副作用。M13.2 已实现固定 origin、无通用 redirect/proxy/登录 Cookie 的 ACG.RIP Discuz
+只读 provider，以离线 fixtures 覆盖 fid 37/46、搜索/回复分页、动态 aid、多版本、
+多卷 grouping、挑战/限流/预算与 parser drift。`search_sub` 只在季度样本明确无可
+识别中文内嵌字幕时开放；`select_subtitle_release` 是唯一接受事件，即使只有一个
+候选也必须显式选择。Agent loop hardening 已将 runtime projection 升至 v8、Anime
+AgentDefinition 升至 v7：配置关闭时不注册 M13 tools，配置开启时 probe/search/
+select/attention/mapping 共享确定性状态投影，禁止漏季、未翻完分页或直接 submit
+mapping 绕过流程；TV v4/Movie v4 未改变，生产 provider 也要等显式 opt-in 配置后
+才实例化。M13.3 新增媒体根外的 restricted
+attachment fetcher、固定官方 `7zz 26.02` 的 magic/header/technical-manifest
+inspector、逐字幕 stdout extraction/hash、完整多卷 RAR 校验和独立 write-once
+acquisition plan store。归档工具不控制输出路径；动态签名 URL 不进入 capability、
+plan、state 或 trace。加密、嵌套归档、危险路径/特殊文件、资源超限、Unicode 重名、
+远端身份变化和内容漂移均 fail closed。M13.4a 建立独立 acquisition policy、
+`SUBTITLE_ACQUIRE` approval scope、deterministic transaction 和 write-once journal；
+M13.4b 的独立 executor 在 claim 后重新获取并精确复核 archive、manifest、member 与
+source identity，以 `O_EXCL|O_NOFOLLOW` 逐 member 写入隐藏 staging，经文件和目录
+fsync 后只允许 native no-replace directory rename 发布。碰撞、symlink、hash 漂移、
+不支持原子 rename 和 crash window 均 fail closed 或由 journal 幂等恢复。M13.4c
+新增 schema 27 durable successor outbox：发布 settlement、旧 run `superseded`、旧
+job terminal、lineage 单次获取记录与 outbox enqueue 构成一个事务。worker 通过
+watch/folder capability 触发 fresh no-follow scan，只有原 source folder identity、
+新 snapshot、发布目录 identity 与全部计划字幕一致时，才原子注册新 discovery/run/job；
+successor 继承 lineage，因此不能再次自动获取。M13.4d 已将显式 opt-in 的生产
+search/planner/executor、automatic/manual/plan-only coordinator、successor worker、
+独立人工审批 API 与 bounded read model 接入 composition；控制面仅显示 acquisition
+计划/策略/状态和 successor 状态，不暴露论坛正文、URL 或路径 capability。配置页提供
+显式 provider opt-in，运行页只能执行服务端授权的独立字幕动作。离线跨层验收已
+覆盖 selected capability → persisted plan → exact approval → re-fetch/publish → fresh
+snapshot/successor，后继字幕重新成为普通 `subtitle:N` 且 lineage 闸门永久关闭。
+
+后续步骤固定为：
+
+- M13.1（完成）：单视频 ffprobe 探测、每季一个 advisory quota、typed
+  event/reducer/state codec；
+- M13.2（完成）：ACG.RIP fid 37/46 只读搜索、opaque capability 和 Agent 显式
+  选择；
+- M13.3（完成）：受限下载、ZIP/7z/RAR/多卷 RAR inspector、独立 durable store 与
+  acquisition plan compiler；
+- M13.4：独立审批、journal、native no-replace 发布、durable successor 和 lineage
+  循环闸门。其中 M13.4a 已完成 config schema v5、显式 ACG.RIP opt-in、独立
+  acquisition policy、`SUBTITLE_ACQUIRE` scope，以及 deterministic transaction/
+  write-once journal；M13.4b 已完成 re-fetch、逐 member 安全写入、native-only publish
+  与 crash recovery executor；M13.4c 已完成 durable successor outbox、fresh scan
+  registration、supersede 与 lineage 循环闸门；M13.4d 已完成 production composition、
+  独立 API/UI/read model、blocked successor attention projection 与端到端审计。
+
+ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通用 redirect、proxy、
+登录或反爬规避。仅保留站点当次签发的有界匿名 Discuz 会话 Cookie，并手工验证一次
+搜索 POST 的精确同源结果跳转；所有 pytest 保持离线。robots.txt 不属于运行时配置或控制面。边界见
+[M13 计划](m13-plan.md) 与
+[ADR 0007](adr/0007-m13-subtitle-acquisition-boundary.md)。
+
 ## 9. 第一条端到端验收测试
 
 ```text
@@ -650,7 +716,8 @@ approve exact run_id + plan_hash
 
 - 多 Agent、handoff 和 specialist。
 - 向量数据库或跨 run 长期记忆。
-- shell、代码执行、任意网页搜索或任意 MCP 工具。
+- shell、代码执行、除固定用途 ACG.RIP adapter 外的任意网页搜索或任意 MCP
+  工具。
 - Agent 自己改变 prompt、policy、tool schema 或授权根目录。
 - 未经管理员显式 `automatic` policy 的后台无人值守执行。
 - 跨文件系统 copy + delete。
@@ -663,7 +730,8 @@ approve exact run_id + plan_hash
 - 测试离线、确定、可 replay。
 - 新能力只暴露最小权限。
 - trace 和错误信息不包含凭据或不必要的文件内容。
-- 除显式 opt-in TMDB live smoke 的固定单键只读例外外，不读取或访问 `.env*`。
+- 除显式 opt-in TMDB/OpenAI live smoke 对固定 `.env` 的 allowlist、no-follow
+  只读例外外，不读取或访问 `.env*`。
 - 未映射文件和非目标资源保持不变。
 - 文档同步更新状态、决策和下一步。
 - 不提前实现后续里程碑。

@@ -311,6 +311,79 @@ test("shows bounded move capability below its watch", async () => {
   expect(screen.getByText(/媒体执行：跨文件系统/)).toBeVisible();
 });
 
+test("shows explicit ACG.RIP opt-in and independent acquisition policy", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  vi.spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(jsonResponse({ api_version: "1.0.0", role: "admin" }))
+    .mockResolvedValueOnce(jsonResponse({
+      revision: 1,
+      revision_id: "revision-1",
+      watches: [],
+      provider: {
+        base_url: "https://api.openai.com/v1",
+        model: "gpt-5",
+        reasoning_effort: "medium",
+        verbosity: "medium",
+        api_key_configured: true,
+      },
+      telegram: {
+        enabled: false,
+        notification_types: ["attention_required"],
+        destination_configured: false,
+      },
+      acgrip: { enabled: true },
+      apply_policy: "plan_only",
+      subtitle_acquisition_policy: "manual",
+      agent_budget: {
+        max_model_turns: 64,
+        max_tool_calls: 64,
+        max_failures: 3,
+        max_total_tokens: 100_000,
+        max_elapsed_seconds: 600,
+      },
+    }));
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <AuthGate>
+        <ConfigPage />
+      </AuthGate>
+    </QueryClientProvider>,
+  );
+
+  const section = (await screen.findByRole("heading", {
+    name: "动漫字幕自动获取",
+  })).closest("section");
+  expect(section).not.toBeNull();
+  const enableButton = within(section!).getByRole("button", {
+    name: "已启用",
+    pressed: true,
+  });
+  const source = within(section!).getByRole("combobox", {
+    name: "字幕来源",
+  });
+  expect(enableButton).toBeVisible();
+  expect(source).toHaveValue("acgrip");
+  expect(within(section!).getByRole("option", {
+    name: "ACG.RIP 动漫字幕论坛",
+  })).toBeVisible();
+  expect(within(section!).getByRole("radio", {
+    name: "人工审批",
+  })).toBeChecked();
+  expect(within(section!).getAllByRole("radio")).toHaveLength(3);
+  expect(within(section!).queryByText(/robots\.txt/)).toBeNull();
+
+  await userEvent.click(enableButton);
+  expect(within(section!).getByRole("button", {
+    name: "启用",
+    pressed: false,
+  })).toBeVisible();
+  expect(source).toBeDisabled();
+  for (const radio of within(section!).getAllByRole("radio")) {
+    expect(radio).toBeDisabled();
+  }
+});
+
 function jsonResponse(payload: unknown) {
   return new Response(JSON.stringify(payload), {
     status: 200,

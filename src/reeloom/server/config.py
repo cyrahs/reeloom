@@ -45,6 +45,12 @@ class ApplyPolicy(StrEnum):
     AUTOMATIC = "automatic"
 
 
+class SubtitleAcquisitionPolicy(StrEnum):
+    PLAN_ONLY = "plan_only"
+    MANUAL = "manual"
+    AUTOMATIC = "automatic"
+
+
 def _opaque(value: object) -> bool:
     return isinstance(value, str) and _OPAQUE_ID.fullmatch(value) is not None
 
@@ -169,12 +175,29 @@ DEFAULT_TELEGRAM_CONFIG = TelegramConfig()
 
 
 @dataclass(frozen=True, slots=True)
+class AcgripConfig:
+    enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ServerError(ServerErrorCode.INVALID_CONFIG)
+
+
+DEFAULT_ACGRIP_CONFIG = AcgripConfig()
+DEFAULT_SUBTITLE_ACQUISITION_POLICY = SubtitleAcquisitionPolicy.AUTOMATIC
+
+
+@dataclass(frozen=True, slots=True)
 class ConfigDraft:
     watches: tuple[WatchConfig, ...]
     provider: ProviderConfig
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
     telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
+    acgrip: AcgripConfig = DEFAULT_ACGRIP_CONFIG
+    subtitle_acquisition_policy: SubtitleAcquisitionPolicy = (
+        DEFAULT_SUBTITLE_ACQUISITION_POLICY
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -185,6 +208,11 @@ class ConfigDraft:
             or not isinstance(self.apply_policy, ApplyPolicy)
             or not isinstance(self.agent_budget, RunBudget)
             or not isinstance(self.telegram, TelegramConfig)
+            or not isinstance(self.acgrip, AcgripConfig)
+            or not isinstance(
+                self.subtitle_acquisition_policy,
+                SubtitleAcquisitionPolicy,
+            )
             or self.agent_budget.max_model_turns > MAX_MODEL_TURNS
             or self.agent_budget.max_tool_calls > MAX_TOOL_CALLS
             or self.agent_budget.max_failures > MAX_FAILURES
@@ -210,6 +238,10 @@ class ConfigDraftInput:
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
     telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
+    acgrip: AcgripConfig = DEFAULT_ACGRIP_CONFIG
+    subtitle_acquisition_policy: SubtitleAcquisitionPolicy = (
+        DEFAULT_SUBTITLE_ACQUISITION_POLICY
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +254,10 @@ class ConfigRevision:
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
     telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
+    acgrip: AcgripConfig = DEFAULT_ACGRIP_CONFIG
+    subtitle_acquisition_policy: SubtitleAcquisitionPolicy = (
+        DEFAULT_SUBTITLE_ACQUISITION_POLICY
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -238,6 +274,8 @@ class ConfigRevision:
             apply_policy=self.apply_policy,
             agent_budget=self.agent_budget,
             telegram=self.telegram,
+            acgrip=self.acgrip,
+            subtitle_acquisition_policy=self.subtitle_acquisition_policy,
         )
 
     @classmethod
@@ -258,6 +296,10 @@ class ConfigRevision:
             apply_policy=draft.apply_policy,
             agent_budget=draft.agent_budget,
             telegram=draft.telegram,
+            acgrip=draft.acgrip,
+            subtitle_acquisition_policy=(
+                draft.subtitle_acquisition_policy
+            ),
         )
 
     def to_json(self) -> str:
@@ -274,7 +316,11 @@ class ConfigRevision:
                 },
                 "revision": self.revision,
                 "revision_id": self.revision_id,
-                "schema_version": 4,
+                "schema_version": 5,
+                "acgrip": {"enabled": self.acgrip.enabled},
+                "subtitle_acquisition_policy": (
+                    self.subtitle_acquisition_policy.value
+                ),
                 "agent_budget": _budget_payload(self.agent_budget),
                 "telegram": {
                     "chat_id": self.telegram.chat_id,
@@ -325,6 +371,10 @@ class ConfigRevision:
                 "api_key_configured": True,
             },
             "apply_policy": self.apply_policy.value,
+            "acgrip": {"enabled": self.acgrip.enabled},
+            "subtitle_acquisition_policy": (
+                self.subtitle_acquisition_policy.value
+            ),
             "agent_budget": _budget_payload(self.agent_budget),
             "telegram": {
                 "enabled": self.telegram.enabled,
@@ -362,6 +412,10 @@ class ConfigRevision:
             }
             budget = DEFAULT_AGENT_BUDGET
             telegram = DEFAULT_TELEGRAM_CONFIG
+            acgrip = DEFAULT_ACGRIP_CONFIG
+            subtitle_acquisition_policy = (
+                DEFAULT_SUBTITLE_ACQUISITION_POLICY
+            )
             if set(raw) == common | {"archive_routes"}:
                 watches = _legacy_watches(
                     raw["watches"],
@@ -391,6 +445,26 @@ class ConfigRevision:
                 watches = _v2_watches(raw["watches"])
                 budget = agent_budget_from_payload(raw["agent_budget"])
                 telegram = telegram_config_from_payload(raw["telegram"])
+            elif (
+                set(raw)
+                == common
+                | {
+                    "schema_version",
+                    "agent_budget",
+                    "telegram",
+                    "acgrip",
+                    "subtitle_acquisition_policy",
+                }
+                and type(raw["schema_version"]) is int
+                and raw["schema_version"] == 5
+            ):
+                watches = _v2_watches(raw["watches"])
+                budget = agent_budget_from_payload(raw["agent_budget"])
+                telegram = telegram_config_from_payload(raw["telegram"])
+                acgrip = acgrip_config_from_payload(raw["acgrip"])
+                subtitle_acquisition_policy = SubtitleAcquisitionPolicy(
+                    raw["subtitle_acquisition_policy"]
+                )
             else:
                 raise ValueError
             return cls(
@@ -408,6 +482,10 @@ class ConfigRevision:
                 apply_policy=ApplyPolicy(raw["apply_policy"]),
                 agent_budget=budget,
                 telegram=telegram,
+                acgrip=acgrip,
+                subtitle_acquisition_policy=(
+                    subtitle_acquisition_policy
+                ),
             )
         except (KeyError, TypeError, ValueError, ServerError):
             raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
@@ -470,6 +548,15 @@ def telegram_config_from_payload(value: object) -> TelegramConfig:
             secret_ref=value["secret_ref"],
         )
     except (TypeError, ValueError, ServerError):
+        raise ValueError from None
+
+
+def acgrip_config_from_payload(value: object) -> AcgripConfig:
+    if not isinstance(value, dict) or set(value) != {"enabled"}:
+        raise ValueError
+    try:
+        return AcgripConfig(enabled=value["enabled"])
+    except ServerError:
         raise ValueError from None
 
 

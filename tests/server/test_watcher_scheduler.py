@@ -86,6 +86,34 @@ def test_folder_watcher_tracks_nested_symlink_without_following(
     ) == ("Work/episode.mkv",)
 
 
+def test_folder_watcher_ignores_acquisition_staging_but_reads_published_subtitles(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    staging = work / (".reeloom-acquiring-" + "a" * 64)
+    published = work / ("reeloom-acquired-" + "b" * 64)
+    staging.mkdir(parents=True)
+    published.mkdir()
+    (work / "episode.mkv").write_bytes(b"video")
+    (staging / "partial.ass").write_bytes(b"partial")
+    (published / "episode.ass").write_bytes(b"subtitle")
+
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    assert len(scan.folders) == 1
+    assert tuple(
+        item.relative_path.as_posix()
+        for item in scan.folders[0].candidates.files
+    ) == (
+        "Work/episode.mkv",
+        "Work/reeloom-acquired-" + "b" * 64 + "/episode.ass",
+    )
+    assert all(
+        not item.relative_path.as_posix().startswith(".reeloom-acquiring-")
+        for item in scan.folders[0].entries
+    )
+
+
 def test_folder_watcher_blocks_env_without_scanning_candidates(
     tmp_path: Path,
 ) -> None:

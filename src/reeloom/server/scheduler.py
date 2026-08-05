@@ -36,6 +36,8 @@ class Discovery:
     source_folder: str | None = None
     folder_generation_id: str | None = None
     inventory_id: str | None = None
+    source_folder_device: int | None = None
+    source_folder_inode: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +355,8 @@ class InMemorySchedulerRepository:
                     source_folder=folder.name,
                     folder_generation_id=generation_id,
                     inventory_id=folder.inventory_id,
+                    source_folder_device=folder.device,
+                    source_folder_inode=folder.inode,
                 )
                 self._discoveries[discovery_id] = discovery
                 self._discovery_by_snapshot[

@@ -39,6 +39,13 @@ def _default_rules() -> Mapping[str, frozenset[Phase]]:
             "detect_subtitle_variant": frozenset(
                 {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
             ),
+            "check_sub_from_video": frozenset(
+                {Phase.MAP_EPISODES}
+            ),
+            "search_sub": frozenset({Phase.MAP_EPISODES}),
+            "select_subtitle_release": frozenset(
+                {Phase.MAP_EPISODES}
+            ),
             "submit_mapping": frozenset(
                 {Phase.MAP_EPISODES, Phase.MAP_MOVIE}
             ),

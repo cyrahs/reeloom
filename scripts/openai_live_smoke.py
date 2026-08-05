@@ -3,9 +3,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import tempfile
 from pathlib import Path
+
+try:
+    from scripts.openai_live_config import (
+        OpenAILiveConfiguration,
+        OpenAILiveConfigurationError,
+        load_openai_live_configuration,
+        project_dotenv_path,
+    )
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from openai_live_config import (
+        OpenAILiveConfiguration,
+        OpenAILiveConfigurationError,
+        load_openai_live_configuration,
+        project_dotenv_path,
+    )
 
 from reeloom.adapters.openai_model import (
     OpenAIModelConfig,
@@ -23,6 +37,7 @@ _DEFAULT_DATASET = (
     / "m7-baseline-v1.json"
 )
 logger = logging.getLogger(__name__)
+_PROJECT_DOTENV_PATH = project_dotenv_path(Path(__file__))
 
 
 def _parse_args() -> argparse.Namespace:
@@ -47,9 +62,12 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _api_key() -> str | None:
-    value = os.environ.get("OPENAI_API_KEY")
-    return value if value else None
+def _live_configuration(args: argparse.Namespace) -> OpenAILiveConfiguration:
+    return load_openai_live_configuration(
+        dotenv_path=_PROJECT_DOTENV_PATH,
+        model_name_override=args.model,
+        reasoning_effort_override=args.reasoning_effort,
+    )
 
 
 def _pricing(args: argparse.Namespace) -> TokenPricing | None:
@@ -67,20 +85,26 @@ def _pricing(args: argparse.Namespace) -> TokenPricing | None:
 
 async def _run(
     *,
-    api_key: str,
+    live_configuration: OpenAILiveConfiguration,
+    model_name: str,
+    reasoning_effort: str | None,
     args: argparse.Namespace,
 ) -> tuple[str, tuple[EvalResult, ...]]:
     dataset = EvalDataset.load(args.dataset.absolute())
     config = OpenAIModelConfig(
-        model_name=args.model,
+        model_name=model_name,
+        base_url=live_configuration.base_url,
         request_timeout_seconds=args.timeout_seconds,
         max_retries=args.max_retries,
         organization=args.organization,
         project=args.project,
-        reasoning_effort=args.reasoning_effort,
+        reasoning_effort=reasoning_effort,
         verbosity=args.verbosity,
     )
-    provider = OpenAIModelProvider(api_key=api_key, config=config)
+    provider = OpenAIModelProvider(
+        api_key=live_configuration.api_key,
+        config=config,
+    )
     try:
         with tempfile.TemporaryDirectory(
             prefix="reeloom-openai-eval-"
@@ -121,21 +145,31 @@ def main() -> int:
     if not args.live:
         logger.error("live smoke disabled: pass --live to opt in")
         return 2
-    if not args.model:
-        logger.error("live smoke disabled: pass an explicit --model")
+    try:
+        live_configuration = _live_configuration(args)
+    except OpenAILiveConfigurationError as error:
+        logger.error("live smoke disabled: %s", error)
         return 2
-    api_key = _api_key()
-    if api_key is None:
-        logger.error("live smoke disabled: OPENAI_API_KEY is required")
+    model_name = live_configuration.model_name
+    if not model_name:
+        logger.error(
+            "live smoke disabled: pass --model or configure OPENAI_MODEL"
+        )
         return 2
+    reasoning_effort = live_configuration.reasoning_effort
     try:
         dataset_hash, results = asyncio.run(
-            _run(api_key=api_key, args=args)
+            _run(
+                live_configuration=live_configuration,
+                model_name=model_name,
+                reasoning_effort=reasoning_effort,
+                args=args,
+            )
         )
         print(
             _report(
-                model_name=args.model,
-                reasoning_effort=args.reasoning_effort,
+                model_name=model_name,
+                reasoning_effort=reasoning_effort,
                 verbosity=args.verbosity,
                 dataset_hash=dataset_hash,
                 results=results,

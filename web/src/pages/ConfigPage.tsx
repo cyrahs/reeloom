@@ -50,6 +50,8 @@ type FormState = {
   telegramBotToken: string;
   telegramChatId: string;
   apply_policy: "plan_only" | "manual" | "automatic";
+  acgripEnabled: boolean;
+  subtitle_acquisition_policy: "plan_only" | "manual" | "automatic";
   agent_budget: {
     max_model_turns: number;
     max_tool_calls: number;
@@ -98,6 +100,8 @@ const emptyState = (): FormState => ({
   telegramBotToken: "",
   telegramChatId: "",
   apply_policy: "plan_only",
+  acgripEnabled: false,
+  subtitle_acquisition_policy: "automatic",
   agent_budget: {
     max_model_turns: 64,
     max_tool_calls: 64,
@@ -133,6 +137,8 @@ function fromConfig(config: Config): FormState {
     telegramBotToken: "",
     telegramChatId: "",
     apply_policy: config.apply_policy,
+    acgripEnabled: config.acgrip.enabled,
+    subtitle_acquisition_policy: config.subtitle_acquisition_policy,
     agent_budget: config.agent_budget,
   };
 }
@@ -708,6 +714,78 @@ export function ConfigPage() {
         </ConfigSection>
 
         <ConfigSection
+          title="动漫字幕自动获取"
+          hint={
+            <>
+              启用后仅对动漫运行访问固定的 ACG.RIP 字幕版块。站点搜索、帖子和
+              原生附件是唯一允许的网络范围；不使用登录、验证码绕过、外链或代理。
+              字幕选择由 Agent 完成，下载与发布始终经过独立不可变计划和审批。
+            </>
+          }
+        >
+          <div className="subtitle-provider-row">
+            <div className="field">
+              <span>自动字幕获取</span>
+              <button
+                type="button"
+                className={`subtitle-feature-button${
+                  form.acgripEnabled ? " enabled" : ""
+                }`}
+                aria-pressed={form.acgripEnabled}
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    acgripEnabled: !form.acgripEnabled,
+                  })
+                }
+              >
+                {form.acgripEnabled ? "已启用" : "启用"}
+              </button>
+            </div>
+            <Field label="字幕来源">
+              <select
+                value="acgrip"
+                disabled={!form.acgripEnabled}
+                aria-label="字幕来源"
+                onChange={() => undefined}
+              >
+                <option value="acgrip">ACG.RIP 动漫字幕论坛</option>
+              </select>
+            </Field>
+          </div>
+          <fieldset
+            className="subtitle-policy-choice"
+            disabled={!form.acgripEnabled}
+          >
+            <legend>字幕获取审批策略</legend>
+            <div className="segmented-choice">
+              {[
+                ["plan_only", "仅生成计划"],
+                ["manual", "人工审批"],
+                ["automatic", "自动审批"],
+              ].map(([value, label]) => (
+                <label className="segmented-option" key={value}>
+                  <input
+                    type="radio"
+                    name="subtitle-acquisition-policy"
+                    value={value}
+                    checked={form.subtitle_acquisition_policy === value}
+                    onChange={() =>
+                      setForm({
+                        ...form,
+                        subtitle_acquisition_policy:
+                          value as FormState["subtitle_acquisition_policy"],
+                      })
+                    }
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </ConfigSection>
+
+        <ConfigSection
           title="Agent 预算"
           hint={
             <>
@@ -873,6 +951,8 @@ export function toPayload(state: FormState, current?: Config) {
       : { mode: "replace" as const, path };
   return {
     apply_policy: state.apply_policy,
+    acgrip: { enabled: state.acgripEnabled },
+    subtitle_acquisition_policy: state.subtitle_acquisition_policy,
     agent_budget: state.agent_budget,
     watches: state.watches.map((item) => ({
       watch_id: item.watch_id,

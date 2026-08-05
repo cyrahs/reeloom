@@ -19,6 +19,21 @@ from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import MovieIdentity
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleInspection,
+    EmbeddedSubtitleProbeStatus,
+    SubtitleArchiveFormat,
+    SubtitleArchiveSetCapability,
+    SubtitleArchiveSetId,
+    SubtitleArchiveSetSummary,
+    SubtitleReleaseId,
+    SubtitleReleaseSummary,
+    SubtitleSearchPage,
+    SubtitleSearchRecord,
+    SubtitleSelection,
+    SubtitleSelectionDecision,
+)
 from reeloom.runtime.budget import RunBudget
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
@@ -37,6 +52,9 @@ from reeloom.runtime.state_codec import (
     STATE_PROJECTION_SCHEMA,
     V3_STATE_PROJECTION_SCHEMA,
     V4_STATE_PROJECTION_SCHEMA,
+    V5_STATE_PROJECTION_SCHEMA,
+    V6_STATE_PROJECTION_SCHEMA,
+    V7_STATE_PROJECTION_SCHEMA,
     decode_state,
     encode_state,
 )
@@ -91,6 +109,13 @@ def test_projection_schema_label_must_match_payload_shape() -> None:
     payload.pop("mapping_review_call_id")
     payload.pop("mapping_conflicts")
     payload.pop("selected_poster_path")
+    payload.pop("embedded_subtitle_inspections")
+    payload.pop("subtitle_search_records")
+    payload.pop("subtitle_archive_capabilities")
+    payload.pop("subtitle_archive_search_bindings")
+    payload.pop("subtitle_selection_decision")
+    payload.pop("subtitle_search_failures")
+    payload.pop("subtitle_acquisition_enabled")
 
     with pytest.raises(ValueError):
         decode_state(
@@ -110,10 +135,135 @@ def test_projection_schema_label_must_match_payload_shape() -> None:
 
     v4_payload = encode_state(state)
     v4_payload.pop("selected_poster_path")
+    v4_payload.pop("embedded_subtitle_inspections")
+    v4_payload.pop("subtitle_search_records")
+    v4_payload.pop("subtitle_archive_capabilities")
+    v4_payload.pop("subtitle_archive_search_bindings")
+    v4_payload.pop("subtitle_selection_decision")
+    v4_payload.pop("subtitle_search_failures")
+    v4_payload.pop("subtitle_acquisition_enabled")
     assert decode_state(
         v4_payload,
         load_plan=lambda _plan_hash: pytest.fail(),
         schema_version=V4_STATE_PROJECTION_SCHEMA,
+    ) == state
+
+    v5_payload = encode_state(state)
+    v5_payload.pop("embedded_subtitle_inspections")
+    v5_payload.pop("subtitle_search_records")
+    v5_payload.pop("subtitle_archive_capabilities")
+    v5_payload.pop("subtitle_archive_search_bindings")
+    v5_payload.pop("subtitle_selection_decision")
+    v5_payload.pop("subtitle_search_failures")
+    v5_payload.pop("subtitle_acquisition_enabled")
+    assert decode_state(
+        v5_payload,
+        load_plan=lambda _plan_hash: pytest.fail(),
+        schema_version=V5_STATE_PROJECTION_SCHEMA,
+    ) == state
+
+    v6_payload = encode_state(state)
+    v6_payload.pop("subtitle_search_records")
+    v6_payload.pop("subtitle_archive_capabilities")
+    v6_payload.pop("subtitle_archive_search_bindings")
+    v6_payload.pop("subtitle_selection_decision")
+    v6_payload.pop("subtitle_search_failures")
+    v6_payload.pop("subtitle_acquisition_enabled")
+    assert decode_state(
+        v6_payload,
+        load_plan=lambda _plan_hash: pytest.fail(),
+        schema_version=V6_STATE_PROJECTION_SCHEMA,
+    ) == state
+
+    v7_payload = encode_state(state)
+    v7_payload.pop("subtitle_search_failures")
+    v7_payload.pop("subtitle_acquisition_enabled")
+    assert decode_state(
+        v7_payload,
+        load_plan=lambda _plan_hash: pytest.fail(),
+        schema_version=V7_STATE_PROJECTION_SCHEMA,
+    ) == state
+
+
+def test_embedded_subtitle_inspection_round_trips_in_v6_projection() -> None:
+    state = reduce_event(
+        None,
+        RunStarted("run-probe", TmdbWorkType.ANIME),
+    )
+    state = replace(
+        state,
+        embedded_subtitle_inspections=(
+            EmbeddedSubtitleInspection(
+                CandidateId(CandidateKind.VIDEO, 1),
+                1,
+                EmbeddedSubtitleProbeStatus.ABSENT,
+                EmbeddedChineseStatus.ABSENT,
+                (),
+            ),
+        ),
+    )
+
+    assert decode_state(
+        encode_state(state),
+        load_plan=lambda _plan_hash: pytest.fail(),
+    ) == state
+
+
+def test_subtitle_search_and_selection_round_trip_in_v7_projection() -> None:
+    state = reduce_event(None, RunStarted("run-search", TmdbWorkType.ANIME))
+    archive_id = SubtitleArchiveSetId(1)
+    release_id = SubtitleReleaseId(1)
+    record = SubtitleSearchRecord(
+        1,
+        None,
+        SubtitleSearchPage(
+            (
+                SubtitleReleaseSummary(
+                    release_id,
+                    (
+                        SubtitleArchiveSetSummary(
+                            archive_id,
+                            SubtitleArchiveFormat.ZIP,
+                            1,
+                            123,
+                        ),
+                    ),
+                    "动画字幕",
+                    "来自帖子回复的附件",
+                    "S01",
+                    ("简体中文",),
+                    (),
+                    ("作品标题匹配",),
+                    (),
+                    True,
+                ),
+            ),
+            None,
+            True,
+        ),
+    )
+    state = replace(
+        state,
+        subtitle_search_records=(record,),
+        subtitle_archive_capabilities=(
+            SubtitleArchiveSetCapability(
+                archive_id,
+                release_id,
+                SubtitleArchiveFormat.ZIP,
+                10081,
+                95257,
+                (34768,),
+                123,
+            ),
+        ),
+        subtitle_archive_search_bindings=((1, archive_id),),
+        subtitle_selection_decision=SubtitleSelectionDecision.selected(
+            (SubtitleSelection(1, archive_id),)
+        ),
+    )
+
+    assert decode_state(
+        encode_state(state), load_plan=lambda _plan_hash: pytest.fail()
     ) == state
 
 
@@ -258,6 +408,13 @@ def test_legacy_episode_projection_remains_readable() -> None:
     payload.pop("mapping_review_call_id")
     payload.pop("mapping_conflicts")
     payload.pop("selected_poster_path")
+    payload.pop("embedded_subtitle_inspections")
+    payload.pop("subtitle_search_records")
+    payload.pop("subtitle_archive_capabilities")
+    payload.pop("subtitle_archive_search_bindings")
+    payload.pop("subtitle_selection_decision")
+    payload.pop("subtitle_search_failures")
+    payload.pop("subtitle_acquisition_enabled")
 
     assert decode_state(
         payload,

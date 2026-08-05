@@ -49,6 +49,22 @@ def test_approval_record_rejects_tampered_canonical_bytes() -> None:
     assert raised.value.code is ErrorCode.INVALID_APPROVAL
 
 
+def test_subtitle_acquisition_approval_has_distinct_exact_scope() -> None:
+    approval = ApprovalRecord.create(
+        run_id="run-m13",
+        plan_hash=_PLAN_HASH,
+        scope=ApprovalScope.SUBTITLE_ACQUIRE,
+        expires_at=_NOW + timedelta(minutes=5),
+        nonce=_NONCE,
+    )
+
+    restored = ApprovalRecord.from_canonical_bytes(
+        approval.canonical_bytes()
+    )
+    assert restored.scope is ApprovalScope.SUBTITLE_ACQUIRE
+    assert restored.approval_id != _approval().approval_id
+
+
 @pytest.mark.parametrize(
     ("expires_at", "nonce"),
     (

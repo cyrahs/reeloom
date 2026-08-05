@@ -22,6 +22,11 @@ from reeloom.tools.mapping import (
     search_dir,
     submit_mapping,
 )
+from reeloom.tools.subtitles import (
+    check_sub_from_video,
+    search_sub,
+    select_subtitle_release,
+)
 
 __all__ = [
     "CandidateSource",
@@ -37,6 +42,9 @@ __all__ = [
     "search_tmdb",
     "select_series",
     "detect_subtitle_variant",
+    "check_sub_from_video",
+    "search_sub",
+    "select_subtitle_release",
     "list_dir",
     "search_dir",
     "submit_mapping",

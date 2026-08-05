@@ -40,6 +40,7 @@ from reeloom.runtime.events import (
     SubtitleVariantDetected,
 )
 from reeloom.runtime.state import MappingValidationIssue, Phase, RunState
+from reeloom.runtime.subtitle_workflow import project_subtitle_workflow
 from reeloom.runtime.tool_runtime import ToolRuntime
 from reeloom.tools.candidates import SnapshotCandidateSource
 
@@ -663,6 +664,16 @@ async def submit_mapping(
             code=RuntimeErrorCode.ARCHIVE_SEARCH_REQUIRED.value,
             retryable=True,
         )
+    if state.subtitle_acquisition_enabled is True:
+        workflow = project_subtitle_workflow(state)
+        if not workflow.has_external_subtitles and not workflow.mapping_is_ready:
+            return _reject(
+                runtime,
+                call_id=call_id,
+                tool_name=tool_name,
+                code=RuntimeErrorCode.SUBTITLE_WORKFLOW_INCOMPLETE.value,
+                retryable=True,
+            )
     if state.selected_series is None:
         return _reject(
             runtime,

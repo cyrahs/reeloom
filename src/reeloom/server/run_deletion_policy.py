@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 RUN_DELETION_READY_SQL = """
-    r.status IN ('completed', 'failed', 'rolled_back')
+    r.status IN ('completed', 'failed', 'rolled_back', 'superseded')
     AND NOT EXISTS (
         SELECT 1 FROM run_operations AS operation
         WHERE operation.run_id = r.run_id

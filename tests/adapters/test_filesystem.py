@@ -2,19 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from reeloom.adapters.filesystem import (
+    FFPROBE_STDOUT_LIMIT,
+    FixedFfprobeRunner,
+    FfprobeProcessResult,
+    FfprobeResultStatus,
     FilesystemScanner,
     FilesystemSubtitleSampleProvider,
+    FilesystemVideoSubtitleInspector,
     ScanLimits,
 )
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
+from reeloom.kernel.subtitle_acquisition import (
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleCodec,
+    EmbeddedSubtitleLanguage,
+    EmbeddedSubtitleProbeStatus,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 
 
@@ -225,3 +238,304 @@ def test_subtitle_provider_maps_read_error_to_domain_error(
         )
 
     assert error.value.code is ErrorCode.SCAN_FAILED
+
+
+@dataclass
+class _ProbeRunner:
+    result: FfprobeProcessResult
+    calls: int = 0
+
+    async def probe(self, file_descriptor: int) -> FfprobeProcessResult:
+        assert file_descriptor >= 0
+        self.calls += 1
+        return self.result
+
+
+def _video_scan(tmp_path: Path, name: str = "Episode 01.mkv"):
+    root_path = tmp_path / "media"
+    root_path.mkdir()
+    video_path = root_path / name
+    video_path.write_bytes(b"container")
+    return (
+        FilesystemScanner().scan(AuthorizedRoot.create(root_path)),
+        video_path,
+    )
+
+
+def _complete_probe(streams: list[object]) -> FfprobeProcessResult:
+    return FfprobeProcessResult(
+        FfprobeResultStatus.COMPLETE,
+        json.dumps({"streams": streams}).encode(),
+    )
+
+
+def test_video_subtitle_inspector_reports_bounded_chinese_tracks(
+    tmp_path: Path,
+) -> None:
+    scan, _video_path = _video_scan(tmp_path)
+    runner = _ProbeRunner(
+        _complete_probe(
+            [
+                {
+                    "index": 3,
+                    "codec_name": "ass",
+                    "tags": {"language": "zh-CN"},
+                    "disposition": {"default": 1, "forced": 0},
+                },
+                {
+                    "index": 4,
+                    "codec_name": "subrip",
+                    "tags": {"language": "jpn"},
+                    "disposition": {"default": 0, "forced": 1},
+                },
+            ]
+        )
+    )
+
+    result = asyncio.run(
+        FilesystemVideoSubtitleInspector(scan, runner).inspect(
+            CandidateId(CandidateKind.VIDEO, 1),
+            season_number=1,
+        )
+    )
+
+    assert result.probe_status is EmbeddedSubtitleProbeStatus.PRESENT
+    assert result.chinese_status is EmbeddedChineseStatus.PRESENT
+    assert tuple(
+        (str(track.track_id), track.codec, track.language)
+        for track in result.tracks
+    ) == (
+        (
+            "embedded-sub:1",
+            EmbeddedSubtitleCodec.ASS,
+            EmbeddedSubtitleLanguage.ZH_HANS,
+        ),
+        (
+            "embedded-sub:2",
+            EmbeddedSubtitleCodec.SUBRIP,
+            EmbeddedSubtitleLanguage.JA,
+        ),
+    )
+    assert runner.calls == 1
+
+
+def test_video_subtitle_inspector_distinguishes_non_chinese_tracks(
+    tmp_path: Path,
+) -> None:
+    scan, _video_path = _video_scan(tmp_path)
+
+    result = asyncio.run(
+        FilesystemVideoSubtitleInspector(
+            scan,
+            _ProbeRunner(
+                _complete_probe(
+                    [
+                        {
+                            "index": 2,
+                            "codec_name": "subrip",
+                            "tags": {"language": "eng"},
+                            "disposition": {
+                                "default": 0,
+                                "forced": 0,
+                            },
+                        }
+                    ]
+                )
+            ),
+        ).inspect(
+            CandidateId(CandidateKind.VIDEO, 1),
+            season_number=1,
+        )
+    )
+
+    assert result.probe_status is EmbeddedSubtitleProbeStatus.PRESENT
+    assert result.chinese_status is EmbeddedChineseStatus.ABSENT
+    assert result.tracks[0].language is EmbeddedSubtitleLanguage.EN
+
+
+@pytest.mark.parametrize(
+    ("name", "process_result", "expected"),
+    (
+        (
+            "Episode 01.mp4",
+            _complete_probe([]),
+            EmbeddedSubtitleProbeStatus.ABSENT,
+        ),
+        (
+            "Episode 01.ts",
+            _complete_probe([]),
+            EmbeddedSubtitleProbeStatus.INDETERMINATE,
+        ),
+        (
+            "Episode 01.mkv",
+            FfprobeProcessResult(FfprobeResultStatus.INDETERMINATE),
+            EmbeddedSubtitleProbeStatus.INDETERMINATE,
+        ),
+        (
+            "Episode 01.mkv",
+            FfprobeProcessResult(
+                FfprobeResultStatus.COMPLETE,
+                b'{"unexpected":[]}',
+            ),
+            EmbeddedSubtitleProbeStatus.INDETERMINATE,
+        ),
+    ),
+)
+def test_video_subtitle_inspector_fails_closed_for_incomplete_evidence(
+    tmp_path: Path,
+    name: str,
+    process_result: FfprobeProcessResult,
+    expected: EmbeddedSubtitleProbeStatus,
+) -> None:
+    scan, _video_path = _video_scan(tmp_path, name)
+
+    result = asyncio.run(
+        FilesystemVideoSubtitleInspector(
+            scan,
+            _ProbeRunner(process_result),
+        ).inspect(
+            CandidateId(CandidateKind.VIDEO, 1),
+            season_number=1,
+        )
+    )
+
+    assert result.probe_status is expected
+    assert result.chinese_status is (
+        EmbeddedChineseStatus.ABSENT
+        if expected is EmbeddedSubtitleProbeStatus.ABSENT
+        else EmbeddedChineseStatus.UNKNOWN
+    )
+
+
+def test_video_subtitle_inspector_rejects_symlink_replacement(
+    tmp_path: Path,
+) -> None:
+    scan, video_path = _video_scan(tmp_path)
+    outside = tmp_path / "outside.mkv"
+    outside.write_bytes(b"outside")
+    video_path.unlink()
+    video_path.symlink_to(outside)
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            FilesystemVideoSubtitleInspector(
+                scan,
+                _ProbeRunner(_complete_probe([])),
+            ).inspect(
+                CandidateId(CandidateKind.VIDEO, 1),
+                season_number=1,
+            )
+        )
+
+    assert error.value.code is ErrorCode.SCAN_FAILED
+
+
+def test_video_subtitle_inspector_rejects_identity_drift_during_probe(
+    tmp_path: Path,
+) -> None:
+    scan, video_path = _video_scan(tmp_path)
+
+    class _MutatingRunner:
+        async def probe(self, file_descriptor: int) -> FfprobeProcessResult:
+            assert file_descriptor >= 0
+            video_path.write_bytes(b"changed-container-size")
+            return _complete_probe([])
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            FilesystemVideoSubtitleInspector(
+                scan,
+                _MutatingRunner(),
+            ).inspect(
+                CandidateId(CandidateKind.VIDEO, 1),
+                season_number=1,
+            )
+        )
+
+    assert error.value.code is ErrorCode.SCAN_FAILED
+
+
+def test_fixed_ffprobe_runner_fails_closed_on_output_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(b"x" * (FFPROBE_STDOUT_LIMIT + 1))
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = 0 if self.returncode is None else self.returncode
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    async def fake_create(*args: object, **kwargs: object) -> _Process:
+        assert args[0] == "/usr/bin/prlimit"
+        assert "/usr/bin/ffprobe" in args
+        assert "fd:" == args[-1]
+        assert "--cpu=5:5" in args
+        assert "--as=268435456:268435456" in args
+        assert kwargs["pass_fds"] == (9,)
+        assert kwargs["cwd"] == "/"
+        return _Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+
+    result = asyncio.run(FixedFfprobeRunner().probe(9))
+
+    assert result == FfprobeProcessResult(
+        FfprobeResultStatus.INDETERMINATE
+    )
+
+
+def test_fixed_ffprobe_runner_kills_process_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Stream:
+        async def read(self, _size: int) -> bytes:
+            await asyncio.Future()
+            return b""
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = _Stream()
+            self.stderr = _Stream()
+            self.returncode: int | None = None
+            self.killed = False
+
+        async def wait(self) -> int:
+            if self.returncode is None:
+                await asyncio.Future()
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+    process = _Process()
+
+    async def fake_create(*args: object, **kwargs: object) -> _Process:
+        del args, kwargs
+        return process
+
+    original_wait_for = asyncio.wait_for
+
+    async def fake_wait_for(awaitable: object, timeout: float):
+        del timeout
+        if isinstance(awaitable, asyncio.Future):
+            awaitable.cancel()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    result = asyncio.run(FixedFfprobeRunner().probe(9))
+
+    monkeypatch.setattr(asyncio, "wait_for", original_wait_for)
+    assert process.killed is True
+    assert result.status is FfprobeResultStatus.INDETERMINATE

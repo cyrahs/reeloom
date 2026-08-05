@@ -18,12 +18,21 @@ from reeloom.kernel.naming import (
     SubtitleVariant,
 )
 from reeloom.kernel.schema import check_fields, require_object
+from reeloom.kernel.subtitle_acquisition import SubtitleArchiveSetId
 from reeloom.kernel.tmdb import TmdbWorkType, validate_tmdb_poster_path
 from reeloom.runtime.event_codec import (
     _budget,
     _budget_payload,
     _candidate_refs,
     _candidate_refs_payload,
+    _embedded_inspection,
+    _embedded_inspection_payload,
+    _subtitle_capability,
+    _subtitle_capability_payload,
+    _subtitle_search_record,
+    _subtitle_search_record_payload,
+    _subtitle_selection,
+    _subtitle_selection_payload,
     _issue,
     _issue_payload,
     _mapping,
@@ -48,7 +57,10 @@ LEGACY_STATE_PROJECTION_SCHEMA = "runtime-state-v1"
 V2_STATE_PROJECTION_SCHEMA = "runtime-state-v2"
 V3_STATE_PROJECTION_SCHEMA = "runtime-state-v3"
 V4_STATE_PROJECTION_SCHEMA = "runtime-state-v4"
-STATE_PROJECTION_SCHEMA = "runtime-state-v5"
+V5_STATE_PROJECTION_SCHEMA = "runtime-state-v5"
+V6_STATE_PROJECTION_SCHEMA = "runtime-state-v6"
+V7_STATE_PROJECTION_SCHEMA = "runtime-state-v7"
+STATE_PROJECTION_SCHEMA = "runtime-state-v8"
 _LEGACY_FIELDS = frozenset(
     {
         "applied_count",
@@ -103,7 +115,18 @@ _V4_FIELDS = _V3_CURRENT_FIELDS | {
     "mapping_review",
     "mapping_review_call_id",
 }
-_FIELDS = _V4_FIELDS | {"selected_poster_path"}
+_V5_FIELDS = _V4_FIELDS | {"selected_poster_path"}
+_V6_FIELDS = _V5_FIELDS | {"embedded_subtitle_inspections"}
+_V7_FIELDS = _V6_FIELDS | {
+    "subtitle_archive_capabilities",
+    "subtitle_archive_search_bindings",
+    "subtitle_search_records",
+    "subtitle_selection_decision",
+}
+_FIELDS = _V7_FIELDS | {
+    "subtitle_acquisition_enabled",
+    "subtitle_search_failures",
+}
 
 
 def is_supported_projection_schema(value: object) -> bool:
@@ -112,6 +135,9 @@ def is_supported_projection_schema(value: object) -> bool:
         V2_STATE_PROJECTION_SCHEMA,
         V3_STATE_PROJECTION_SCHEMA,
         V4_STATE_PROJECTION_SCHEMA,
+        V5_STATE_PROJECTION_SCHEMA,
+        V6_STATE_PROJECTION_SCHEMA,
+        V7_STATE_PROJECTION_SCHEMA,
         STATE_PROJECTION_SCHEMA,
     }
 
@@ -145,10 +171,39 @@ def encode_state(state: RunState) -> dict[str, object]:
             else [str(item) for item in state.candidate_ids]
         ),
         "candidate_snapshot_id": state.candidate_snapshot_id,
+        "subtitle_acquisition_enabled": state.subtitle_acquisition_enabled,
         "deadline_at": _timestamp(state.deadline_at),
         "episode_catalog_counts": [
             list(item) for item in state.episode_catalog_counts
         ],
+        "embedded_subtitle_inspections": [
+            _embedded_inspection_payload(item)
+            for item in state.embedded_subtitle_inspections
+        ],
+        "subtitle_search_records": [
+            _subtitle_search_record_payload(item)
+            for item in state.subtitle_search_records
+        ],
+        "subtitle_search_failures": [
+            [season_number, reason_code]
+            for season_number, reason_code in state.subtitle_search_failures
+        ],
+        "subtitle_archive_capabilities": [
+            _subtitle_capability_payload(item)
+            for item in state.subtitle_archive_capabilities
+        ],
+        "subtitle_archive_search_bindings": [
+            [season_number, str(archive_set_id)]
+            for season_number, archive_set_id
+            in state.subtitle_archive_search_bindings
+        ],
+        "subtitle_selection_decision": (
+            None
+            if state.subtitle_selection_decision is None
+            else _subtitle_selection_payload(
+                state.subtitle_selection_decision
+            )
+        ),
         "event_count": state.event_count,
         "failure_code": state.failure_code,
         "failures": state.failures,
@@ -330,6 +385,36 @@ def _int_pairs(value: object) -> tuple[tuple[int, int], ...]:
     if len(pairs) != len(value):
         raise ValueError
     return pairs
+
+
+def _int_text_pairs(value: object) -> tuple[tuple[int, str], ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    pairs: list[tuple[int, str]] = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 2:
+            raise ValueError
+        pairs.append((_int(item[0]), _text(item[1])))
+    if len(set(pairs)) != len(pairs):
+        raise ValueError
+    return tuple(pairs)
+
+
+def _subtitle_bindings(
+    value: object,
+) -> tuple[tuple[int, SubtitleArchiveSetId], ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    bindings: list[tuple[int, SubtitleArchiveSetId]] = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 2:
+            raise ValueError
+        bindings.append(
+            (_int(item[0]), SubtitleArchiveSetId.parse(item[1]))
+        )
+    if len(set(bindings)) != len(bindings):
+        raise ValueError
+    return tuple(bindings)
 
 
 def _archive_capability_payload(
@@ -569,6 +654,11 @@ def decode_state(
         candidate_snapshot_id=_optional_text(
             payload["candidate_snapshot_id"]
         ),
+        subtitle_acquisition_enabled=(
+            None
+            if payload["subtitle_acquisition_enabled"] is None
+            else _bool(payload["subtitle_acquisition_enabled"])
+        ),
         candidate_count=_int(payload["candidate_count"]),
         candidate_ids=(
             None
@@ -602,6 +692,31 @@ def decode_state(
         ),
         episode_catalog_counts=_int_pairs(
             payload["episode_catalog_counts"]
+        ),
+        embedded_subtitle_inspections=tuple(
+            _embedded_inspection(item)
+            for item in payload["embedded_subtitle_inspections"]
+        ),
+        subtitle_search_records=tuple(
+            _subtitle_search_record(item)
+            for item in payload["subtitle_search_records"]
+        ),
+        subtitle_search_failures=_int_text_pairs(
+            payload["subtitle_search_failures"]
+        ),
+        subtitle_archive_capabilities=tuple(
+            _subtitle_capability(item)
+            for item in payload["subtitle_archive_capabilities"]
+        ),
+        subtitle_archive_search_bindings=_subtitle_bindings(
+            payload["subtitle_archive_search_bindings"]
+        ),
+        subtitle_selection_decision=(
+            None
+            if payload["subtitle_selection_decision"] is None
+            else _subtitle_selection(
+                payload["subtitle_selection_decision"]
+            )
         ),
         inventory_episodes=(
             None if inventory is None else _int_pairs(inventory)
@@ -687,15 +802,49 @@ def _normalized_payload(
                 _V3_CURRENT_FIELDS,
             ),
             V4_STATE_PROJECTION_SCHEMA: (_V4_FIELDS,),
+            V5_STATE_PROJECTION_SCHEMA: (_V5_FIELDS,),
+            V6_STATE_PROJECTION_SCHEMA: (_V6_FIELDS,),
+            V7_STATE_PROJECTION_SCHEMA: (_V7_FIELDS,),
             STATE_PROJECTION_SCHEMA: (_FIELDS,),
         }.get(schema_version)
         if expected is None or keys not in expected:
             raise ValueError("projection schema does not match payload")
     if keys == _FIELDS:
         return dict(check_fields(raw, _FIELDS, field="run_state"))
+    if keys == _V7_FIELDS:
+        payload = dict(check_fields(raw, _V7_FIELDS, field="run_state"))
+        payload["subtitle_acquisition_enabled"] = None
+        payload["subtitle_search_failures"] = []
+        return payload
+    if keys == _V6_FIELDS:
+        payload = dict(check_fields(raw, _V6_FIELDS, field="run_state"))
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
+        return payload
+    if keys == _V5_FIELDS:
+        payload = dict(check_fields(raw, _V5_FIELDS, field="run_state"))
+        payload["embedded_subtitle_inspections"] = []
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
+        return payload
     if keys == _V4_FIELDS:
         payload = dict(check_fields(raw, _V4_FIELDS, field="run_state"))
         payload["selected_poster_path"] = None
+        payload["embedded_subtitle_inspections"] = []
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
         return payload
     if keys == _V3_CURRENT_FIELDS:
         payload = dict(
@@ -705,6 +854,13 @@ def _normalized_payload(
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
         payload["selected_poster_path"] = None
+        payload["embedded_subtitle_inspections"] = []
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
         return payload
     if keys == _V3_FIELDS:
         payload = dict(check_fields(raw, _V3_FIELDS, field="run_state"))
@@ -713,6 +869,13 @@ def _normalized_payload(
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
         payload["selected_poster_path"] = None
+        payload["embedded_subtitle_inspections"] = []
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
         return payload
     if keys == _V2_FIELDS:
         payload = dict(check_fields(raw, _V2_FIELDS, field="run_state"))
@@ -724,6 +887,13 @@ def _normalized_payload(
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
         payload["selected_poster_path"] = None
+        payload["embedded_subtitle_inspections"] = []
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
         return payload
     if keys == _LEGACY_FIELDS:
         payload = dict(
@@ -739,5 +909,12 @@ def _normalized_payload(
         payload["mapping_review_call_id"] = None
         payload["mapping_conflicts"] = []
         payload["selected_poster_path"] = None
+        payload["embedded_subtitle_inspections"] = []
+        payload["subtitle_search_records"] = []
+        payload["subtitle_archive_capabilities"] = []
+        payload["subtitle_archive_search_bindings"] = []
+        payload["subtitle_selection_decision"] = None
+        payload["subtitle_search_failures"] = []
+        payload["subtitle_acquisition_enabled"] = None
         return payload
     return dict(check_fields(raw, _FIELDS, field="run_state"))

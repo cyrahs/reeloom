@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -22,6 +23,9 @@ from reeloom.policy.path_policy import is_forbidden_env_name
 _RESERVED_FOLDERS = frozenset({"archive", "fail"})
 _INVENTORY_SCHEMA = "folder-inventory-v1"
 _MAX_FOLDERS = 1_000
+_ACQUISITION_STAGING = re.compile(
+    r"^\.reeloom-acquiring-[0-9a-f]{64}$"
+)
 
 
 class FolderEntryKind(StrEnum):
@@ -370,6 +374,8 @@ class NoFollowWatcher:
             names,
             key=lambda value: (filesystem_name_key(value), value),
         ):
+            if _ACQUISITION_STAGING.fullmatch(name) is not None:
+                continue
             if is_forbidden_env_name(name):
                 raise _Blocked("env_path_forbidden")
             relative = (

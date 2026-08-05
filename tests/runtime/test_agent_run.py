@@ -141,7 +141,7 @@ def test_organizer_context_recovers_from_persistent_events(
     )
 
     assert second.runtime.state == first.runtime.state
-    assert len(second.runtime.store.events) == 2
+    assert len(second.runtime.store.events) == 3
 
 
 def test_recovered_context_reuses_original_budget(

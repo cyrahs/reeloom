@@ -7,11 +7,13 @@ import pytest
 
 from reeloom.server.config import (
     ApplyPolicy,
+    AcgripConfig,
     ConfigDraft,
     ConfigRevision,
     ProviderConfig,
     ServerWorkType,
     TelegramConfig,
+    SubtitleAcquisitionPolicy,
     WatchConfig,
 )
 from reeloom.server.config_edit import parse_config_edit
@@ -85,6 +87,44 @@ def test_config_edit_retains_exact_revision_roots_and_secret(
     assert edit.replacement_api_key is None
     assert edit.draft.agent_budget.max_elapsed_seconds == 600
     assert edit.draft.agent_budget.max_failures == 16
+    assert not edit.draft.acgrip.enabled
+    assert (
+        edit.draft.subtitle_acquisition_policy
+        is SubtitleAcquisitionPolicy.AUTOMATIC
+    )
+
+
+def test_config_edit_requires_explicit_acgrip_opt_in_and_separate_policy(
+    tmp_path: Path,
+) -> None:
+    current = _current(tmp_path)
+    value = {
+        "watches": [],
+        "provider": {
+            "base_url": "https://models.example.test/v1",
+            "model": "gpt-5",
+            "reasoning_effort": None,
+            "verbosity": None,
+            "credential": {"mode": "retain"},
+        },
+        "apply_policy": "plan_only",
+        "acgrip": {"enabled": True},
+        "subtitle_acquisition_policy": "manual",
+    }
+
+    edit = parse_config_edit(value, current=current)
+
+    assert edit.draft.acgrip == AcgripConfig(enabled=True)
+    assert (
+        edit.draft.subtitle_acquisition_policy
+        is SubtitleAcquisitionPolicy.MANUAL
+    )
+    assert edit.draft.apply_policy is ApplyPolicy.PLAN_ONLY
+
+    value["acgrip"] = {"enabled": True, "base_url": "https://evil.invalid"}
+    with pytest.raises(ServerError) as raised:
+        parse_config_edit(value, current=current)
+    assert raised.value.code is ServerErrorCode.INVALID_CONFIG
 
 
 def test_config_edit_accepts_explicit_agent_budget(tmp_path: Path) -> None:

@@ -137,6 +137,86 @@ test("hides empty history, then shows the durable reply before plan review", asy
   expect(screen.queryByText(reply)).toBeNull();
 });
 
+test("executes only the independently authorized subtitle action", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  const subtitlePlanHash = `sha256:${"b".repeat(64)}`;
+  let published = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (path === "/api/v1/session") {
+      return jsonResponse({ api_version: "1.0.0", role: "admin" });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}`) {
+      return jsonResponse({
+        ...runResponse(),
+        status: published ? "superseded" : "running",
+        phase: "build_subtitle_acquisition_plan",
+        plan_hash: null,
+        available_actions: published
+          ? []
+          : ["approve_subtitle_acquisition"],
+        subtitle_acquisition: {
+          plan_hash: subtitlePlanHash,
+          policy: "manual",
+          status: published ? "published" : "planned",
+          approval_id: published ? "approval-subtitle-1" : null,
+          transaction_id: published
+            ? `subtitle-txn-v1-${"c".repeat(64)}`
+            : null,
+          failure_code: null,
+          successor_status: published ? "queued" : null,
+        },
+      });
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (
+      path ===
+        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/approve` &&
+      init?.method === "POST"
+    ) {
+      expect(init.headers).toMatchObject({ "If-Match": subtitlePlanHash });
+      expect(JSON.parse(String(init.body))).toEqual({});
+      published = true;
+      return jsonResponse({
+        run_id: runId,
+        plan_hash: subtitlePlanHash,
+        policy: "manual",
+        status: "published",
+        approval_id: "approval-subtitle-1",
+        transaction_id: `subtitle-txn-v1-${"c".repeat(64)}`,
+        failure_code: null,
+        successor_status: "queued",
+      });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+
+  renderRunPage();
+
+  const button = await screen.findByRole("button", {
+    name: "审批并获取字幕",
+  });
+  await userEvent.click(button);
+
+  expect(await screen.findByRole("heading", {
+    name: "字幕获取：published",
+  })).toBeVisible();
+  expect(screen.queryByRole("button", {
+    name: "审批并获取字幕",
+  })).toBeNull();
+});
+
 function renderRunPage() {
   render(
     <QueryClientProvider

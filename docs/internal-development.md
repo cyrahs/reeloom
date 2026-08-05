@@ -90,10 +90,10 @@ Agents SDK 对话 history 使用单独的 append-only `Session` adapter；`add`�
 redacted trace 只投影 allowlist 元数据，不包含 prompt、tool observation、文件名、
 字幕正文或 TMDB 标题。
 
-真实 OpenAI adapter 使用显式注入的 key 与 model 配置、官方 Responses API
-endpoint，并强制 `store=False` 和单一顺序 tool call。线上 eval 必须显式
-`--live --model ...`，只读取进程环境的 `OPENAI_API_KEY`；pytest 和默认 eval
-始终离线。
+真实 OpenAI adapter 使用显式注入的 key、model 与 HTTPS base URL，并强制
+`store=False` 和单一顺序 tool call。线上 eval 必须显式 `--live`；model 和
+reasoning 可由命令行指定，四项 OpenAI 测试配置也可从进程环境或仓库根固定
+`.env` 受限补齐；pytest 和默认 eval 始终离线。
 
 M10 已在不放宽 `select_series` 的前提下加入独立 `select_movie`、单正片
 mapping 和两层 Movie 命名；Movie 不会被伪装成 `SxxExx`。
@@ -131,12 +131,39 @@ REELOOM_TEST_POSTGRES_DSN=... npm run e2e
 PYTHONPATH=src .venv/bin/python scripts/run_offline_eval.py
 ```
 
-显式 opt-in 的 OpenAI 线上对比（不读取 `.env`）：
+显式 opt-in 的 OpenAI 线上对比：
 
 ```bash
-OPENAI_API_KEY=... PYTHONPATH=src .venv/bin/python \
-  scripts/openai_live_smoke.py --live --model gpt-5.6
+PYTHONPATH=src .venv/bin/python scripts/openai_live_smoke.py --live
 ```
+
+`.env` 可配置：
+
+```dotenv
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.6
+OPENAI_REASONING_EFFORT=high
+```
+
+model/reasoning 的优先级为命令行参数、进程环境、固定 `.env`；key/base URL 的
+优先级为进程环境、固定 `.env`。base URL 缺省为官方 endpoint。loader 仅在
+`--live` 后 no-follow 读取仓库根固定 `.env`，不执行变量展开，只识别上述四个
+字段，并拒绝非 HTTPS、含凭据、query 或 fragment 的 URL。M13 真实 Agent-loop
+smoke 使用相同配置：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/openai_m13_live_smoke.py \
+  --live --runs 1
+```
+
+M13 smoke 默认逐一运行五个场景：两季均无中文字幕时逐季探测、翻完分页并抵抗
+帖子 prompt injection 为每季选择正确字幕包、已有内嵌中文后继续 mapping、探测
+不确定时提交 `subtitle_evidence_ambiguous`、完整空搜索时提交
+`subtitle_no_candidates`、搜索 provider 失败时提交
+`subtitle_search_unavailable`。`--runs` 表示每个场景的重复次数；可重复传入
+`--scenario <name>` 只运行指定场景。TMDB、视频探测和字幕搜索 provider 仍为
+fake，只有 OpenAI 模型与 Agents SDK loop 使用真实网络。
 
 ### 显式 opt-in 的 TMDB 线上 smoke
 
@@ -189,8 +216,8 @@ Isolated Executor
 - Agent 不能直接删除、覆盖、移动或改写文件。
 - LLM 负责不确定的语义判断；代码负责所有安全约束。
 - 所有对用户媒体和输出树的副作用必须绑定不可变 `plan_hash` 和一次性审批。
-- 除显式 `--live` smoke 对仓库根 `.env` 的受限单键只读外，不读取、修改或访问
-  任何 `.env*` 文件。
+- 除显式 `--live` TMDB/OpenAI smoke 对仓库根 `.env` 的受限 allowlist 只读外，
+  不读取、修改或访问任何 `.env*` 文件。
 - 测试默认离线，TMDB、模型和文件系统适配器都必须可替换。
 
 ## 计划中的技术方向

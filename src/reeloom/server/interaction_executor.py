@@ -135,7 +135,10 @@ class AgentInteractionExecutor:
             allow_v1=True,
         ):
             raise ValueError("bound agent definition is unsupported")
-        execution_definition = organizer_definition(work_type)
+        execution_definition = organizer_definition(
+            work_type,
+            subtitle_acquisition_enabled=False,
+        )
         review_context = self._review_context(
             run_id=job.registration.run_id,
             plan_hash=request.reservation.plan_hash,
@@ -171,6 +174,7 @@ class AgentInteractionExecutor:
                     model=model,
                     tmdb=tmdb,
                     instructions=execution_definition.instructions,
+                    tool_names=execution_definition.tools,
                     execution_schema_version=(
                         execution_definition.schema_version
                     ),
@@ -189,6 +193,7 @@ class AgentInteractionExecutor:
         model: ModelLease,
         definition_name: str,
         instructions: str,
+        tool_names: tuple[str, ...],
         execution_schema_version: str,
         review_context: str,
     ) -> InteractionExecution:
@@ -236,6 +241,7 @@ class AgentInteractionExecutor:
         model: ModelLease,
         tmdb: TmdbLease,
         instructions: str,
+        tool_names: tuple[str, ...],
         execution_schema_version: str,
         review_context: str,
     ) -> InteractionExecution:
@@ -269,6 +275,7 @@ class AgentInteractionExecutor:
                 exclude_paths=excluded,
             ),
             subtitle_provider=FilesystemSubtitleSampleProvider(scan),
+            subtitle_acquisition_enabled=False,
             budget=request.reservation.budget,
             event_store=transient,
             agent_session=session,
@@ -285,6 +292,7 @@ class AgentInteractionExecutor:
             ),
             finalize_plan=False,
             instructions=instructions,
+            tool_names=tool_names,
         )
         state = result.state
         movie = work_type is TmdbWorkType.MOVIE

@@ -64,11 +64,17 @@ from reeloom.server.api_models import (
     RunResponse,
     RunsResponse,
     SessionResponse,
+    SubtitleAcquisitionApprovalRequest,
+    SubtitleAcquisitionResponse,
     TelegramTestRequest,
     TelegramTestResponse,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
+from reeloom.server.subtitle_acquisition_service import (
+    SubtitleAcquisitionCoordinator,
+    SubtitleAcquisitionRequestRecord,
+)
 from reeloom.server.web_static import StaticAsset, StaticWebBundle
 from reeloom.executor.errors import (
     ApprovalError,
@@ -184,6 +190,7 @@ class ApiDependencies:
     interactions: InteractionService | None = None
     apply: ApplyCoordinator | None = None
     folder_dispositions: FolderDispositionCoordinator | None = None
+    subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     health: Callable[[], object] | None = None
     config_update: (
         Callable[[int, dict[str, object]], dict[str, object]] | None
@@ -1030,6 +1037,10 @@ def create_api(
             del value["agent_budget"]
         if value["telegram"] is None:
             del value["telegram"]
+        if value["acgrip"] is None:
+            del value["acgrip"]
+        if value["subtitle_acquisition_policy"] is None:
+            del value["subtitle_acquisition_policy"]
 
         def execute() -> dict[str, object]:
             return dependencies.config_update(expected_revision, value)
@@ -1478,6 +1489,65 @@ def create_api(
                     ),
                     "plan_hash": plan_hash,
                 },
+                execute=execute,
+                resolve=resolve,
+            )
+        )
+
+    @app.post(
+        "/api/v1/runs/{run_id}/subtitle-acquisition/approve",
+        response_model=SubtitleAcquisitionResponse,
+    )
+    async def approve_subtitle_acquisition(
+        run_id: str,
+        body: SubtitleAcquisitionApprovalRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        del body
+        coordinator = dependencies.subtitle_acquisitions
+        if coordinator is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def payload(
+            record: SubtitleAcquisitionRequestRecord,
+        ) -> dict[str, object]:
+            return {
+                "run_id": record.run_id,
+                "plan_hash": record.plan_hash,
+                "policy": record.policy.value,
+                "status": record.status,
+                "approval_id": record.approval_id,
+                "transaction_id": record.transaction_id,
+                "failure_code": record.failure_code,
+                "successor_status": None,
+            }
+
+        def execute() -> dict[str, object]:
+            return payload(
+                coordinator.approve_and_execute(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                    automatic=False,
+                )
+            )
+
+        def resolve() -> dict[str, object] | None:
+            record = coordinator.resolve(
+                run_id=run_id,
+                plan_hash=plan_hash,
+            )
+            return None if record is None else payload(record)
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="approve_subtitle_acquisition",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={"plan_hash": plan_hash},
                 execute=execute,
                 resolve=resolve,
             )

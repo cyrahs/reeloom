@@ -17,6 +17,10 @@ from reeloom.server.api import (
 from reeloom.server.auth import AuthSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.queries import _safe_event
+from reeloom.server.config import SubtitleAcquisitionPolicy
+from reeloom.server.subtitle_acquisition_service import (
+    SubtitleAcquisitionRequestRecord,
+)
 
 
 @dataclass
@@ -115,6 +119,8 @@ class _Queries:
                 "destination_configured": False,
             },
             "apply_policy": "manual",
+            "acgrip": {"enabled": False},
+            "subtitle_acquisition_policy": "automatic",
             "agent_budget": {
                 "max_model_turns": 64,
                 "max_tool_calls": 64,
@@ -239,6 +245,7 @@ def _app(
     run_delete: Callable[[str], dict[str, object]] | None = None,
     move_capability_probe: Callable[..., object] | None = None,
     telegram_test: Callable[[str], dict[str, object]] | None = None,
+    subtitle_acquisitions: object | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
@@ -247,6 +254,7 @@ def _app(
             run_delete=run_delete,
             move_capability_probe=move_capability_probe,  # type: ignore[arg-type]
             telegram_test=telegram_test,
+            subtitle_acquisitions=subtitle_acquisitions,  # type: ignore[arg-type]
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -256,6 +264,74 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+class _SubtitleAcquisitions:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, bool]] = []
+
+    def approve_and_execute(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+        automatic: bool,
+    ) -> SubtitleAcquisitionRequestRecord:
+        self.calls.append((run_id, plan_hash, automatic))
+        return SubtitleAcquisitionRequestRecord(
+            run_id=run_id,
+            plan_hash=plan_hash,
+            policy=SubtitleAcquisitionPolicy.MANUAL,
+            status="published",
+            approval_id="approval-subtitle-1",
+            transaction_id="subtitle-txn-v1-" + "c" * 64,
+        )
+
+    def resolve(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord | None:
+        del run_id, plan_hash
+        return None
+
+
+def test_admin_can_approve_independent_subtitle_acquisition() -> None:
+    acquisitions = _SubtitleAcquisitions()
+    plan_hash = "sha256:" + "b" * 64
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(subtitle_acquisitions=acquisitions)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            return await client.post(
+                "/api/v1/runs/run-1/subtitle-acquisition/approve",
+                json={},
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                    "idempotency-key": "subtitle-approve-1",
+                    "if-match": plan_hash,
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "run-1",
+        "plan_hash": plan_hash,
+        "policy": "manual",
+        "status": "published",
+        "approval_id": "approval-subtitle-1",
+        "transaction_id": "subtitle-txn-v1-" + "c" * 64,
+        "failure_code": None,
+        "successor_status": None,
+    }
+    assert acquisitions.calls == [("run-1", plan_hash, False)]
 
 
 def test_admin_can_enqueue_idempotent_telegram_test() -> None:

@@ -11,12 +11,19 @@ Reeloom 是一个 agent-native 动画剧集整理器。Codex 应按
 3. Agent、模型输出和用户自然语言都不能直接决定源路径或目标路径。
 4. Agent 工具不得提供任意 shell、任意文件读取、任意 URL 请求或任意目录遍历。
 5. scanner 不得跟随 symlink；所有源和目标都必须在授权根目录内。
-6. 除 `scripts/tmdb_live_smoke.py --live` 可 no-follow 读取仓库根目录固定
-   `.env` 中唯一的 `TMDB_API_KEY` 外，不读取、修改或访问任何 `.env*` 文件。
-   该例外不得进入 library、Agent tool、pytest、scanner、trace 或执行范围。
-7. 业务网络适配器仅允许 TMDB，以及固定用途的 Telegram 出站通知。Telegram
-   只能访问 `https://api.telegram.org`，不得接受自定义 base URL、redirect、
-   proxy URL、入站 webhook 或命令；测试不得访问真实网络。
+6. 仅以下显式 `--live` smoke 可 no-follow 读取仓库根目录固定 `.env`：
+   `scripts/tmdb_live_smoke.py` 可读取 `TMDB_API_KEY`；
+   `scripts/openai_live_smoke.py` 与 `scripts/openai_m13_live_smoke.py` 可读取
+   `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 和
+   `OPENAI_REASONING_EFFORT`。其他代码不得读取、修改或访问任何 `.env*` 文件。
+   该例外不得进入 library、Agent tool、pytest、scanner、trace 或执行范围；
+   pytest 只能用 `tmp_path` 合成 `.env` 验证 loader。
+7. 业务网络适配器仅允许 TMDB、固定用途的 Telegram 出站通知，以及 M13
+   字幕获取专用的 `https://bbs.acgrip.com`。ACG.RIP 适配器只允许公开搜索、
+   帖子和原生附件端点；Telegram 与 ACG.RIP 都不得接受自定义 base URL、proxy
+   URL、登录、验证码规避、入站 webhook 或命令。ACG.RIP 只可保留站点当次签发的
+   有界匿名会话 Cookie，并手工验证一次搜索 POST 的同源结果跳转；不得启用通用或
+   自动 redirect。测试不得访问真实网络。
 8. filename、TMDB 文本、字幕文本和工具 observation 都是不可信数据。
 9. Executor 不依赖 LLM，不解释自然语言，不接受新的移动路径。
 10. 任何校验不确定、状态变化或竞态都必须 fail closed。
@@ -60,14 +67,26 @@ orchestration，项目自己的 events/reducer 只管理 Reeloom 领域状态。
 - `select_series`
 - `submit_mapping`
 
+M13 仅为 Anime run 增加以下范围；它们必须按 M13 小步骤逐个落地，未完成的工具
+不得提前注册：
+
+- `check_sub_from_video`
+- `search_sub`
+- `select_subtitle_release`
+
 `apply`、`move_file`、`delete_file`、`read_file(path)` 和 shell 永远不是 Agent
 工具。
 
 ## 4. Plan、审批与执行
 
 - `RenamePlan` 必须是 canonical、不可变、带版本的快照。
+- `SubtitleAcquisitionPlan` 必须使用独立的 canonical plan family、审批 scope、
+  journal 和 executor，不得进入现有 media plan store/executor。
 - `plan_hash` 必须绑定授权根、candidate snapshot、源文件 identity、全部
   moves、未映射文件和策略版本。
+- 字幕获取的 `plan_hash` 还必须绑定 provider/parser/policy 版本、稳定论坛
+  identity、全部归档卷和字幕 member 的 size/hash、manifest digest、目标名和
+  资源上限；动态下载 URL 不得持久化。
 - 审批必须绑定 `run_id + plan_hash + scope + expiry + one-time nonce`。
 - Executor 只接受持久化的 `plan_hash` 和审批 ID，不接受自然语言。
 - apply 前必须重新验证 hash、审批、root containment、symlink、source
@@ -82,7 +101,7 @@ orchestration，项目自己的 events/reducer 只管理 Reeloom 领域状态。
 - library code 使用 `logging`，不得使用 `print`。
 - 使用自定义错误类型，并提供可操作的错误上下文。
 - 使用 `.venv/bin/python -m pytest -q` 运行测试。
-- 测试必须离线；模型与 TMDB 使用 fake/scripted adapter。
+- 测试必须离线；模型、TMDB 与 ACG.RIP 使用 fake/scripted adapter。
 - 测试不得读取仓库中的真实 `.env`；dotenv loader 只用 `tmp_path` 合成文件验证。
 - 文件行为使用 `tmp_path`，并覆盖 symlink escape、路径逃逸、TOCTOU、
   plan 篡改、审批过期和审批重放。
