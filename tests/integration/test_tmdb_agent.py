@@ -37,6 +37,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveSetSummary,
     SubtitleReleaseId,
     SubtitleReleaseSummary,
+    SubtitleSearchDiagnostics,
     SubtitleSearchPage,
 )
 from reeloom.ports.subtitle_acquisition import (
@@ -249,6 +250,17 @@ class _OneSubtitleSearchProvider:
                     (34768,),
                     1024,
                 ),
+            ),
+            SubtitleSearchDiagnostics(
+                request.title_aliases,
+                (1,),
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
             ),
         )
 

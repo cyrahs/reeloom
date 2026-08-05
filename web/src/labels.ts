@@ -73,6 +73,8 @@ const labels: Record<StatusKind, Record<string, string>> = {
     candidate_snapshot_created: "扫描完成",
     subtitle_variant_detected: "识别字幕版本",
     embedded_subtitles_inspected: "检查内嵌字幕",
+    subtitle_search_observed: "记录字幕搜索",
+    subtitle_search_failed: "字幕搜索失败",
     subtitle_selection_submitted: "提交字幕判断",
     tmdb_candidates_observed: "查询 TMDB",
     tmdb_season_catalog_observed: "读取季度目录",

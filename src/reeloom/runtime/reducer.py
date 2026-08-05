@@ -23,6 +23,7 @@ from reeloom.kernel.subtitle_acquisition import (
     EmbeddedChineseStatus,
     EmbeddedSubtitleInspection,
     SubtitleArchiveSetCapability,
+    SubtitleSearchDiagnostics,
     SubtitleSearchRecord,
     SubtitleSelectionDecision,
     SubtitleSelectionStatus,
@@ -851,6 +852,13 @@ def reduce_event(
                 not isinstance(item, SubtitleArchiveSetCapability)
                 for item in event.capabilities
             )
+            or (
+                event.diagnostics is not None
+                and not isinstance(
+                    event.diagnostics,
+                    SubtitleSearchDiagnostics,
+                )
+            )
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
         page_archive_ids = {
@@ -865,6 +873,15 @@ def reduce_event(
             or page_archive_ids
             != {item.archive_set_id for item in event.capabilities}
             or any(not item.evidence_complete for item in record.page.items)
+            or (
+                event.diagnostics is not None
+                and (
+                    event.diagnostics.release_count
+                    < len(record.page.items)
+                    or event.diagnostics.selectable_archive_set_count
+                    < len(event.capabilities)
+                )
+            )
         ):
             raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
         capabilities = {

@@ -29,7 +29,7 @@ from reeloom.kernel.plan_review import (
     PlanReviewVerification,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.queries import PostgresQueries
+from reeloom.server.queries import PostgresQueries, _safe_event
 
 
 class _Cursor:
@@ -463,6 +463,45 @@ def _event(event_type: str, payload: dict[str, object]) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("ascii")
+
+
+def test_subtitle_search_event_exposes_only_bounded_diagnostics() -> None:
+    value = _safe_event(
+        "subtitle_search_observed",
+        {
+            "record": {
+                "season_number": 1,
+                "page": {"items": []},
+            },
+            "capabilities": [],
+            "diagnostics": {
+                "query_aliases": ["我的百合乃工作是也！"],
+                "alias_thread_counts": [0],
+                "discovered_thread_count": 0,
+                "fetched_thread_count": 0,
+                "fetched_thread_page_count": 0,
+                "parsed_post_count": 0,
+                "native_attachment_count": 0,
+                "selectable_archive_set_count": 0,
+                "empty_stage": "forum_search",
+            },
+        },
+    )
+
+    assert value == {
+        "season_number": 1,
+        "query_aliases": "我的百合乃工作是也！",
+        "alias_thread_counts": "我的百合乃工作是也！=0",
+        "discovered_thread_count": 0,
+        "fetched_thread_count": 0,
+        "fetched_thread_page_count": 0,
+        "parsed_post_count": 0,
+        "native_attachment_count": 0,
+        "selectable_archive_set_count": 0,
+        "release_count": 0,
+        "archive_set_count": 0,
+        "empty_stage": "forum_search",
+    }
 
 
 def _movie_plan_with_unmapped_video() -> MovieRenamePlan:

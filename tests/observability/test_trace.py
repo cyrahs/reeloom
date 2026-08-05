@@ -8,12 +8,16 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleSelection,
     SubtitleSelectionDecision,
     SubtitleArchiveSetId,
+    SubtitleSearchDiagnostics,
+    SubtitleSearchPage,
+    SubtitleSearchRecord,
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.observability.trace import _attributes, build_trace
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     EmbeddedSubtitlesInspected,
+    SubtitleSearchObserved,
     SubtitleSelectionSubmitted,
     RunStarted,
     ToolRejected,
@@ -77,4 +81,40 @@ def test_subtitle_selection_trace_omits_forum_and_archive_identities() -> None:
     assert _attributes(event) == {
         "selection_count": 1,
         "status": "selected",
+    }
+
+
+def test_subtitle_search_trace_records_query_and_filter_funnel() -> None:
+    event = SubtitleSearchObserved(
+        "call-search",
+        SubtitleSearchRecord(1, None, SubtitleSearchPage((), None, True)),
+        (),
+        SubtitleSearchDiagnostics(
+            ("我的百合乃工作是也！",),
+            (0,),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
+    )
+
+    assert _attributes(event) == {
+        "alias_thread_counts": "我的百合乃工作是也！=0",
+        "archive_set_count": 0,
+        "complete": True,
+        "discovered_thread_count": 0,
+        "empty_stage": "forum_search",
+        "fetched_thread_count": 0,
+        "fetched_thread_page_count": 0,
+        "has_next_cursor": False,
+        "native_attachment_count": 0,
+        "parsed_post_count": 0,
+        "query_aliases": "我的百合乃工作是也！",
+        "release_count": 0,
+        "season_number": 1,
+        "selectable_archive_set_count": 0,
     }

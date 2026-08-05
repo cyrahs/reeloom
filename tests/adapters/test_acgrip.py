@@ -18,6 +18,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveSetId,
     SubtitleReleaseId,
     SubtitleSearchCursorId,
+    SubtitleSearchEmptyStage,
 )
 from reeloom.ports.subtitle_acquisition import (
     SubtitleArchiveError,
@@ -254,6 +255,46 @@ def test_provider_returns_opaque_sets_and_never_sends_cookie_or_dynamic_url() ->
         for item in result.capabilities
     )
     assert clock.sleeps and all(delay >= 1.0 for delay in clock.sleeps)
+    assert result.diagnostics.query_aliases == ("测试动画", "Test Anime")
+    assert result.diagnostics.alias_thread_counts == (1, 1)
+    assert result.diagnostics.discovered_thread_count == 1
+    assert result.diagnostics.fetched_thread_count == 1
+    assert result.diagnostics.fetched_thread_page_count == 1
+    assert result.diagnostics.parsed_post_count == 2
+    assert result.diagnostics.native_attachment_count == 4
+    assert result.diagnostics.selectable_archive_set_count == 3
+    assert result.diagnostics.release_count == 2
+    assert (
+        result.diagnostics.empty_stage
+        is SubtitleSearchEmptyStage.NOT_EMPTY
+    )
+
+
+def test_provider_diagnoses_explicit_forum_search_empty_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, content=_FORM)
+        return httpx.Response(
+            200,
+            content="<html><body>没有找到匹配结果</body></html>".encode(),
+        )
+
+    clock = _Clock()
+    provider = AcgripSubtitleSearchProvider(
+        transport=httpx.MockTransport(handler),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    try:
+        result = asyncio.run(provider.search(_request()))
+    finally:
+        asyncio.run(provider.aclose())
+
+    assert result.page.items == ()
+    assert result.diagnostics.query_aliases == ("测试动画", "Test Anime")
+    assert result.diagnostics.alias_thread_counts == (0, 0)
+    assert result.diagnostics.discovered_thread_count == 0
+    assert result.diagnostics.empty_stage is SubtitleSearchEmptyStage.FORUM_SEARCH
 
 
 def test_provider_keeps_only_anonymous_cookie_and_resolves_one_search_redirect() -> None:

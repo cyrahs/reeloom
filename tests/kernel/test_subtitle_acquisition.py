@@ -32,7 +32,9 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveVolume,
     SubtitleReleaseId,
     SubtitleReleaseSummary,
+    SubtitleSearchDiagnostics,
     SubtitleSearchCursorId,
+    SubtitleSearchEmptyStage,
     SubtitleSearchPage,
     SubtitleSelection,
     SubtitleSelectionDecision,
@@ -271,7 +273,23 @@ def test_search_result_binds_summary_to_stable_forum_capability() -> None:
         4_096,
     )
 
-    assert SubtitleSearchResult(page, (capability,)).capabilities == (
+    diagnostics = SubtitleSearchDiagnostics(
+        ("作品",),
+        (1,),
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+    )
+
+    assert SubtitleSearchResult(
+        page,
+        (capability,),
+        diagnostics,
+    ).capabilities == (
         capability,
     )
 
@@ -289,6 +307,49 @@ def test_search_result_binds_summary_to_stable_forum_capability() -> None:
                     4_095,
                 ),
             ),
+            diagnostics,
+        )
+
+
+def test_search_diagnostics_are_bounded_and_identify_empty_stage() -> None:
+    diagnostics = SubtitleSearchDiagnostics(
+        ("作品", "Original Title"),
+        (0, 0),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+
+    assert diagnostics.empty_stage is SubtitleSearchEmptyStage.FORUM_SEARCH
+
+    with pytest.raises(DomainError):
+        SubtitleSearchDiagnostics(
+            ("https://outside.invalid",),
+            (0,),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+
+    with pytest.raises(DomainError):
+        SubtitleSearchDiagnostics(
+            ("作品",),
+            (10_001,),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         )
 
 

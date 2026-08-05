@@ -20,6 +20,7 @@ from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.subtitle_acquisition import (
     EmbeddedSubtitleInspection,
     SubtitleArchiveSetCapability,
+    SubtitleSearchDiagnostics,
     SubtitleSearchRecord,
     SubtitleSelectionDecision,
 )
@@ -118,6 +119,7 @@ class SubtitleSearchObserved:
     call_id: str
     record: SubtitleSearchRecord
     capabilities: tuple[SubtitleArchiveSetCapability, ...]
+    diagnostics: SubtitleSearchDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)

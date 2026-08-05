@@ -44,6 +44,7 @@ _MAX_TEXT_BYTES = 240
 _MAX_EXCERPT_BYTES = 512
 _MAX_HINT_BYTES = 160
 _MAX_HINTS = 8
+_MAX_SEARCH_DIAGNOSTIC_COUNT = 10_000
 _MAX_SOURCE_MEMBER_PATH_BYTES = 1024
 _MAX_SOURCE_MEMBER_DEPTH = 8
 _MAX_TARGET_STEM_BYTES = 160
@@ -573,6 +574,92 @@ class SubtitleSearchRecord:
             or not isinstance(self.page, SubtitleSearchPage)
         ):
             raise _invalid(ErrorCode.INVALID_SUBTITLE_SEARCH_DATA)
+
+
+class SubtitleSearchEmptyStage(StrEnum):
+    NOT_EMPTY = "not_empty"
+    FORUM_SEARCH = "forum_search"
+    NATIVE_ATTACHMENT = "native_attachment"
+    ARCHIVE_FILTER = "archive_filter"
+    RELEASE_FILTER = "release_filter"
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleSearchDiagnostics:
+    """Bounded, URL-free counters for diagnosing successful searches."""
+
+    query_aliases: tuple[str, ...]
+    alias_thread_counts: tuple[int, ...]
+    discovered_thread_count: int
+    fetched_thread_count: int
+    fetched_thread_page_count: int
+    parsed_post_count: int
+    native_attachment_count: int
+    selectable_archive_set_count: int
+    release_count: int
+
+    def __post_init__(self) -> None:
+        aliases = self.query_aliases
+        counts = self.alias_thread_counts
+        counters = (
+            self.discovered_thread_count,
+            self.fetched_thread_count,
+            self.fetched_thread_page_count,
+            self.parsed_post_count,
+            self.native_attachment_count,
+            self.selectable_archive_set_count,
+            self.release_count,
+        )
+        if (
+            not isinstance(aliases, tuple)
+            or not 1 <= len(aliases) <= 3
+            or any(
+                not isinstance(alias, str)
+                or not alias.strip()
+                or len(alias.encode("utf-8")) > _MAX_TEXT_BYTES
+                or _URL_TOKEN.search(alias) is not None
+                or any(
+                    unicodedata.category(char).startswith("C")
+                    for char in alias
+                )
+                for alias in aliases
+            )
+            or len(
+                {
+                    unicodedata.normalize("NFKC", alias).casefold()
+                    for alias in aliases
+                }
+            )
+            != len(aliases)
+            or not isinstance(counts, tuple)
+            or len(counts) != len(aliases)
+            or any(
+                type(count) is not int
+                or not 0 <= count <= _MAX_SEARCH_DIAGNOSTIC_COUNT
+                for count in counts
+            )
+            or any(
+                type(count) is not int
+                or not 0 <= count <= _MAX_SEARCH_DIAGNOSTIC_COUNT
+                for count in counters
+            )
+            or self.discovered_thread_count > sum(counts)
+            or self.fetched_thread_count > self.discovered_thread_count
+            or self.release_count > self.selectable_archive_set_count
+        ):
+            raise _invalid(ErrorCode.INVALID_SUBTITLE_SEARCH_DATA)
+
+    @property
+    def empty_stage(self) -> SubtitleSearchEmptyStage:
+        if self.release_count:
+            return SubtitleSearchEmptyStage.NOT_EMPTY
+        if not self.discovered_thread_count:
+            return SubtitleSearchEmptyStage.FORUM_SEARCH
+        if not self.native_attachment_count:
+            return SubtitleSearchEmptyStage.NATIVE_ATTACHMENT
+        if not self.selectable_archive_set_count:
+            return SubtitleSearchEmptyStage.ARCHIVE_FILTER
+        return SubtitleSearchEmptyStage.RELEASE_FILTER
 
 
 @dataclass(frozen=True, slots=True, order=True)

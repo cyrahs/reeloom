@@ -23,6 +23,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveSetSummary,
     SubtitleReleaseId,
     SubtitleReleaseSummary,
+    SubtitleSearchDiagnostics,
     SubtitleSearchPage,
     SubtitleSearchCursorId,
 )
@@ -193,6 +194,17 @@ def _search_result() -> SubtitleSearchResult:
                 2048,
             ),
         ),
+        SubtitleSearchDiagnostics(
+            ("测试动画",),
+            (1,),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+        ),
     )
 
 
@@ -272,6 +284,17 @@ class _PagedSearchProvider:
                     (30_000 + ordinal,),
                     1000 + ordinal,
                 ),
+            ),
+            SubtitleSearchDiagnostics(
+                request.title_aliases,
+                (2,),
+                2,
+                2,
+                2,
+                2,
+                2,
+                2,
+                2,
             ),
         )
 

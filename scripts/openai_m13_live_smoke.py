@@ -49,6 +49,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseId,
     SubtitleReleaseSummary,
     SubtitleSearchCursorId,
+    SubtitleSearchDiagnostics,
     SubtitleSearchPage,
 )
 from reeloom.kernel.tmdb import (
@@ -275,6 +276,7 @@ class _SearchProvider:
             tuple[int, str, str, tuple[str, ...], tuple[str, ...]], ...
         ],
         *,
+        query_aliases: tuple[str, ...],
         next_cursor: SubtitleSearchCursorId | None,
         complete: bool,
     ) -> SubtitleSearchResult:
@@ -322,6 +324,17 @@ class _SearchProvider:
         return SubtitleSearchResult(
             SubtitleSearchPage(tuple(releases), next_cursor, complete),
             tuple(capabilities),
+            SubtitleSearchDiagnostics(
+                query_aliases,
+                (len(releases),),
+                len(releases),
+                len(releases),
+                len(releases),
+                len(releases),
+                len(capabilities),
+                len(capabilities),
+                len(releases),
+            ),
         )
 
     async def search(
@@ -346,7 +359,12 @@ class _SearchProvider:
         if self.mode is _SearchMode.EMPTY:
             if request.season_number != 1:
                 raise AssertionError("empty scenario only has season one")
-            return self._result((), next_cursor=None, complete=True)
+            return self._result(
+                (),
+                query_aliases=request.title_aliases,
+                next_cursor=None,
+                complete=True,
+            )
         if self.mode is not _SearchMode.PAGED_CANDIDATES:
             raise AssertionError("unexpected search mode")
         if request.season_number == 1 and request.cursor is None:
@@ -360,6 +378,7 @@ class _SearchProvider:
                         ("coverage_conflict",),
                     ),
                 ),
+                query_aliases=request.title_aliases,
                 next_cursor=SubtitleSearchCursorId(1),
                 complete=False,
             )
@@ -369,6 +388,7 @@ class _SearchProvider:
                     (2, "Correct-Anime-S01-CHS.zip", "S01E01", ("zh-hans",), ()),
                     (3, "Unknown-pack.zip", "", (), ("language_unknown",)),
                 ),
+                query_aliases=request.title_aliases,
                 next_cursor=None,
                 complete=True,
             )
@@ -385,6 +405,7 @@ class _SearchProvider:
                     ("coverage_conflict",),
                 ),
             ),
+            query_aliases=request.title_aliases,
             next_cursor=None,
             complete=True,
         )
