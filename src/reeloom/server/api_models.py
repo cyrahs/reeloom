@@ -174,6 +174,8 @@ class RunResponse(_StrictModel):
             "dispose_failed_folder",
             "recover_folder_disposition",
             "approve_subtitle_acquisition",
+            "retry_run",
+            "fail_run",
             "delete_run",
         ]
     ]
@@ -518,6 +520,22 @@ class InteractionResponse(_StrictModel):
     assistant_reply: str
     plan_hash: str | None
     model_tokens: int = Field(ge=0)
+
+
+class AttentionControlRequest(_StrictModel):
+    pass
+
+
+class AttentionRetryResponse(_StrictModel):
+    run_id: str
+    status: Literal["retry_scheduled"]
+    retry_count: int = Field(ge=1, le=3)
+
+
+class AttentionFailResponse(_StrictModel):
+    run_id: str
+    status: Literal["failure_planned"]
+    plan_hash: str
 
 
 class ReapplyRequest(_StrictModel):

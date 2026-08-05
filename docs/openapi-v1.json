@@ -250,6 +250,64 @@
         "title": "ArchiveReportSearch",
         "type": "object"
       },
+      "AttentionControlRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "AttentionControlRequest",
+        "type": "object"
+      },
+      "AttentionFailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "failure_planned",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "plan_hash"
+        ],
+        "title": "AttentionFailResponse",
+        "type": "object"
+      },
+      "AttentionRetryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "retry_count": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Retry Count",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "retry_scheduled",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "retry_count"
+        ],
+        "title": "AttentionRetryResponse",
+        "type": "object"
+      },
       "ConfigAcgripResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2140,6 +2198,8 @@
                 "dispose_failed_folder",
                 "recover_folder_disposition",
                 "approve_subtitle_acquisition",
+                "retry_run",
+                "fail_run",
                 "delete_run"
               ],
               "type": "string"
@@ -4707,6 +4767,146 @@
         "summary": "Event Stream"
       }
     },
+    "/api/v1/runs/{run_id}/fail": {
+      "post": {
+        "operationId": "fail_attention_run_api_v1_runs__run_id__fail_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable key for one logical mutation",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable key for one logical mutation",
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "description": "Exact plan hash or event:<sequence> attention head",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact plan hash or event:<sequence> attention head",
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttentionControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttentionFailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Fail Attention Run"
+      }
+    },
     "/api/v1/runs/{run_id}/folder-disposition": {
       "post": {
         "operationId": "execute_folder_disposition_api_v1_runs__run_id__folder_disposition_post",
@@ -4979,7 +5179,7 @@
             }
           },
           {
-            "description": "Exact immutable plan hash",
+            "description": "Exact plan hash or event:<sequence> attention head",
             "in": "header",
             "name": "If-Match",
             "required": false,
@@ -4992,7 +5192,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Exact immutable plan hash",
+              "description": "Exact plan hash or event:<sequence> attention head",
               "title": "If-Match"
             }
           }
@@ -5578,6 +5778,146 @@
           }
         ],
         "summary": "Reapply"
+      }
+    },
+    "/api/v1/runs/{run_id}/retry": {
+      "post": {
+        "operationId": "retry_attention_run_api_v1_runs__run_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable key for one logical mutation",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable key for one logical mutation",
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "description": "Exact plan hash or event:<sequence> attention head",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact plan hash or event:<sequence> attention head",
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttentionControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttentionRetryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Retry Attention Run"
       }
     },
     "/api/v1/runs/{run_id}/subtitle-acquisition/approve": {

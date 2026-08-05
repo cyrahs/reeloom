@@ -36,6 +36,9 @@ from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.api_models import (
     ApplyResponse,
     ApproveApplyRequest,
+    AttentionControlRequest,
+    AttentionFailResponse,
+    AttentionRetryResponse,
     ConfigResponse,
     ConfigUpdateRequest,
     DirectoryListingResponse,
@@ -213,6 +216,12 @@ class ApiDependencies:
     ) = None
     run_delete_resolve: (
         Callable[[str], dict[str, object] | None] | None
+    ) = None
+    attention_retry: (
+        Callable[[str, int], dict[str, object]] | None
+    ) = None
+    attention_fail: (
+        Callable[[str, int], dict[str, object]] | None
     ) = None
     sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
     sse_poll_seconds: float = _SSE_POLL_SECONDS
@@ -613,6 +622,38 @@ def _plan_hash(
             detail={"code": "invalid_plan_hash"},
         )
     return value
+
+
+def _interaction_head(
+    value: Annotated[
+        str | None,
+        Header(
+            alias="If-Match",
+            description="Exact plan hash or event:<sequence> attention head",
+        ),
+    ] = None,
+) -> tuple[str | None, int | None]:
+    if value is not None and value.startswith("event:"):
+        raw = value.removeprefix("event:")
+        if raw.isascii() and raw.isdigit() and int(raw) >= 1:
+            return None, int(raw)
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_event_sequence"},
+        )
+    return _plan_hash(value), None
+
+
+def _event_sequence_head(
+    match: tuple[str | None, int | None] = Depends(_interaction_head),
+) -> int:
+    plan_hash, event_sequence = match
+    if plan_hash is not None or event_sequence is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_event_sequence"},
+        )
+    return event_sequence
 
 
 def _config_revision(
@@ -1307,19 +1348,21 @@ def create_api(
         run_id: str,
         body: InteractionRequest,
         key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
+        head: tuple[str | None, int | None] = Depends(_interaction_head),
         _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         kind = InteractionKind(body.kind)
         message = _text(body.message)
+        plan_hash, event_sequence = head
         result = await _shield_thread(
             lambda: dependencies.interactions.run(
                 run_id=run_id,
                 kind=kind,
                 idempotency_key=key,
                 expected_plan_hash=plan_hash,
+                expected_event_sequence=event_sequence,
                 message=message,
             )
         )
@@ -1341,6 +1384,66 @@ def create_api(
             "plan_hash": result.plan_hash,
             "model_tokens": result.model_tokens,
         }
+
+    @app.post(
+        "/api/v1/runs/{run_id}/retry",
+        response_model=AttentionRetryResponse,
+    )
+    async def retry_attention_run(
+        run_id: str,
+        body: AttentionControlRequest,
+        key: str = Depends(_idempotency_key),
+        event_sequence: int = Depends(_event_sequence_head),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        del body
+        if dependencies.attention_retry is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def execute() -> dict[str, object]:
+            return dependencies.attention_retry(run_id, event_sequence)
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="needs_attention_retry",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={"event_sequence": event_sequence},
+                execute=execute,
+            )
+        )
+
+    @app.post(
+        "/api/v1/runs/{run_id}/fail",
+        response_model=AttentionFailResponse,
+    )
+    async def fail_attention_run(
+        run_id: str,
+        body: AttentionControlRequest,
+        key: str = Depends(_idempotency_key),
+        event_sequence: int = Depends(_event_sequence_head),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        del body
+        if dependencies.attention_fail is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def execute() -> dict[str, object]:
+            return dependencies.attention_fail(run_id, event_sequence)
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="needs_attention_fail",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={"event_sequence": event_sequence},
+                execute=execute,
+            )
+        )
 
     @app.post(
         "/api/v1/runs/{run_id}/reapply",

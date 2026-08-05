@@ -195,6 +195,60 @@ def test_interactions_explicitly_reduce_the_final_plan_head() -> None:
     )
 
 
+def test_question_can_answer_needs_attention_before_plan_exists() -> None:
+    started = reduce_event(
+        None,
+        RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME),
+    )
+    attention = replace(
+        started,
+        phase=Phase.MAP_EPISODES,
+        status=RunStatus.STOPPED,
+        stop_reason=StopReason.NEEDS_ATTENTION,
+    )
+
+    answered = reduce_event(
+        attention,
+        InteractionCompleted(
+            interaction_id="interaction-attention",
+            kind="question",
+            model_turns=1,
+            model_tokens=5,
+            fresh_mapping_submitted=False,
+            final_plan_hash=None,
+        ),
+    )
+
+    assert answered.phase is Phase.MAP_EPISODES
+    assert answered.plan_hash is None
+    assert answered.stop_reason is StopReason.NEEDS_ATTENTION
+
+
+def test_planless_question_is_rejected_without_needs_attention() -> None:
+    started = reduce_event(
+        None,
+        RunStarted(run_id="run-1", work_type=TmdbWorkType.ANIME),
+    )
+    stopped = replace(
+        started,
+        status=RunStatus.STOPPED,
+        stop_reason=StopReason.MODEL_FINAL,
+    )
+
+    with pytest.raises(RuntimeDomainError):
+        reduce_event(
+            stopped,
+            InteractionCompleted(
+                interaction_id="interaction-invalid",
+                kind="question",
+                model_turns=1,
+                model_tokens=1,
+                fresh_mapping_submitted=False,
+                final_plan_hash=None,
+            ),
+        )
+
+
 def test_stop_reason_cannot_claim_domain_completion() -> None:
     with pytest.raises(ValueError):
         StopReason("domain_completed")

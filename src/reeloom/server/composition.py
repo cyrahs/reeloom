@@ -750,6 +750,46 @@ def build_application(
                 ),
             )
 
+        def retry_attention(
+            run_id: str,
+            event_sequence: int,
+        ) -> dict[str, object]:
+            retry_count = scheduler.retry_needs_attention(
+                run_id=run_id,
+                expected_event_sequence=event_sequence,
+            )
+            if retry_count is None:
+                raise ServerError(
+                    ServerErrorCode.INTERACTION_CONFLICT
+                )
+            return {
+                "run_id": run_id,
+                "status": "retry_scheduled",
+                "retry_count": retry_count,
+            }
+
+        def fail_attention(
+            run_id: str,
+            event_sequence: int,
+        ) -> dict[str, object]:
+            scheduler.mark_needs_attention_failed(
+                run_id=run_id,
+                expected_event_sequence=event_sequence,
+            )
+            plan = folder_dispositions.prepare_failure(
+                run_id=run_id,
+                reason_code="user_marked_failed",
+            )
+            if plan is None:
+                raise ServerError(
+                    ServerErrorCode.INTERACTION_CONFLICT
+                )
+            return {
+                "run_id": run_id,
+                "status": "failure_planned",
+                "plan_hash": plan.plan_hash,
+            }
+
         api = create_api(
             ApiDependencies(
                 queries=PostgresQueries(database.pool, plans=plans),
@@ -767,6 +807,8 @@ def build_application(
                 idempotency=idempotency,
                 run_delete=run_deletions.delete,
                 run_delete_resolve=run_deletions.get,
+                attention_retry=retry_attention,
+                attention_fail=fail_attention,
                 sse_max_empty_polls=None,
                 sse_poll_seconds=0.5,
                 sse_heartbeat_seconds=15.0,

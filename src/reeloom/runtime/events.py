@@ -217,7 +217,7 @@ class InteractionCompleted:
     model_turns: int
     model_tokens: int
     fresh_mapping_submitted: bool
-    final_plan_hash: str
+    final_plan_hash: str | None
     plan_hash: str | None = None
     tool_calls: int = 0
     failures: int = 0

@@ -93,7 +93,7 @@ def _completed_run_row(
     layout_matches_current_plan: bool,
     interaction_budget_available: bool = True,
 ) -> tuple[object, ...]:
-    row: list[object] = [None] * 44
+    row: list[object] = [None] * 49
     row[:14] = (
         "run-1",
         "completed",
@@ -113,7 +113,61 @@ def _completed_run_row(
     row[32] = False
     row[35] = layout_matches_current_plan
     row[36] = interaction_budget_available
+    row[46] = 3
+    row[47] = False
+    row[48] = "completed"
     return tuple(row)
+
+
+def test_needs_attention_exposes_bounded_preplan_controls() -> None:
+    row = list(
+        _completed_run_row(
+            layout_matches_current_plan=False,
+            interaction_budget_available=True,
+        )
+    )
+    row[1] = "running"
+    row[3] = "map_episodes"
+    row[4] = "stopped"
+    row[10] = None
+    row[44] = "needs_attention"
+    row[45] = True
+    row[46] = 1
+    row[47] = True
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["status"] == "needs_attention"
+    assert run["available_actions"] == [
+        "question",
+        "retry_run",
+        "fail_run",
+    ]
+
+
+def test_needs_attention_retry_is_hidden_after_budget_is_exhausted() -> None:
+    row = list(
+        _completed_run_row(
+            layout_matches_current_plan=False,
+            interaction_budget_available=False,
+        )
+    )
+    row[1] = "running"
+    row[3] = "map_episodes"
+    row[4] = "stopped"
+    row[10] = None
+    row[44] = "needs_attention"
+    row[45] = True
+    row[46] = 3
+    row[47] = True
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["available_actions"] == ["fail_run"]
 
 
 def test_manual_subtitle_acquisition_exposes_only_independent_action() -> None:

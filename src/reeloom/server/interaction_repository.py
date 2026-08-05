@@ -88,7 +88,8 @@ class PostgresInteractionRepository:
         run_id: str,
         kind: InteractionKind,
         idempotency_key: str,
-        expected_plan_hash: str,
+        expected_plan_hash: str | None,
+        expected_event_sequence: int | None = None,
         message: str,
     ) -> InteractionReservation:
         if (
@@ -96,16 +97,31 @@ class PostgresInteractionRepository:
             or not isinstance(idempotency_key, str)
             or not idempotency_key
             or len(idempotency_key.encode("utf-8")) > 256
-            or not isinstance(expected_plan_hash, str)
-            or not expected_plan_hash
             or not isinstance(message, str)
             or not message
             or len(message.encode("utf-8")) > 16 * 1024
+            or (
+                (expected_plan_hash is None)
+                == (expected_event_sequence is None)
+            )
+            or (
+                expected_plan_hash is not None
+                and not expected_plan_hash
+            )
+            or (
+                expected_event_sequence is not None
+                and (
+                    kind is not InteractionKind.QUESTION
+                    or type(expected_event_sequence) is not int
+                    or expected_event_sequence < 1
+                )
+            )
         ):
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         digest = _request_hash(
             kind=kind,
             expected_plan_hash=expected_plan_hash,
+            expected_event_sequence=expected_event_sequence,
             message=message,
         )
         try:
@@ -114,8 +130,9 @@ class PostgresInteractionRepository:
                     existing = connection.execute(
                         """
                         SELECT interaction_id, kind, request_hash,
-                               expected_plan_hash, session_revision,
-                               status, result
+                               expected_plan_hash,
+                               expected_event_sequence,
+                               session_revision, status, result
                         FROM interactions
                         WHERE run_id = %s AND idempotency_key = %s
                         FOR UPDATE
@@ -127,21 +144,30 @@ class PostgresInteractionRepository:
                             raise ServerError(
                                 ServerErrorCode.INTERACTION_CONFLICT
                             )
-                        status = str(existing[5])
+                        status = str(existing[6])
                         if status == "active":
                             raise ServerError(ServerErrorCode.RUN_BUSY)
                         if status != "completed":
                             raise ServerError(
                                 ServerErrorCode.INTERACTION_CONFLICT
                             )
-                        terminal = _result(existing[6])
+                        terminal = _result(existing[7])
                         return InteractionReservation(
                             interaction_id=str(existing[0]),
                             run_id=run_id,
                             kind=InteractionKind(str(existing[1])),
                             request_hash=digest,
-                            session_revision=int(existing[4]),
-                            plan_hash=str(existing[3]),
+                            session_revision=int(existing[5]),
+                            plan_hash=(
+                                None
+                                if existing[3] is None
+                                else str(existing[3])
+                            ),
+                            event_sequence=(
+                                None
+                                if existing[4] is None
+                                else int(existing[4])
+                            ),
                             terminal_result=terminal,
                         )
                     head = connection.execute(
@@ -158,14 +184,6 @@ class PostgresInteractionRepository:
                         """,
                         (run_id,),
                     ).fetchone()
-                    if (
-                        head is None
-                        or session is None
-                        or str(head[0]) != expected_plan_hash
-                    ):
-                        raise ServerError(
-                            ServerErrorCode.INTERACTION_CONFLICT
-                        )
                     state = connection.execute(
                         """
                         SELECT state.model_tokens, state.phase,
@@ -180,7 +198,9 @@ class PostgresInteractionRepository:
                                        ->> 'max_elapsed_seconds'
                                    )::double precision,
                                    %s
-                               )
+                               ), state.runtime_status, state.plan_hash,
+                               state.event_sequence,
+                               state.projection_payload, run.status
                         FROM run_states AS state
                         JOIN runs AS run USING (run_id)
                         JOIN config_revisions AS config
@@ -190,6 +210,28 @@ class PostgresInteractionRepository:
                         (RunBudget().max_elapsed_seconds, run_id),
                     ).fetchone()
                     if state is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    plan_head_matches = (
+                        expected_plan_hash is not None
+                        and head is not None
+                        and str(head[0]) == expected_plan_hash
+                    )
+                    attention_head_matches = (
+                        expected_event_sequence is not None
+                        and head is None
+                        and str(state[10]) == "stopped"
+                        and state[11] is None
+                        and int(state[12]) == expected_event_sequence
+                        and isinstance(state[13], dict)
+                        and state[13].get("stop_reason")
+                        == "needs_attention"
+                        and str(state[14]) == "running"
+                    )
+                    if session is None or not (
+                        plan_head_matches or attention_head_matches
+                    ):
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
                         )
@@ -291,8 +333,11 @@ class PostgresInteractionRepository:
                         INSERT INTO interactions
                             (interaction_id, run_id, kind, idempotency_key,
                              request_hash, expected_plan_hash,
-                             session_revision, status, request_message)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s)
+                             expected_event_sequence, session_revision,
+                             status, request_message)
+                        VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s
+                        )
                         """,
                         (
                             interaction_id,
@@ -301,6 +346,7 @@ class PostgresInteractionRepository:
                             idempotency_key,
                             digest,
                             expected_plan_hash,
+                            expected_event_sequence,
                             int(session[0]),
                             message,
                         ),
@@ -312,6 +358,7 @@ class PostgresInteractionRepository:
                         request_hash=digest,
                         session_revision=int(session[0]),
                         plan_hash=expected_plan_hash,
+                        event_sequence=expected_event_sequence,
                         budget=budget,
                     )
         except ServerError:
@@ -414,9 +461,11 @@ class PostgresInteractionRepository:
                                tool_calls, failures, max_model_turns,
                                max_tool_calls, max_failures,
                                max_total_tokens,
-                               projection_schema, projection_payload
-                        FROM run_states
-                        WHERE run_id = %s
+                               projection_schema, projection_payload,
+                               run.status
+                        FROM run_states AS state
+                        JOIN runs AS run USING (run_id)
+                        WHERE state.run_id = %s
                         FOR UPDATE
                         """,
                         (reservation.run_id,),
@@ -427,6 +476,17 @@ class PostgresInteractionRepository:
                         or not is_supported_projection_schema(
                             str(runtime[12])
                         )
+                    ):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    if reservation.event_sequence is not None and (
+                        int(runtime[0]) != reservation.event_sequence
+                        or runtime[4] is not None
+                        or not isinstance(runtime[13], dict)
+                        or runtime[13].get("stop_reason")
+                        != "needs_attention"
+                        or str(runtime[14]) != "running"
                     ):
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT

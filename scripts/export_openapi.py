@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
+import sys
 from pathlib import Path
 from typing import cast
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPOSITORY_ROOT / "src"))
+
 from reeloom.server.api import ApiDependencies, ApiQueries, create_api
 from reeloom.server.auth import AuthSettings
-
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _canonical_schema() -> str:
@@ -40,8 +43,20 @@ def main() -> int:
     expected = _canonical_schema()
     if args.check:
         if not args.output.is_file():
+            print(f"OpenAPI snapshot is missing: {args.output}", file=sys.stderr)
             return 1
-        return 0 if args.output.read_text(encoding="utf-8") == expected else 1
+        actual = args.output.read_text(encoding="utf-8")
+        if actual == expected:
+            return 0
+        sys.stderr.writelines(
+            difflib.unified_diff(
+                actual.splitlines(keepends=True),
+                expected.splitlines(keepends=True),
+                fromfile=str(args.output),
+                tofile="generated OpenAPI schema",
+            )
+        )
+        return 1
     if args.output.exists():
         raise SystemExit("refusing to overwrite existing contract snapshot")
     args.output.write_text(expected, encoding="utf-8")

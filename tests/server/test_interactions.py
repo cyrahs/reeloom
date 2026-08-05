@@ -52,6 +52,46 @@ def test_idempotent_question_calls_model_once_and_is_domain_read_only() -> None:
     assert repository.domain_event_count == 0
 
 
+def test_planless_attention_question_is_bound_to_event_sequence() -> None:
+    repository = InMemoryInteractionRepository(
+        run_id="run-1",
+        plan_hash=None,
+        session_revision=3,
+        event_sequence=37,
+    )
+    service = InteractionService(
+        repository=repository,
+        execute=lambda _: InteractionExecution(
+            assistant_reply="The subtitle evidence was ambiguous.",
+            session_revision=4,
+            model_tokens=12,
+        ),
+    )
+
+    result = service.run(
+        run_id="run-1",
+        kind=InteractionKind.QUESTION,
+        idempotency_key="idem-attention",
+        expected_plan_hash=None,
+        expected_event_sequence=37,
+        message="Why does this need attention?",
+    )
+
+    assert result.plan_hash is None
+    assert repository.plan_hash is None
+
+    with pytest.raises(ServerError) as raised:
+        service.run(
+            run_id="run-1",
+            kind=InteractionKind.QUESTION,
+            idempotency_key="idem-stale",
+            expected_plan_hash=None,
+            expected_event_sequence=36,
+            message="Try a stale page.",
+        )
+    assert raised.value.code is ServerErrorCode.INTERACTION_CONFLICT
+
+
 def test_question_cannot_finalize_with_domain_mutation() -> None:
     repository = InMemoryInteractionRepository(
         run_id="run-1",
