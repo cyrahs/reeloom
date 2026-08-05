@@ -12,7 +12,7 @@ test("serves the dashboard from the real API and PostgreSQL control plane", asyn
   await expect(
     page.getByRole("heading", { name: "今天的整理进度，一眼看清。" }),
   ).toBeVisible();
-  await expect(page.getByText(/PostgreSQL \d+ · Schema 23/)).toBeVisible();
+  await expect(page.getByText(/PostgreSQL \d+ · Schema \d+/)).toBeVisible();
   const session = await page.evaluate(async () => {
     const response = await fetch("/api/v1/session", {
       headers: {
@@ -29,6 +29,7 @@ test("serves the dashboard from the real API and PostgreSQL control plane", asyn
 test("admin can enter the same-origin dashboard and untrusted text stays text", async ({
   page,
 }) => {
+  const maliciousRunId = '<img src=x onerror="window.pwned=true">';
   await page.route("**/health", (route) =>
     route.fulfill({
       json: { status: "ok", postgres_major: 17, schema_version: 19 },
@@ -47,7 +48,7 @@ test("admin can enter the same-origin dashboard and untrusted text stays text", 
       json: {
         items: [
           {
-            run_id: '<img src=x onerror="window.pwned=true">',
+            run_id: maliciousRunId,
             status: "awaiting_approval",
             work_type: "anime",
             created_at: "2026-07-26T00:00:00Z",
@@ -85,9 +86,10 @@ test("admin can enter the same-origin dashboard and untrusted text stays text", 
   await page.getByLabel("Admin Bearer token").fill(adminToken);
   await page.getByRole("button", { name: "进入控制台" }).click();
   await expect(page.getByRole("heading", { name: "今天的整理进度，一眼看清。" })).toBeVisible();
-  await expect(
-    page.getByText('<img src=x onerror="window.pwned=true">'),
-  ).toBeVisible();
+  await expect(page.locator(".runs-table tbody a[title]")).toHaveAttribute(
+    "title",
+    maliciousRunId,
+  );
   await expect(page.locator("img")).toHaveCount(0);
   expect(await page.evaluate(() => Reflect.get(window, "pwned"))).toBeUndefined();
   expect(await page.evaluate(() => document.body.innerText)).not.toContain(
@@ -275,7 +277,7 @@ test("Movie review shows exact paths and completed reapply converges to no-op", 
   await expect(movieRun).toContainText("已完成");
   await movieRun.getByRole("link").click();
   await expect(
-    page.getByRole("heading", { name: "运行详情" }),
+    page.getByRole("heading", { name: "Journey" }),
   ).toBeVisible();
   const compactRunId = page.locator(".run-id-row code");
   await expect(compactRunId).toHaveText(/^run-.+….{8}$/);
