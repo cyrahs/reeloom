@@ -31,7 +31,7 @@ RUN apt-get update \
     && echo "${sevenzip_sha256}  /tmp/7zz.tar.xz" | sha256sum --check --strict \
     && tar --extract --xz --file /tmp/7zz.tar.xz --directory /tmp 7zz \
     && install --mode=0755 /tmp/7zz /usr/bin/7zz \
-    && /usr/bin/7zz i | grep -F '7-Zip 26.02' \
+    && /usr/bin/7zz i | grep -F '7-Zip (z) 26.02' \
     && rm -f /tmp/7zz /tmp/7zz.tar.xz \
     && apt-get purge -y --auto-remove curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
