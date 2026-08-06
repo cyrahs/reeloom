@@ -276,6 +276,82 @@ test("shows bounded subtitle collision diagnostics", async () => {
   ).toBeVisible();
 });
 
+test("retries the same blocked subtitle acquisition plan", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  const subtitlePlanHash = `sha256:${"b".repeat(64)}`;
+  let published = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (path === "/api/v1/session") {
+      return jsonResponse({ api_version: "1.0.0", role: "admin" });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}`) {
+      return jsonResponse({
+        ...runResponse(),
+        status: published ? "superseded" : "needs_attention",
+        phase: "build_subtitle_acquisition_plan",
+        plan_hash: null,
+        available_actions: published
+          ? []
+          : ["retry_subtitle_acquisition", "fail_run"],
+        subtitle_acquisition: {
+          plan_hash: subtitlePlanHash,
+          policy: "automatic",
+          status: published ? "published" : "blocked",
+          approval_id: "approval-subtitle-1",
+          transaction_id: published
+            ? `subtitle-txn-v1-${"c".repeat(64)}`
+            : null,
+          failure_code: published ? null : "destination_collision",
+          failure_diagnostic: null,
+          successor_status: published ? "queued" : null,
+        },
+      });
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (
+      path === `/api/v1/runs/${encodedRunId}/subtitle-acquisition/retry` &&
+      init?.method === "POST"
+    ) {
+      expect(init.headers).toMatchObject({ "If-Match": subtitlePlanHash });
+      expect(JSON.parse(String(init.body))).toEqual({});
+      published = true;
+      return jsonResponse({
+        run_id: runId,
+        plan_hash: subtitlePlanHash,
+        policy: "automatic",
+        status: "published",
+        approval_id: "approval-subtitle-1",
+        transaction_id: `subtitle-txn-v1-${"c".repeat(64)}`,
+        failure_code: null,
+        failure_diagnostic: null,
+        successor_status: "queued",
+      });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+
+  renderRunPage();
+  await userEvent.click(
+    await screen.findByRole("button", { name: "重试字幕获取" }),
+  );
+
+  expect(
+    await screen.findByRole("heading", { name: "字幕获取：published" }),
+  ).toBeVisible();
+});
+
 test("offers event-bound controls for a planless needs-attention run", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
   const calls: string[] = [];

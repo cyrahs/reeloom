@@ -322,6 +322,22 @@ class SubtitleAcquisitionCoordinator:
                     raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
                 return resolved
 
+    def retry_blocked_and_execute(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord:
+        policy = self._reopen_blocked_collision(
+            run_id=run_id,
+            plan_hash=plan_hash,
+        )
+        return self.approve_and_execute(
+            run_id=run_id,
+            plan_hash=plan_hash,
+            automatic=(policy is SubtitleAcquisitionPolicy.AUTOMATIC),
+        )
+
     async def _execute_lease(
         self,
         *,
@@ -581,6 +597,47 @@ class SubtitleAcquisitionCoordinator:
                         raise ServerError(
                             ServerErrorCode.INTERACTION_CONFLICT
                         )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
+    def _reopen_blocked_collision(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionPolicy:
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        UPDATE subtitle_acquisition_requests AS request
+                        SET status = 'approved', failure_code = NULL,
+                            failure_diagnostic = NULL,
+                            updated_at = clock_timestamp()
+                        FROM runs AS run
+                        WHERE request.run_id = %s
+                          AND request.plan_hash = %s
+                          AND request.status = 'blocked'
+                          AND request.failure_code =
+                              'destination_collision'
+                          AND request.approval_id IS NOT NULL
+                          AND request.policy IN ('manual', 'automatic')
+                          AND run.run_id = request.run_id
+                          AND run.status = 'running'
+                        RETURNING request.policy
+                        """,
+                        (run_id, plan_hash),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    return SubtitleAcquisitionPolicy(str(row[0]))
         except ServerError:
             raise
         except Exception:

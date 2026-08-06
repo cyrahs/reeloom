@@ -7,6 +7,8 @@ from psycopg_pool import ConnectionPool
 
 from reeloom.executor.subtitle_acquisition import SubtitleAcquisitionResult
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.server.config import SubtitleAcquisitionPolicy
+from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
@@ -43,6 +45,44 @@ class _Lease:
     async def close(self) -> None:
         assert asyncio.get_running_loop() is self.executor.loop
         self.closed = True
+
+
+class _RetryConnection:
+    def __init__(self, row: tuple[object, ...] | None) -> None:
+        self.row = row
+        self.params: tuple[object, ...] | None = None
+
+    def __enter__(self) -> _RetryConnection:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def transaction(self) -> _RetryConnection:
+        return self
+
+    def execute(
+        self,
+        query: str,
+        params: tuple[object, ...],
+    ) -> _RetryConnection:
+        assert "request.status = 'blocked'" in query
+        assert "request.failure_code" in query
+        assert "'destination_collision'" in query
+        assert "run.status = 'running'" in query
+        self.params = params
+        return self
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return self.row
+
+
+class _RetryPool:
+    def __init__(self, row: tuple[object, ...] | None) -> None:
+        self.connection_value = _RetryConnection(row)
+
+    def connection(self) -> _RetryConnection:
+        return self.connection_value
 
 
 def test_executor_and_transport_close_share_one_event_loop() -> None:
@@ -104,3 +144,45 @@ def test_untrusted_collision_context_is_not_persisted() -> None:
     )
 
     assert diagnostic is None
+
+
+def test_retry_reopens_only_the_exact_blocked_collision() -> None:
+    pool = _RetryPool(("automatic",))
+    coordinator = SubtitleAcquisitionCoordinator(
+        pool=cast(ConnectionPool, pool),
+        plans=cast(object, object()),  # type: ignore[arg-type]
+        approvals=cast(object, object()),  # type: ignore[arg-type]
+        executor_factory=cast(object, object()),  # type: ignore[arg-type]
+        successors=cast(object, object()),  # type: ignore[arg-type]
+    )
+
+    policy = coordinator._reopen_blocked_collision(
+        run_id="run-1",
+        plan_hash="sha256:" + "b" * 64,
+    )
+
+    assert policy is SubtitleAcquisitionPolicy.AUTOMATIC
+    assert pool.connection_value.params == (
+        "run-1",
+        "sha256:" + "b" * 64,
+    )
+
+
+def test_retry_rejects_nonmatching_blocked_request() -> None:
+    coordinator = SubtitleAcquisitionCoordinator(
+        pool=cast(ConnectionPool, _RetryPool(None)),
+        plans=cast(object, object()),  # type: ignore[arg-type]
+        approvals=cast(object, object()),  # type: ignore[arg-type]
+        executor_factory=cast(object, object()),  # type: ignore[arg-type]
+        successors=cast(object, object()),  # type: ignore[arg-type]
+    )
+
+    try:
+        coordinator._reopen_blocked_collision(
+            run_id="run-1",
+            plan_hash="sha256:" + "b" * 64,
+        )
+    except ServerError as error:
+        assert error.code is ServerErrorCode.INTERACTION_CONFLICT
+    else:
+        raise AssertionError("retry unexpectedly reopened a nonmatch")
