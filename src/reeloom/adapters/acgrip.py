@@ -58,6 +58,7 @@ ACGRIP_MAX_ATTACHMENTS = 100
 ACGRIP_REQUEST_TIMEOUT_SECONDS = 5.0
 ACGRIP_TOOL_TIMEOUT_SECONDS = 30.0
 ACGRIP_REQUEST_INTERVAL_SECONDS = 1.0
+ACGRIP_SEARCH_INTERVAL_SECONDS = 5.0
 
 _SEARCH_PATH = "/search.php?mod=forum"
 _THREAD_PATH = re.compile(r"^/thread-([1-9][0-9]*)-([1-9][0-9]*)-1\.html$")
@@ -869,6 +870,7 @@ class AcgripSubtitleSearchProvider:
         self._response_count = 0
         self._total_bytes = 0
         self._last_request_at: float | None = None
+        self._last_search_request_at: float | None = None
         self._failure_stage = SubtitleSearchFailureStage.PROVIDER_SETUP
         self._failure_alias_index: int | None = None
         self._last_http_status: int | None = None
@@ -1253,14 +1255,25 @@ class AcgripSubtitleSearchProvider:
                 retryable=False,
             )
         now = self._clock()
+        delay = 0.0
         if self._last_request_at is not None:
-            delay = ACGRIP_REQUEST_INTERVAL_SECONDS - (
-                now - self._last_request_at
+            delay = max(
+                delay,
+                ACGRIP_REQUEST_INTERVAL_SECONDS
+                - (now - self._last_request_at),
             )
-            if delay > 0:
-                await self._sleep(delay)
-                now = self._clock()
+        if method == "POST" and self._last_search_request_at is not None:
+            delay = max(
+                delay,
+                ACGRIP_SEARCH_INTERVAL_SECONDS
+                - (now - self._last_search_request_at),
+            )
+        if delay > 0:
+            await self._sleep(delay)
+            now = self._clock()
         self._last_request_at = now
+        if method == "POST":
+            self._last_search_request_at = now
         headers: Mapping[str, str] | None = None
         if body is not None:
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
