@@ -265,7 +265,7 @@ def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
     assert run["subtitle_acquisition"]["failure_diagnostic"] == row[49]
 
 
-def test_atomic_move_unsupported_subtitle_acquisition_is_retryable() -> None:
+def test_subtitle_recovery_does_not_require_active_watch_observation() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "running"
     row[3] = "build_subtitle_acquisition_plan"
@@ -278,18 +278,15 @@ def test_atomic_move_unsupported_subtitle_acquisition_is_retryable() -> None:
         None,
         "atomic_move_unsupported",
     )
-    row[45] = True
-    row[47] = True
+    row[45] = False
+    row[47] = False
     queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
 
     run = queries.get_run("run-1")
 
     assert run is not None
     assert run["status"] == "needs_attention"
-    assert run["available_actions"] == [
-        "retry_subtitle_acquisition",
-        "fail_run",
-    ]
+    assert run["available_actions"] == ["retry_subtitle_acquisition"]
 
 
 def test_noncollision_subtitle_failure_is_not_retryable() -> None:
