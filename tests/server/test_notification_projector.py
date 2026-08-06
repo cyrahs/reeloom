@@ -131,7 +131,11 @@ def _plan() -> MovieRenamePlan:
     )
 
 
-def _config(*, enabled: bool = True) -> ConfigRevision:
+def _config(
+    *,
+    enabled: bool = True,
+    apply_policy: ApplyPolicy = ApplyPolicy.MANUAL,
+) -> ConfigRevision:
     return ConfigRevision.create(
         revision_id="cfg-1",
         revision=1,
@@ -143,7 +147,7 @@ def _config(*, enabled: bool = True) -> ConfigRevision:
                 model="test",
                 secret_ref="provider-secret",
             ),
-            apply_policy=ApplyPolicy.MANUAL,
+            apply_policy=apply_policy,
             telegram=TelegramConfig(
                 enabled=enabled,
                 chat_id="123",
@@ -198,6 +202,42 @@ def test_disabled_config_produces_no_outbox_row() -> None:
     )
 
     assert outbox.items == []
+
+
+def test_automatic_policy_suppresses_only_plan_ready_notification() -> None:
+    plan = _plan()
+    projector, outbox = _projector(plan)
+    connection = _Connection(
+        _config(apply_policy=ApplyPolicy.AUTOMATIC),
+        folder=False,
+    )
+
+    projector.plan_ready(
+        connection,
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+    )
+
+    assert outbox.items == []
+
+    projector.execution_settled(
+        connection,
+        run_id=plan.run_id,
+        result=ApplyResult(
+            transaction_id="txn-automatic-completed",
+            plan_hash=plan.plan_hash,
+            approval_id="approval-automatic",
+            status=ApplyStatus.COMPLETED,
+            applied_count=1,
+            rolled_back_count=0,
+            failure_code=None,
+        ),
+    )
+
+    assert len(outbox.items) == 1
+    assert isinstance(
+        outbox.items[0]["payload"], ArchiveCompletedNotification
+    )
 
 
 def test_completion_waits_for_folder_and_rollback_requests_attention() -> None:

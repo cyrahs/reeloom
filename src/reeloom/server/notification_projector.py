@@ -15,7 +15,7 @@ from reeloom.kernel.initial_plan import InitialPlan, parse_initial_plan
 from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.ports.plans import PlanStore
-from reeloom.server.config import ConfigRevision
+from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.notification_outbox import PostgresNotificationOutbox
 from reeloom.server.notifications import (
     ArchiveCompletedNotification,
@@ -304,6 +304,10 @@ class PostgresNotificationProjector:
         return (
             config.telegram.enabled
             and notification_type in config.telegram.notification_types
+            and not (
+                notification_type is NotificationType.PLAN_READY
+                and config.apply_policy is ApplyPolicy.AUTOMATIC
+            )
         )
 
     def _plan(self, run_id: str, plan_hash: str) -> InitialPlan:
