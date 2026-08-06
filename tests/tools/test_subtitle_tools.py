@@ -79,6 +79,7 @@ def _runtime(
     *,
     with_subtitle: bool = False,
     work_type: TmdbWorkType = TmdbWorkType.ANIME,
+    title: str = "测试动画",
 ) -> tuple[ToolRuntime, SnapshotCandidateSource]:
     source = SnapshotCandidateSource(
         _candidates(with_subtitle=with_subtitle)
@@ -102,7 +103,7 @@ def _runtime(
     )
     store.append(
         SeriesSelected(
-            SeriesIdentity("测试动画", 2026, 42),
+            SeriesIdentity(title, 2026, 42),
             work_type,
         )
     )
@@ -154,7 +155,9 @@ class _Inspector:
         )
 
 
-def _search_result() -> SubtitleSearchResult:
+def _search_result(
+    query_aliases: tuple[str, ...] = ("测试动画",),
+) -> SubtitleSearchResult:
     archive_id = SubtitleArchiveSetId(1)
     release_id = SubtitleReleaseId(1)
     return SubtitleSearchResult(
@@ -195,8 +198,8 @@ def _search_result() -> SubtitleSearchResult:
             ),
         ),
         SubtitleSearchDiagnostics(
-            ("测试动画",),
-            (1,),
+            query_aliases,
+            tuple(1 for _alias in query_aliases),
             1,
             1,
             1,
@@ -532,6 +535,28 @@ def test_search_sub_records_only_bounded_observation_and_stable_capability() -> 
     assert runtime.state.phase is Phase.MAP_EPISODES
     assert runtime.state.subtitle_archive_capabilities[0].thread_id == 10081
     assert runtime.state.subtitle_selection_decision is None
+
+
+def test_search_sub_compiles_internal_punctuation_as_discuz_and_terms() -> None:
+    runtime, source = _runtime(title="空之色，水之色")
+    _probe_absent(runtime, source)
+    expected_aliases = ("空之色,水之色", "空之色 水之色")
+    provider = _SearchProvider(result=_search_result(expected_aliases))
+
+    payload = json.loads(
+        asyncio.run(
+            search_sub(
+                runtime,
+                provider,
+                call_id="search-punctuation",
+                season_number=1,
+                cursor=None,
+            )
+        )
+    )
+
+    assert payload["ok"] is True
+    assert provider.requests[0].title_aliases == expected_aliases
 
 
 def test_search_sub_exact_replay_uses_cached_page() -> None:

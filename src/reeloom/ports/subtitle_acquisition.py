@@ -9,6 +9,8 @@ from typing import Protocol
 from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.subtitle_acquisition import (
+    MAX_SUBTITLE_SEARCH_ALIASES,
+    MAX_SUBTITLE_SEARCH_ALIAS_BYTES,
     MAX_SEARCH_RESULTS_PER_PAGE,
     EmbeddedSubtitleInspection,
     InspectedSubtitleMember,
@@ -22,10 +24,6 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleSearchDiagnostics,
     SubtitleSearchPage,
 )
-
-MAX_SUBTITLE_SEARCH_ALIASES = 3
-MAX_SUBTITLE_SEARCH_ALIAS_BYTES = 240
-
 
 @dataclass(frozen=True, slots=True)
 class SubtitleSearchRequest:

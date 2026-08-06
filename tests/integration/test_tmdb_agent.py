@@ -59,8 +59,9 @@ from reeloom.tools.candidates import SnapshotCandidateSource
 
 
 class _FakeTmdb:
-    def __init__(self) -> None:
+    def __init__(self, *, localized_title: str = "正确动画") -> None:
         self.season_calls = 0
+        self.localized_title = localized_title
 
     async def search_titles(
         self,
@@ -85,7 +86,7 @@ class _FakeTmdb:
             ),
             TmdbSearchCandidate(
                 tmdb_id=200,
-                localized_name="正确动画",
+                localized_name=self.localized_title,
                 original_name="Correct Anime",
                 year=2020,
                 original_language="ja",
@@ -106,7 +107,7 @@ class _FakeTmdb:
             tmdb_id=200,
             language=language,
             localized_name=(
-                "正确动画"
+                self.localized_title
                 if language is TmdbLanguage.ZH_CN
                 else "Correct Anime"
             ),
@@ -207,10 +208,16 @@ class _OneSubtitleSearchProvider:
         f"{CURRENT_SUBTITLE_SEARCH_PARSER_VERSION}"
     )
 
+    def __init__(
+        self,
+        expected_aliases: tuple[str, ...] = ("正确动画",),
+    ) -> None:
+        self.expected_aliases = expected_aliases
+
     async def search(
         self, request: SubtitleSearchRequest
     ) -> SubtitleSearchResult:
-        assert request.title_aliases == ("正确动画",)
+        assert request.title_aliases == self.expected_aliases
         assert request.season_number == 0
         archive_id = SubtitleArchiveSetId(1)
         release_id = SubtitleReleaseId(1)
@@ -253,7 +260,7 @@ class _OneSubtitleSearchProvider:
             ),
             SubtitleSearchDiagnostics(
                 request.title_aliases,
-                (1,),
+                tuple(1 for _alias in request.title_aliases),
                 1,
                 1,
                 1,
@@ -409,11 +416,13 @@ def test_anime_agent_must_explicitly_select_single_subtitle_archive() -> None:
         run_id="run-subtitle-search",
         candidate_source=source,
         work_type=TmdbWorkType.ANIME,
-        tmdb_provider=_FakeTmdb(),
+        tmdb_provider=_FakeTmdb(localized_title="空之色，水之色"),
         video_subtitle_inspector=_AbsentInspector(
             source.snapshot_id, source.candidate_count
         ),
-        subtitle_search_provider=_OneSubtitleSearchProvider(),
+        subtitle_search_provider=_OneSubtitleSearchProvider(
+            ("空之色,水之色", "空之色 水之色")
+        ),
     )
     model = _ToolCapturingModel(
         (
