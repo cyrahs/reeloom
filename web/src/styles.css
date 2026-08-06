@@ -1559,9 +1559,13 @@ button:disabled {
   background: var(--fill-subtle);
 }
 
-.action-panel > .secondary,
-.action-panel > .primary {
-  margin-bottom: 10px;
+.action-list {
+  display: grid;
+  gap: 10px;
+}
+
+.action-list .interaction-form {
+  margin-bottom: 0;
 }
 
 .interaction-form {

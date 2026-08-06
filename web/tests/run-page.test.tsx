@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { TOKEN_STORAGE_KEY } from "../src/api";
 import { AuthGate } from "../src/auth";
 import { RunPage } from "../src/pages/RunPage";
+import "../src/styles.css";
 
 const runId = "run-0dae51fc45a8db238e0b901e8f420272";
 const encodedRunId = encodeURIComponent(runId);
@@ -281,6 +282,12 @@ test("offers event-bound controls for a planless needs-attention run", async () 
 
   renderRunPage();
   expect(await screen.findByText("需要处理")).toBeVisible();
+  const actionList = screen.getByRole("group", { name: "可用操作" });
+  expect(getComputedStyle(actionList).display).toBe("grid");
+  expect(getComputedStyle(actionList).gap).toBe("10px");
+  expect(
+    within(actionList).getAllByRole("button").map((button) => button.textContent),
+  ).toEqual(["重新尝试", "标记失败", "向 Agent 提问"]);
   const user = userEvent.setup();
 
   await user.click(screen.getByRole("button", { name: "向 Agent 提问" }));
