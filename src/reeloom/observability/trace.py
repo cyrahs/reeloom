@@ -14,6 +14,7 @@ from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     ExistingInventoryObserved,
     EmbeddedSubtitlesInspected,
+    SubtitleSearchFailed,
     SubtitleSearchObserved,
     SubtitleSelectionSubmitted,
     MappingRejected,
@@ -222,6 +223,36 @@ def _attributes(event: RuntimeEvent) -> dict[str, TraceValue]:
                     ),
                 }
             )
+        return attributes
+    if isinstance(event, SubtitleSearchFailed):
+        attributes = {
+            "reason_code": event.reason_code,
+            "season_number": event.season_number,
+        }
+        if event.diagnostics is not None:
+            diagnostics = event.diagnostics
+            attributes.update(
+                {
+                    "error_code": diagnostics.error_code.value,
+                    "failure_stage": diagnostics.stage.value,
+                    "http_response_count": (
+                        diagnostics.http_response_count
+                    ),
+                    "query_aliases": " | ".join(
+                        diagnostics.query_aliases
+                    ),
+                    "received_html_bytes": (
+                        diagnostics.received_html_bytes
+                    ),
+                    "retryable": diagnostics.retryable,
+                }
+            )
+            if diagnostics.query_alias_index is not None:
+                attributes["failed_query_alias"] = diagnostics.query_aliases[
+                    diagnostics.query_alias_index
+                ]
+            if diagnostics.http_status is not None:
+                attributes["http_status"] = diagnostics.http_status
         return attributes
     if isinstance(event, SubtitleSelectionSubmitted):
         return {

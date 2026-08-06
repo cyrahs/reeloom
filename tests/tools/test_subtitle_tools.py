@@ -24,6 +24,8 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseId,
     SubtitleReleaseSummary,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureCode,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
     SubtitleSearchCursorId,
 )
@@ -40,6 +42,7 @@ from reeloom.runtime.events import (
     RunStarted,
     SeriesSelected,
     SubtitleAcquisitionConfigured,
+    SubtitleSearchFailed,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
 )
@@ -617,6 +620,11 @@ def test_search_sub_fail_closed_on_provider_challenge() -> None:
         error=SubtitleSearchProviderError(
             SubtitleSearchErrorCode.CHALLENGE_OR_LOGIN,
             retryable=False,
+            stage=SubtitleSearchFailureStage.FORUM_SEARCH,
+            query_alias_index=0,
+            http_response_count=3,
+            received_html_bytes=12_345,
+            http_status=200,
         )
     )
 
@@ -636,6 +644,21 @@ def test_search_sub_fail_closed_on_provider_challenge() -> None:
         "code": "subtitle_search_failed",
         "retryable": False,
     }
+    failure = next(
+        stored.event
+        for stored in runtime.store.events
+        if isinstance(stored.event, SubtitleSearchFailed)
+    )
+    assert failure.diagnostics is not None
+    assert failure.diagnostics.error_code is (
+        SubtitleSearchFailureCode.CHALLENGE_OR_LOGIN
+    )
+    assert failure.diagnostics.stage is SubtitleSearchFailureStage.FORUM_SEARCH
+    assert failure.diagnostics.query_aliases == ("测试动画",)
+    assert failure.diagnostics.query_alias_index == 0
+    assert failure.diagnostics.http_response_count == 3
+    assert failure.diagnostics.received_html_bytes == 12_345
+    assert failure.diagnostics.http_status == 200
 
 
 def test_single_search_result_still_requires_explicit_selection() -> None:

@@ -47,6 +47,7 @@ _MAX_EXCERPT_BYTES = 512
 _MAX_HINT_BYTES = 160
 _MAX_HINTS = 8
 _MAX_SEARCH_DIAGNOSTIC_COUNT = 10_000
+_MAX_SEARCH_DIAGNOSTIC_BYTES = 64 * 1024 * 1024
 _MAX_SOURCE_MEMBER_PATH_BYTES = 1024
 _MAX_SOURCE_MEMBER_DEPTH = 8
 _MAX_TARGET_STEM_BYTES = 160
@@ -662,6 +663,94 @@ class SubtitleSearchDiagnostics:
         if not self.selectable_archive_set_count:
             return SubtitleSearchEmptyStage.ARCHIVE_FILTER
         return SubtitleSearchEmptyStage.RELEASE_FILTER
+
+
+class SubtitleSearchFailureCode(StrEnum):
+    UNAVAILABLE = "unavailable"
+    RATE_LIMITED = "rate_limited"
+    RESPONSE_TOO_LARGE = "response_too_large"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    CHALLENGE_OR_LOGIN = "challenge_or_login"
+    PARSER_DRIFT = "parser_drift"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+    PROVIDER_MISSING = "provider_missing"
+    PROVIDER_VERSION_MISMATCH = "provider_version_mismatch"
+    QUERY_COMPILATION_FAILED = "query_compilation_failed"
+    INVALID_PROVIDER_RESULT = "invalid_provider_result"
+
+
+class SubtitleSearchFailureStage(StrEnum):
+    PROVIDER_SETUP = "provider_setup"
+    QUERY_COMPILATION = "query_compilation"
+    SEARCH_LANDING = "search_landing"
+    FORUM_SEARCH = "forum_search"
+    THREAD_FETCH = "thread_fetch"
+    RESULT_VALIDATION = "result_validation"
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleSearchFailureDiagnostics:
+    """Bounded, URL-free evidence for one failed provider search."""
+
+    error_code: SubtitleSearchFailureCode
+    stage: SubtitleSearchFailureStage
+    retryable: bool
+    query_aliases: tuple[str, ...] = ()
+    query_alias_index: int | None = None
+    http_response_count: int = 0
+    received_html_bytes: int = 0
+    http_status: int | None = None
+
+    def __post_init__(self) -> None:
+        aliases = self.query_aliases
+        if (
+            not isinstance(self.error_code, SubtitleSearchFailureCode)
+            or not isinstance(self.stage, SubtitleSearchFailureStage)
+            or type(self.retryable) is not bool
+            or not isinstance(aliases, tuple)
+            or len(aliases) > MAX_SUBTITLE_SEARCH_ALIASES
+            or any(
+                not isinstance(alias, str)
+                or not alias.strip()
+                or len(alias.encode("utf-8")) > _MAX_TEXT_BYTES
+                or _URL_TOKEN.search(alias) is not None
+                or any(
+                    unicodedata.category(char).startswith("C")
+                    for char in alias
+                )
+                for alias in aliases
+            )
+            or len(
+                {
+                    unicodedata.normalize("NFKC", alias).casefold()
+                    for alias in aliases
+                }
+            )
+            != len(aliases)
+            or (
+                self.query_alias_index is not None
+                and (
+                    type(self.query_alias_index) is not int
+                    or not 0 <= self.query_alias_index < len(aliases)
+                )
+            )
+            or type(self.http_response_count) is not int
+            or not 0
+            <= self.http_response_count
+            <= _MAX_SEARCH_DIAGNOSTIC_COUNT
+            or type(self.received_html_bytes) is not int
+            or not 0
+            <= self.received_html_bytes
+            <= _MAX_SEARCH_DIAGNOSTIC_BYTES
+            or (
+                self.http_status is not None
+                and (
+                    type(self.http_status) is not int
+                    or not 100 <= self.http_status <= 599
+                )
+            )
+        ):
+            raise _invalid(ErrorCode.INVALID_SUBTITLE_SEARCH_DATA)
 
 
 @dataclass(frozen=True, slots=True, order=True)

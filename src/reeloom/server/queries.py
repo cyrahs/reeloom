@@ -208,6 +208,68 @@ def _safe_event(event_type: str, payload: object) -> dict[str, object]:
                 else None
             ),
         }
+    if event_type == "subtitle_search_failed":
+        diagnostics = payload.get("diagnostics")
+        aliases = (
+            diagnostics.get("query_aliases")
+            if isinstance(diagnostics, dict)
+            else None
+        )
+        alias_index = (
+            diagnostics.get("query_alias_index")
+            if isinstance(diagnostics, dict)
+            else None
+        )
+        failed_alias = (
+            aliases[alias_index]
+            if isinstance(aliases, list)
+            and type(alias_index) is int
+            and 0 <= alias_index < len(aliases)
+            and isinstance(aliases[alias_index], str)
+            else None
+        )
+        return {
+            "reason_code": payload.get("reason_code"),
+            "season_number": payload.get("season_number"),
+            "error_code": (
+                diagnostics.get("error_code")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "failure_stage": (
+                diagnostics.get("stage")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "retryable": (
+                diagnostics.get("retryable")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "query_aliases": (
+                " | ".join(
+                    alias for alias in aliases if isinstance(alias, str)
+                )
+                if isinstance(aliases, list)
+                else None
+            ),
+            "failed_query_alias": failed_alias,
+            "http_response_count": (
+                diagnostics.get("http_response_count")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "received_html_bytes": (
+                diagnostics.get("received_html_bytes")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+            "http_status": (
+                diagnostics.get("http_status")
+                if isinstance(diagnostics, dict)
+                else None
+            ),
+        }
     if event_type == "subtitle_selection_submitted":
         decision = payload.get("decision")
         selections = (

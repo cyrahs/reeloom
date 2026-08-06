@@ -35,6 +35,9 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleSearchDiagnostics,
     SubtitleSearchCursorId,
     SubtitleSearchEmptyStage,
+    SubtitleSearchFailureCode,
+    SubtitleSearchFailureDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
     SubtitleSelection,
     SubtitleSelectionDecision,
@@ -351,6 +354,43 @@ def test_search_diagnostics_are_bounded_and_identify_empty_stage() -> None:
             0,
             0,
         )
+
+
+def test_search_failure_diagnostics_are_bounded_and_url_free() -> None:
+    diagnostics = SubtitleSearchFailureDiagnostics(
+        SubtitleSearchFailureCode.CHALLENGE_OR_LOGIN,
+        SubtitleSearchFailureStage.FORUM_SEARCH,
+        False,
+        ("我的百合乃工作是也!", "我的百合乃工作是也"),
+        1,
+        4,
+        32_768,
+        200,
+    )
+
+    assert diagnostics.query_alias_index == 1
+    assert diagnostics.http_status == 200
+
+    for invalid in (
+        {"query_aliases": ("https://outside.invalid",)},
+        {"query_alias_index": 2},
+        {"http_response_count": 10_001},
+        {"received_html_bytes": 64 * 1024 * 1024 + 1},
+        {"http_status": 99},
+    ):
+        values = {
+            "error_code": SubtitleSearchFailureCode.PARSER_DRIFT,
+            "stage": SubtitleSearchFailureStage.FORUM_SEARCH,
+            "retryable": False,
+            "query_aliases": ("作品",),
+            "query_alias_index": 0,
+            "http_response_count": 1,
+            "received_html_bytes": 1,
+            "http_status": 200,
+            **invalid,
+        }
+        with pytest.raises(DomainError):
+            SubtitleSearchFailureDiagnostics(**values)
 
 
 def test_selection_requires_one_agent_decision_per_season() -> None:

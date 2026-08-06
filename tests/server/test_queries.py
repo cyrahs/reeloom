@@ -504,6 +504,44 @@ def test_subtitle_search_event_exposes_only_bounded_diagnostics() -> None:
     }
 
 
+def test_subtitle_search_failure_exposes_bounded_diagnostics() -> None:
+    value = _safe_event(
+        "subtitle_search_failed",
+        {
+            "call_id": "model-controlled-call-id",
+            "reason_code": "subtitle_search_unavailable",
+            "season_number": 1,
+            "diagnostics": {
+                "error_code": "challenge_or_login",
+                "stage": "forum_search",
+                "retryable": False,
+                "query_aliases": [
+                    "我的百合乃工作是也!",
+                    "我的百合乃工作是也",
+                ],
+                "query_alias_index": 1,
+                "http_response_count": 4,
+                "received_html_bytes": 32_768,
+                "http_status": 200,
+            },
+        },
+    )
+
+    assert value == {
+        "reason_code": "subtitle_search_unavailable",
+        "season_number": 1,
+        "error_code": "challenge_or_login",
+        "failure_stage": "forum_search",
+        "retryable": False,
+        "query_aliases": "我的百合乃工作是也! | 我的百合乃工作是也",
+        "failed_query_alias": "我的百合乃工作是也",
+        "http_response_count": 4,
+        "received_html_bytes": 32_768,
+        "http_status": 200,
+    }
+    assert "call_id" not in value
+
+
 def _movie_plan_with_unmapped_video() -> MovieRenamePlan:
     snapshot = build_candidate_snapshot(
         (
