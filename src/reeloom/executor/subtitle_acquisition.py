@@ -5,6 +5,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 
 from reeloom.adapters.subtitle_journal import (
     FilesystemSubtitleAcquisitionJournalStore,
@@ -39,6 +40,7 @@ from reeloom.ports.subtitle_acquisition import (
     SubtitleArchiveFetcher,
     SubtitleArchiveInspector,
 )
+from reeloom.server.watcher import NoFollowWatcher
 
 _native_rename_noreplace = rename_noreplace
 
@@ -63,6 +65,7 @@ class SubtitleAcquisitionExecutor:
     journals: FilesystemSubtitleAcquisitionJournalStore
     fetcher: SubtitleArchiveFetcher
     inspector: SubtitleArchiveInspector
+    watcher: NoFollowWatcher = NoFollowWatcher()
 
     async def apply(
         self,
@@ -178,6 +181,7 @@ class SubtitleAcquisitionExecutor:
             if completed or published:
                 raise ExecutorError(ExecutorErrorCode.RECOVERY_REQUIRED)
 
+            self._require_candidate_snapshot(plan)
             downloaded = await self._refetch_and_verify(plan)
             self.journals.record(transaction, "downloads_verified")
             staging_fd, identity = self._open_or_create_staging(
@@ -216,6 +220,7 @@ class SubtitleAcquisitionExecutor:
                 os.close(staging_fd)
 
             self._require_source_folder(root_fd, plan)
+            self._require_candidate_snapshot(plan)
             self.journals.record(transaction, "publish_started")
             failure_code: ExecutorErrorCode | None = None
             try:
@@ -653,6 +658,34 @@ class SubtitleAcquisitionExecutor:
             raise
         except Exception:
             raise ExecutorError(ExecutorErrorCode.ROOT_DRIFT) from None
+
+    def _require_candidate_snapshot(
+        self,
+        plan: SubtitleAcquisitionPlan,
+    ) -> None:
+        try:
+            root = AuthorizedRoot.create(
+                Path(plan.source_root.path.as_posix())
+            )
+            snapshot = self.watcher.scan_folder(
+                root,
+                PurePosixPath(plan.source_folder),
+                logical_name=plan.source_folder,
+            )
+            if (
+                (snapshot.device, snapshot.inode)
+                != (
+                    plan.source_folder_device,
+                    plan.source_folder_inode,
+                )
+                or snapshot.candidates.snapshot_id
+                != plan.candidate_snapshot_id
+            ):
+                raise ExecutorError(ExecutorErrorCode.SOURCE_DRIFT)
+        except ExecutorError:
+            raise
+        except Exception:
+            raise ExecutorError(ExecutorErrorCode.SOURCE_DRIFT) from None
 
     def _require_disjoint_workspace(
         self,

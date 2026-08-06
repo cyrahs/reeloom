@@ -152,6 +152,41 @@ def test_expired_approval_cannot_be_claimed(tmp_path: Path) -> None:
     assert raised.value.code is ApprovalErrorCode.EXPIRED
 
 
+def test_claimed_approval_remains_recoverable_after_expiry(
+    tmp_path: Path,
+) -> None:
+    now = [_NOW]
+    store = FilesystemApprovalStore(
+        root=_root(tmp_path),
+        clock=lambda: now[0],
+    )
+    approval = _approval(expires_at=_NOW + timedelta(seconds=1))
+    store.issue(approval)
+    store.claim(
+        approval_id=approval.approval_id,
+        run_id="run-m6",
+        plan_hash=_PLAN_HASH,
+        scope=ApprovalScope.APPLY,
+    )
+    now[0] = _NOW + timedelta(seconds=2)
+
+    with pytest.raises(ApprovalError) as raised:
+        store.claim(
+            approval_id=approval.approval_id,
+            run_id="run-m6",
+            plan_hash=_PLAN_HASH,
+            scope=ApprovalScope.APPLY,
+        )
+
+    assert raised.value.code is ApprovalErrorCode.ALREADY_CLAIMED
+    assert store.require_claim(
+        approval_id=approval.approval_id,
+        run_id="run-m6",
+        plan_hash=_PLAN_HASH,
+        scope=ApprovalScope.APPLY,
+    ) == approval
+
+
 def test_concurrent_claim_has_exactly_one_winner(tmp_path: Path) -> None:
     root = _root(tmp_path)
     approval = _approval()

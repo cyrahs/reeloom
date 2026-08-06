@@ -252,53 +252,16 @@ class SubtitleAcquisitionCoordinator:
                     )
                     approval_id = approval.approval_id
                 lease = self._executor_factory()
-                primary: BaseException | None = None
                 try:
-                    try:
-                        result = asyncio.run(
-                            lease.executor.apply(
-                                plan_hash=plan_hash,
-                                approval_id=approval_id,
-                            )
+                    result, approval_id = asyncio.run(
+                        self._execute_lease(
+                            lease=lease,
+                            run_id=run_id,
+                            plan_hash=plan_hash,
+                            approval_id=approval_id,
                         )
-                    except ApprovalError as error:
-                        if error.code is ApprovalErrorCode.ALREADY_CLAIMED:
-                            result = asyncio.run(
-                                lease.executor.recover(
-                                    plan_hash=plan_hash,
-                                    approval_id=approval_id,
-                                )
-                            )
-                        elif error.code is ApprovalErrorCode.EXPIRED:
-                            replacement = ApprovalRecord.create(
-                                run_id=run_id,
-                                plan_hash=plan_hash,
-                                scope=ApprovalScope.SUBTITLE_ACQUIRE,
-                                expires_at=(
-                                    self._clock() + timedelta(minutes=15)
-                                ),
-                                nonce=secrets.token_urlsafe(32),
-                            )
-                            self._approvals.issue(replacement)
-                            self._replace_approval(
-                                run_id=run_id,
-                                plan_hash=plan_hash,
-                                previous_approval_id=approval_id,
-                                replacement_approval_id=(
-                                    replacement.approval_id
-                                ),
-                            )
-                            approval_id = replacement.approval_id
-                            result = asyncio.run(
-                                lease.executor.apply(
-                                    plan_hash=plan_hash,
-                                    approval_id=approval_id,
-                                )
-                            )
-                        else:
-                            raise
+                    )
                 except Exception as error:
-                    primary = error
                     if self._terminal_failure(error):
                         self._mark_blocked(
                             run_id=run_id,
@@ -306,15 +269,6 @@ class SubtitleAcquisitionCoordinator:
                             failure_code=self._failure_code(error),
                         )
                     raise
-                finally:
-                    try:
-                        asyncio.run(lease.close())
-                    except Exception:
-                        if primary is None:
-                            raise
-                        _LOGGER.exception(
-                            "failed to close subtitle acquisition lease"
-                        )
                 plan = SubtitleAcquisitionPlan.from_canonical_bytes(
                     self._plans.load(plan_hash),
                     plan_hash=plan_hash,
@@ -329,6 +283,62 @@ class SubtitleAcquisitionCoordinator:
                 if resolved is None or resolved.status != "published":
                     raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
                 return resolved
+
+    async def _execute_lease(
+        self,
+        *,
+        lease: SubtitleAcquisitionExecutorLease,
+        run_id: str,
+        plan_hash: str,
+        approval_id: str,
+    ) -> tuple[SubtitleAcquisitionResult, str]:
+        """Apply or recover on one event loop and always close on that loop."""
+
+        try:
+            try:
+                result = await lease.executor.apply(
+                    plan_hash=plan_hash,
+                    approval_id=approval_id,
+                )
+            except ApprovalError as error:
+                if error.code is ApprovalErrorCode.ALREADY_CLAIMED:
+                    result = await lease.executor.recover(
+                        plan_hash=plan_hash,
+                        approval_id=approval_id,
+                    )
+                elif error.code is ApprovalErrorCode.EXPIRED:
+                    replacement = ApprovalRecord.create(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                        scope=ApprovalScope.SUBTITLE_ACQUIRE,
+                        expires_at=self._clock() + timedelta(minutes=15),
+                        nonce=secrets.token_urlsafe(32),
+                    )
+                    self._approvals.issue(replacement)
+                    self._replace_approval(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                        previous_approval_id=approval_id,
+                        replacement_approval_id=replacement.approval_id,
+                    )
+                    approval_id = replacement.approval_id
+                    result = await lease.executor.apply(
+                        plan_hash=plan_hash,
+                        approval_id=approval_id,
+                    )
+                else:
+                    raise
+            return result, approval_id
+        finally:
+            try:
+                await lease.close()
+            except Exception:
+                # Closing a transport cannot undo a durable executor result and
+                # must not turn a published/recoverable transaction into an
+                # unrelated failure.
+                _LOGGER.exception(
+                    "failed to close subtitle acquisition lease"
+                )
 
     def resolve(
         self,

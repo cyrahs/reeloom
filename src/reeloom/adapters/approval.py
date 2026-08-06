@@ -89,6 +89,24 @@ class FilesystemApprovalStore:
                     ApprovalErrorCode.BINDING_MISMATCH
                 )
             try:
+                claimed = self._read_approval(
+                    root_fd,
+                    self._claim_name(approval_id),
+                )
+            except ApprovalError as error:
+                if error.code is not ApprovalErrorCode.NOT_FOUND:
+                    raise
+            else:
+                if not hmac.compare_digest(
+                    claimed.canonical_bytes(),
+                    approval.canonical_bytes(),
+                ):
+                    raise ApprovalError(ApprovalErrorCode.STORE_FAILURE)
+                # A claim remains recoverable after its issuance expiry. The
+                # executor must resume that exact transaction instead of
+                # replacing the approval and abandoning its staging state.
+                raise ApprovalError(ApprovalErrorCode.ALREADY_CLAIMED)
+            try:
                 expired = approval.is_expired(self.clock())
             except (DomainError, TypeError):
                 raise ApprovalError(

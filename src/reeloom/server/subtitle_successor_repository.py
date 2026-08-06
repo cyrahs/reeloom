@@ -241,7 +241,11 @@ class PostgresSubtitleSuccessorOutbox:
                     connection.execute(
                         """
                         UPDATE subtitle_successor_outbox
-                        SET state = 'retry_wait', lease_owner = NULL,
+                        SET state = CASE
+                                WHEN attempt_count >= 100 THEN 'blocked'
+                                ELSE 'retry_wait'
+                            END,
+                            lease_owner = NULL,
                             lease_expires_at = NULL,
                             available_at = %s,
                             updated_at = clock_timestamp()

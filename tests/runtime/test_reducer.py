@@ -5,11 +5,17 @@ from dataclasses import replace
 import pytest
 
 from reeloom.kernel.naming import SeriesIdentity
+from reeloom.kernel.subtitle_acquisition import (
+    SubtitleArchiveSetId,
+    SubtitleSelection,
+    SubtitleSelectionDecision,
+)
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     InteractionCompleted,
+    SubtitleAcquisitionPlanCompleted,
     RunFailed,
     RunStarted,
     RunStopped,
@@ -70,6 +76,29 @@ def test_assistant_final_does_not_imply_domain_completion() -> None:
 
     assert state.phase is Phase.IDENTIFY_SERIES
     assert state.phase is not Phase.COMPLETED
+
+
+def test_plan_only_subtitle_plan_explicitly_completes_run() -> None:
+    started = reduce_event(
+        None,
+        RunStarted(run_id="run-subtitle", work_type=TmdbWorkType.ANIME),
+    )
+    selected = replace(
+        started,
+        phase=Phase.BUILD_SUBTITLE_ACQUISITION_PLAN,
+        subtitle_selection_decision=SubtitleSelectionDecision.selected(
+            (SubtitleSelection(1, SubtitleArchiveSetId(1)),)
+        ),
+    )
+
+    completed = reduce_event(
+        selected,
+        SubtitleAcquisitionPlanCompleted("sha256:" + "a" * 64),
+    )
+
+    assert completed.phase is Phase.COMPLETED
+    assert completed.status is RunStatus.STOPPED
+    assert completed.stop_reason is StopReason.MODEL_FINAL
 
 
 def test_interactions_explicitly_reduce_the_final_plan_head() -> None:
