@@ -265,6 +265,33 @@ def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
     assert run["subtitle_acquisition"]["failure_diagnostic"] == row[49]
 
 
+def test_atomic_move_unsupported_subtitle_acquisition_is_retryable() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "running"
+    row[3] = "build_subtitle_acquisition_plan"
+    row[10] = None
+    row[37:43] = (
+        "sha256:" + "b" * 64,
+        "automatic",
+        "blocked",
+        "approval-subtitle-1",
+        None,
+        "atomic_move_unsupported",
+    )
+    row[45] = True
+    row[47] = True
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["status"] == "needs_attention"
+    assert run["available_actions"] == [
+        "retry_subtitle_acquisition",
+        "fail_run",
+    ]
+
+
 def test_noncollision_subtitle_failure_is_not_retryable() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "running"

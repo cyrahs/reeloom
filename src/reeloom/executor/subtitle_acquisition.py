@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from reeloom.adapters.subtitle_journal import (
     FilesystemSubtitleAcquisitionJournalStore,
 )
-from reeloom.executor.atomic_rename import rename_noreplace
+from reeloom.executor.atomic_rename import rename_noreplace_compatible
 from reeloom.executor.errors import (
     ExecutorError,
     ExecutorErrorCode,
@@ -42,7 +42,7 @@ from reeloom.ports.subtitle_acquisition import (
 )
 from reeloom.server.watcher import NoFollowWatcher
 
-_native_rename_noreplace = rename_noreplace
+_rename_noreplace = rename_noreplace_compatible
 
 
 def _collision(
@@ -243,7 +243,7 @@ class SubtitleAcquisitionExecutor:
             self.journals.record(transaction, "publish_started")
             failure_code: ExecutorErrorCode | None = None
             try:
-                _native_rename_noreplace(
+                _rename_noreplace(
                     source_fd,
                     transaction.staging_name,
                     source_fd,
