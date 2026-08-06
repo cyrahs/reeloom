@@ -1421,6 +1421,8 @@ class FolderDispositionCoordinator:
         if row is None:
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         config = ConfigRevision.from_json(json.dumps(row[0]))
+        if config.apply_policy.value == "plan_only":
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         if automatic and config.apply_policy.value != "automatic":
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         if plan.media_plan_hash is not None and not bool(row[1]):

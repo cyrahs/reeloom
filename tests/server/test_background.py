@@ -43,6 +43,7 @@ def test_database_unavailable_stops_background_fail_closed() -> None:
 class _SettlingScheduler:
     def __init__(self) -> None:
         self.settled: list[bool] = []
+        self.retried: list[tuple[str, str]] = []
 
     def get_job_context(self, *, run_id: str) -> object:
         del run_id
@@ -59,6 +60,9 @@ class _SettlingScheduler:
     ) -> None:
         del job_id, boot_id
         self.settled.append(succeeded)
+
+    def retry_job(self, *, job_id: str, boot_id: str) -> None:
+        self.retried.append((job_id, boot_id))
 
 
 class _UnavailableWorker:
@@ -92,7 +96,7 @@ class _UnavailableApply:
         (_SuccessfulWorker(), _AutomaticConfigs(), _UnavailableApply()),
     ),
 )
-def test_database_failure_is_rethrown_after_job_is_settled(
+def test_database_failure_is_rethrown_without_settling_job(
     worker: object,
     configs: object,
     apply: object,
@@ -110,7 +114,7 @@ def test_database_failure_is_rethrown_after_job_is_settled(
         background._execute_job("job-test", "run-test")
 
     assert raised.value.code is ServerErrorCode.DATABASE_UNAVAILABLE
-    assert scheduler.settled == [False]
+    assert scheduler.settled == []
 
 
 def test_only_deterministic_executor_collision_is_terminal() -> None:
@@ -221,6 +225,20 @@ class _SubtitleCoordinator:
         )
         return SimpleNamespace(status="published")
 
+    def resolve(self, **kwargs: object) -> object:
+        del kwargs
+        return SimpleNamespace(status="published")
+
+
+class _TransientSubtitleCoordinator(_SubtitleCoordinator):
+    def approve_and_execute(self, **kwargs: object) -> object:
+        del kwargs
+        raise RuntimeError("temporary transport failure")
+
+    def resolve(self, **kwargs: object) -> object:
+        del kwargs
+        return SimpleNamespace(status="approved")
+
 
 @pytest.mark.parametrize(
     ("policy", "expected_execution", "expected_settlement"),
@@ -250,6 +268,23 @@ def test_subtitle_acquisition_uses_independent_policy_and_never_media_apply(
 
     assert len(coordinator.executed) == expected_execution
     assert tuple(scheduler.settled) == expected_settlement
+
+
+def test_transient_subtitle_failure_retries_same_job() -> None:
+    scheduler = _SettlingScheduler()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=_SubtitleConfigs(SubtitleAcquisitionPolicy.AUTOMATIC),
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_SubtitleWorker(),  # type: ignore[arg-type]
+        apply=object(),  # type: ignore[arg-type]
+        subtitle_acquisitions=_TransientSubtitleCoordinator(),
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert scheduler.retried == [("job-test", "boot-test")]
+    assert scheduler.settled == []
 
 
 class _FolderDispositions:

@@ -229,6 +229,52 @@ def test_nonmanual_subtitle_acquisition_has_no_browser_action(
     assert "approve_subtitle_acquisition" not in run["available_actions"]
 
 
+def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "running"
+    row[3] = "build_subtitle_acquisition_plan"
+    row[10] = None
+    row[37:43] = (
+        "sha256:" + "b" * 64,
+        "automatic",
+        "blocked",
+        "approval-subtitle-1",
+        None,
+        "destination_collision",
+    )
+    row[45] = True
+    row[47] = True
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["status"] == "needs_attention"
+    assert run["available_actions"] == ["fail_run"]
+
+
+def test_pending_job_hides_manual_subtitle_action() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "running"
+    row[3] = "build_subtitle_acquisition_plan"
+    row[10] = None
+    row[37:43] = (
+        "sha256:" + "b" * 64,
+        "manual",
+        "planned",
+        None,
+        None,
+        None,
+    )
+    row[48] = "pending"
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["available_actions"] == []
+
+
 def test_manual_approved_subtitle_request_exposes_recovery_action() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "running"

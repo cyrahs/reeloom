@@ -320,6 +320,7 @@ export function RunPage({ runId }: { runId: string }) {
         await reconcileUncertain({ type: "action", value: attempt });
       } else {
         setUncertainAttempt(null);
+        await invalidateRun();
       }
     },
   });
@@ -529,7 +530,15 @@ export function RunPage({ runId }: { runId: string }) {
       run.data.plan_hash,
       currentPreview?.plan_hash ?? null,
     );
-  const blocked = resyncing || uncertainAttempt !== null;
+  const blocked =
+    resyncing ||
+    uncertainAttempt !== null ||
+    action.isPending ||
+    apply.isPending ||
+    recover.isPending ||
+    subtitleAcquisition.isPending ||
+    folderDisposition.isPending ||
+    attentionControl.isPending;
 
   const retryUncertain = () => {
     if (!uncertainAttempt || resyncing) return;
@@ -819,7 +828,7 @@ export function RunPage({ runId }: { runId: string }) {
                 </button>
               </div>
             ) : null}
-            {run.data.recovery_approval_id ? (
+            {run.data.recovery_approval_id && available.has("recover") ? (
               <div className="recovery-box">
                 <strong>需要恢复</strong>
                 <p>
@@ -988,6 +997,12 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {folderDisposition.error instanceof ApiError ? (
               <PageError code={folderDisposition.error.code} />
+            ) : null}
+            {subtitleAcquisition.error instanceof ApiError ? (
+              <PageError code={subtitleAcquisition.error.code} />
+            ) : null}
+            {attentionControl.error instanceof ApiError ? (
+              <PageError code={attentionControl.error.code} />
             ) : null}
           </section>
 

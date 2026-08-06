@@ -66,6 +66,7 @@ from reeloom.runtime.events import (
     SubtitleSearchObserved,
     SubtitleSearchFailed,
     SubtitleSelectionSubmitted,
+    SubtitleAcquisitionPlanCompleted,
     ExecutionSettled,
     InteractionCompleted,
     MappingRejected,
@@ -333,6 +334,7 @@ def _event_samples() -> tuple[object, ...]:
                 (SubtitleSelection(1, SubtitleArchiveSetId(1)),)
             ),
         ),
+        SubtitleAcquisitionPlanCompleted("sha256:" + "d" * 64),
         MappingRejected(
             "call-4",
             MappingValidationIssue(

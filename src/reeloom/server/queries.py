@@ -578,24 +578,35 @@ class PostgresQueries:
         plan_hash = row[10]
         recovery_approval_id = row[11]
         apply_policy = str(row[12])
-        busy = bool(row[13])
+        job_status = None if row[48] is None else str(row[48])
+        busy = bool(row[13]) or job_status in {"pending", "running"}
         interaction_budget_available = bool(row[36])
         folder_status = None if row[28] is None else str(row[28])
         folder_action = None if row[24] is None else str(row[24])
+        acquisition_plan_hash = row[37]
+        acquisition_policy = None if row[38] is None else str(row[38])
+        acquisition_status = None if row[39] is None else str(row[39])
         attention_state = (
             stored_status in {"running", "failed"}
             and row[4] == "stopped"
             and plan_hash is None
             and row[44] == "needs_attention"
         )
-        needs_attention = attention_state and stored_status == "running"
+        acquisition_attention = (
+            stored_status == "running"
+            and acquisition_plan_hash is not None
+            and acquisition_status == "blocked"
+        )
+        needs_attention = (
+            attention_state and stored_status == "running"
+        ) or acquisition_attention
         status = "needs_attention" if needs_attention else stored_status
         actions: list[str] = []
         if not busy and needs_attention:
-            if interaction_budget_available:
+            if interaction_budget_available and not acquisition_attention:
                 actions.append("question")
             if bool(row[45]) and bool(row[47]) and row[48] == "completed":
-                if int(row[46]) < 3:
+                if not acquisition_attention and int(row[46]) < 3:
                     actions.append("retry_run")
                 actions.append("fail_run")
         elif (
@@ -635,6 +646,11 @@ class PostgresQueries:
             not busy
             and row[23] is not None
             and folder_status == "planned"
+            and apply_policy != "plan_only"
+            and (
+                folder_action == "fail"
+                or (row[14] is not None and row[17] == "completed")
+            )
         ):
             actions.append(
                 "dispose_failed_folder"
@@ -647,9 +663,6 @@ class PostgresQueries:
             and row[29] is not None
         ):
             actions.append("recover_folder_disposition")
-        acquisition_plan_hash = row[37]
-        acquisition_policy = None if row[38] is None else str(row[38])
-        acquisition_status = None if row[39] is None else str(row[39])
         if (
             not busy
             and acquisition_plan_hash is not None

@@ -138,6 +138,11 @@ class SubtitleSelectionSubmitted:
 
 
 @dataclass(frozen=True, slots=True)
+class SubtitleAcquisitionPlanCompleted:
+    plan_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class MappingRejected:
     call_id: str
     issue: MappingValidationIssue
@@ -284,6 +289,7 @@ RuntimeEvent: TypeAlias = (
     | SubtitleSearchObserved
     | SubtitleSearchFailed
     | SubtitleSelectionSubmitted
+    | SubtitleAcquisitionPlanCompleted
     | MappingRejected
     | MappingReviewCaptured
     | MappingSubmitted

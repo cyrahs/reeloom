@@ -90,6 +90,7 @@ from reeloom.runtime.events import (
     SubtitleSearchObserved,
     SubtitleSearchFailed,
     SubtitleSelectionSubmitted,
+    SubtitleAcquisitionPlanCompleted,
     SubtitleVariantDetected,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
@@ -1116,6 +1117,10 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             "call_id": event.call_id,
             "decision": _subtitle_selection_payload(event.decision),
         }
+    if isinstance(event, SubtitleAcquisitionPlanCompleted):
+        return "subtitle_acquisition_plan_completed", {
+            "plan_hash": event.plan_hash,
+        }
     if isinstance(event, MappingRejected):
         return "mapping_rejected", {
             "call_id": event.call_id,
@@ -1524,6 +1529,9 @@ def _event_from_payload(
             call_id=_str(p["call_id"]),
             decision=_subtitle_selection(p["decision"]),
         )
+    if event_type == "subtitle_acquisition_plan_completed":
+        p = _fields(value, {"plan_hash"}, field=event_type)
+        return SubtitleAcquisitionPlanCompleted(_str(p["plan_hash"]))
     if event_type == "mapping_rejected":
         p = _fields(value, {"call_id", "issue"}, field=event_type)
         return MappingRejected(_str(p["call_id"]), _issue(p["issue"]))

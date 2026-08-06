@@ -67,6 +67,7 @@ from reeloom.runtime.events import (
     SubtitleSearchObserved,
     SubtitleSearchFailed,
     SubtitleSelectionSubmitted,
+    SubtitleAcquisitionPlanCompleted,
     SubtitleVariantDetected,
     TmdbCandidatesObserved,
     TmdbSeasonCatalogObserved,
@@ -1043,6 +1044,23 @@ def reduce_event(
             ),
             subtitle_selection_decision=decision,
             observed_tool_calls=observed,
+        )
+
+    if isinstance(event, SubtitleAcquisitionPlanCompleted):
+        if (
+            state.phase is not Phase.BUILD_SUBTITLE_ACQUISITION_PLAN
+            or state.subtitle_selection_decision is None
+            or state.subtitle_selection_decision.status
+            is not SubtitleSelectionStatus.SELECTED
+            or not _is_plan_hash(event.plan_hash)
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_TRANSITION)
+        return replace(
+            state,
+            phase=Phase.COMPLETED,
+            status=RunStatus.STOPPED,
+            stop_reason=StopReason.MODEL_FINAL,
+            event_count=event_count,
         )
 
     if isinstance(event, SubtitleVariantDetected):

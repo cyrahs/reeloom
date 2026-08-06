@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -25,7 +26,11 @@ from reeloom.ports.plans import PlanStore
 from reeloom.ports.tmdb import TmdbProvider
 from reeloom.ports.subtitle_acquisition import SubtitleSearchProvider
 from reeloom.runtime.errors import BudgetExceeded
-from reeloom.runtime.events import ApprovalRequested, RunStopped
+from reeloom.runtime.events import (
+    ApprovalRequested,
+    RunStopped,
+    SubtitleAcquisitionPlanCompleted,
+)
 from reeloom.runtime.state import Phase, RunStatus, StopReason
 from reeloom.server.archive_directory import (
     FilesystemArchiveDirectoryBrowser,
@@ -36,6 +41,7 @@ from reeloom.server.agent_repository import (
 from reeloom.server.config import (
     ConfigRevision,
     ServerWorkType,
+    SubtitleAcquisitionPolicy,
     WatchConfig,
 )
 from reeloom.server.config_repository import PostgresConfigRepository
@@ -66,6 +72,7 @@ _INITIAL_PROMPT = (
     "Inspect the authorized candidate snapshot and submit one complete, "
     "validated mapping for its configured work type."
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 class ModelLeaseFactory(Protocol):
@@ -202,6 +209,13 @@ class InitialAgentWorker:
                 compiler=compiler,
                 state=state,
             )
+            if (
+                config.subtitle_acquisition_policy
+                is SubtitleAcquisitionPolicy.PLAN_ONLY
+            ):
+                event_store.append(
+                    SubtitleAcquisitionPlanCompleted(plan.plan_hash)
+                )
             return AgentWorkResult(
                 AgentWorkKind.SUBTITLE_ACQUISITION,
                 plan.plan_hash,
@@ -313,6 +327,13 @@ class InitialAgentWorker:
                     compiler=compiler,
                     state=result.state,
                 )
+                if (
+                    config.subtitle_acquisition_policy
+                    is SubtitleAcquisitionPolicy.PLAN_ONLY
+                ):
+                    event_store.append(
+                        SubtitleAcquisitionPlanCompleted(plan.plan_hash)
+                    )
                 return AgentWorkResult(
                     AgentWorkKind.SUBTITLE_ACQUISITION,
                     plan.plan_hash,
@@ -327,10 +348,16 @@ class InitialAgentWorker:
                 result.state.plan_hash,
             )
         finally:
-            if subtitle_search is not None:
-                await subtitle_search.close()
-            await tmdb.close()
-            await model.close()
+            leases = (
+                *((subtitle_search,) if subtitle_search is not None else ()),
+                tmdb,
+                model,
+            )
+            for lease in leases:
+                try:
+                    await lease.close()
+                except Exception:
+                    _LOGGER.exception("failed to close agent adapter lease")
 
     async def _build_subtitle_acquisition_plan(
         self,
@@ -377,7 +404,12 @@ class InitialAgentWorker:
             self.subtitle_plan_sink(plan)
             return plan
         finally:
-            await lease.close()
+            try:
+                await lease.close()
+            except Exception:
+                # The immutable plan may already be durable. Transport cleanup
+                # cannot invalidate it or strand the run before registration.
+                _LOGGER.exception("failed to close subtitle planning lease")
 
     @staticmethod
     def _resolve_scope(

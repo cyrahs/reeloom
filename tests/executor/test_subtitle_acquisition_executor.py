@@ -44,6 +44,7 @@ from reeloom.ports.subtitle_acquisition import (
     DownloadedSubtitleArchiveSet,
     InspectedSubtitleArchiveSet,
 )
+from reeloom.server.watcher import NoFollowWatcher
 
 _NOW = datetime(2026, 8, 4, tzinfo=UTC)
 _ARCHIVE_CONTENT = b"PK\x03\x04fixed-archive"
@@ -164,8 +165,14 @@ def _environment(tmp_path: Path) -> _Environment:
         path.mkdir(parents=True, exist_ok=True)
     archive_path = workspace / "attachment-34768.zip"
     archive_path.write_bytes(_ARCHIVE_CONTENT)
+    (source_folder / "episode-01.mkv").write_bytes(b"fixed-video")
     root_stat = os.stat(source_root, follow_symlinks=False)
     folder_stat = os.stat(source_folder, follow_symlinks=False)
+    candidate_snapshot_id = NoFollowWatcher().scan_folder(
+        AuthorizedRoot.create(source_root),
+        PurePosixPath(source_folder.name),
+        logical_name=source_folder.name,
+    ).candidates.snapshot_id
     archive_id = SubtitleArchiveSetId(1)
     volume = SubtitleArchiveVolume(
         1,
@@ -202,7 +209,7 @@ def _environment(tmp_path: Path) -> _Environment:
         source_folder_device=folder_stat.st_dev,
         source_folder_inode=folder_stat.st_ino,
         folder_generation_id="generation-1",
-        candidate_snapshot_id="candidate-snapshot-v1:" + "a" * 64,
+        candidate_snapshot_id=candidate_snapshot_id,
         tmdb_id=123,
         archives=(source,),
         inspected_members=(member,),
@@ -363,6 +370,26 @@ def test_apply_detects_source_identity_drift_before_network(tmp_path: Path) -> N
     environment = _environment(tmp_path)
     environment.source_folder.rename(environment.source_root / "release-old")
     environment.source_folder.mkdir()
+
+    with pytest.raises(ExecutorError) as raised:
+        asyncio.run(
+            environment.executor.apply(
+                plan_hash=environment.plan.plan_hash,
+                approval_id=environment.approval.approval_id,
+            )
+        )
+
+    assert raised.value.code is ExecutorErrorCode.SOURCE_DRIFT
+    assert environment.fetcher.calls == 0
+
+
+def test_apply_detects_candidate_snapshot_drift_before_network(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    (environment.source_folder / "episode-01.mkv").write_bytes(
+        b"changed-video"
+    )
 
     with pytest.raises(ExecutorError) as raised:
         asyncio.run(

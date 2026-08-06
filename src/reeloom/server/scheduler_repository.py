@@ -158,6 +158,12 @@ def _invalidate_unclaimed(
                   )
                   AND NOT EXISTS (
                       SELECT 1
+                      FROM subtitle_acquisition_requests AS request
+                      WHERE request.run_id = r.run_id
+                        AND request.status IN ('planned', 'approved')
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
                       FROM folder_disposition_claims AS claim
                       JOIN folder_disposition_approvals AS approval
                         USING (approval_id)
@@ -1790,11 +1796,22 @@ class PostgresSchedulerRepository:
                           AND job.status = 'completed'
                           AND d.folder_generation_id IS NOT NULL
                           AND observation.status = 'active'
-                          AND state.runtime_status = 'stopped'
                           AND state.plan_hash IS NULL
                           AND state.event_sequence = %s
-                          AND state.projection_payload->>'stop_reason'
-                              = 'needs_attention'
+                          AND (
+                              (
+                                  state.runtime_status = 'stopped'
+                                  AND state.projection_payload->>'stop_reason'
+                                      = 'needs_attention'
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM subtitle_acquisition_requests
+                                      AS acquisition
+                                  WHERE acquisition.run_id = run.run_id
+                                    AND acquisition.status = 'blocked'
+                              )
+                          )
                           AND NOT EXISTS (
                               SELECT 1 FROM run_operations AS operation
                               WHERE operation.run_id = run.run_id

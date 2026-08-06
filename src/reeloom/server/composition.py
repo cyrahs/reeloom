@@ -772,10 +772,6 @@ def build_application(
             run_id: str,
             event_sequence: int,
         ) -> dict[str, object]:
-            scheduler.mark_needs_attention_failed(
-                run_id=run_id,
-                expected_event_sequence=event_sequence,
-            )
             plan = folder_dispositions.prepare_failure(
                 run_id=run_id,
                 reason_code="user_marked_failed",
@@ -784,6 +780,10 @@ def build_application(
                 raise ServerError(
                     ServerErrorCode.INTERACTION_CONFLICT
                 )
+            scheduler.mark_needs_attention_failed(
+                run_id=run_id,
+                expected_event_sequence=event_sequence,
+            )
             return {
                 "run_id": run_id,
                 "status": "failure_planned",

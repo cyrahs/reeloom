@@ -39,6 +39,7 @@ from reeloom.server.subtitle_successor import SubtitleSuccessorWorker
 
 _LOG = logging.getLogger(__name__)
 _MAX_FOLDER_FAILURE_RETRIES = 3
+_SUBTITLE_RECONCILE_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -63,6 +64,7 @@ class BackgroundServices:
     _thread: threading.Thread | None = field(init=False, default=None)
     _next_poll: dict[str, float] = field(init=False, default_factory=dict)
     _configured_revision: int | None = field(init=False, default=None)
+    _next_subtitle_reconcile: float = field(init=False, default=0.0)
     _fatal: threading.Event = field(
         init=False,
         default_factory=threading.Event,
@@ -107,6 +109,17 @@ class BackgroundServices:
                 if config is not None:
                     self._configure(config)
                     progressed = self._poll_due(config) or progressed
+                if (
+                    self.subtitle_acquisitions is not None
+                    and time.monotonic() >= self._next_subtitle_reconcile
+                ):
+                    self._next_subtitle_reconcile = (
+                        time.monotonic()
+                        + _SUBTITLE_RECONCILE_INTERVAL_SECONDS
+                    )
+                    progressed = bool(
+                        self.subtitle_acquisitions.reconcile_approved()
+                    ) or progressed
                 claimed = self.scheduler.claim_job(boot_id=self.boot_id)
                 if claimed is not None:
                     progressed = True
@@ -337,13 +350,25 @@ class BackgroundServices:
             reason_code = (
                 None if subtitle_work else self._failure_reason(error)
             )
-            if subtitle_work and self.subtitle_acquisitions is not None:
+            if (
+                subtitle_work
+                and database_error is None
+                and self.subtitle_acquisitions is not None
+            ):
                 request = self.subtitle_acquisitions.resolve(
                     run_id=run_id,
                     plan_hash=plan_hash,
                 )
                 if request is not None and request.status == "blocked":
                     succeeded = True
+                elif request is not None and request.status == "published":
+                    succeeded = True
+                else:
+                    # Planning or execution may have persisted durable state
+                    # before the transient failure. Retry this same job so the
+                    # acquisition service can recover it; never send subtitle
+                    # work through the media-plan retry path.
+                    retry = True
             execution_blocked = (
                 not subtitle_work
                 and isinstance(error, ExecutorError)
@@ -357,7 +382,7 @@ class BackgroundServices:
                 isinstance(error, ExecutorError)
                 and error.code is ExecutorErrorCode.SOURCE_DRIFT
             )
-            if subtitle_work and succeeded:
+            if subtitle_work:
                 pass
             elif execution_blocked:
                 succeeded = True
@@ -475,7 +500,11 @@ class BackgroundServices:
                 ),
             )
         finally:
-            if job_already_settled:
+            if database_error is not None:
+                # Leave the job owned by this boot. Startup reconciliation will
+                # return it to pending after database connectivity recovers.
+                pass
+            elif job_already_settled:
                 pass
             elif restarted:
                 pass
