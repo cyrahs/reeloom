@@ -840,7 +840,11 @@ export function RunPage({ runId }: { runId: string }) {
                 </button>
               </div>
             ) : (
-              <>
+              <div
+                className="action-list"
+                role="group"
+                aria-label="可用操作"
+              >
                 {available.has("retry_run") ? (
                   <button
                     className="secondary wide"
@@ -968,7 +972,7 @@ export function RunPage({ runId }: { runId: string }) {
                     />
                   </div>
                 ) : null}
-              </>
+              </div>
             )}
             {actionNotice ? (
               <div className="notice" role="status">{actionNotice}</div>

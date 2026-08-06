@@ -38,9 +38,13 @@ _FORM = b"""
 """
 
 
-def _results(*thread_ids: int, next_page: bool = False) -> bytes:
+def _results(
+    *thread_ids: int,
+    next_page: bool = False,
+    title: str = "测试动画 / Test Anime",
+) -> bytes:
     links = "".join(
-        f'<li><a href="thread-{thread_id}-1-1.html">测试动画 / Test Anime</a></li>'
+        f'<li><a href="thread-{thread_id}-1-1.html">{title}</a></li>'
         for thread_id in thread_ids
     )
     next_link = (
@@ -88,6 +92,7 @@ def _thread(
     thread_id: int = 10081,
     forum_id: int = 37,
     max_page: int = 1,
+    title: str = "测试动画 / Test Anime",
 ) -> bytes:
     pages = "".join(
         f'<a href="thread-{thread_id}-{page}-1.html">{page}</a>'
@@ -96,7 +101,7 @@ def _thread(
     return f"""
     <!doctype html><html><body>
       <a href="forum-{forum_id}-1.html">返回列表</a>
-      <span id="thread_subject">测试动画 / Test Anime</span>
+      <span id="thread_subject">{title}</span>
       <div id="postlist">{''.join(posts)}</div>{pages}
     </body></html>
     """.encode()
@@ -295,6 +300,61 @@ def test_provider_diagnoses_explicit_forum_search_empty_result() -> None:
     assert result.diagnostics.alias_thread_counts == (0, 0)
     assert result.diagnostics.discovered_thread_count == 0
     assert result.diagnostics.empty_stage is SubtitleSearchEmptyStage.FORUM_SEARCH
+
+
+def test_provider_uses_ascii_space_alias_to_recall_punctuated_title() -> None:
+    queries: list[str] = []
+    title = "空之色，水之色"
+    thread = _thread(
+        _post(
+            120565,
+            "中文字幕",
+            _attachment(50001, "Subtitle.7z", "10 KB", "简体"),
+        ),
+        thread_id=13588,
+        title=title,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/search.php":
+            return httpx.Response(200, content=_FORM)
+        if request.method == "POST":
+            query = parse_qs(request.content.decode())["srchtxt"][0]
+            queries.append(query)
+            if query == "空之色 水之色":
+                return httpx.Response(
+                    200,
+                    content=_results(13588, title=title),
+                )
+            return httpx.Response(
+                200,
+                content="<html><body>没有找到匹配结果</body></html>".encode(),
+            )
+        if request.url.path == "/thread-13588-1-1.html":
+            return httpx.Response(200, content=thread)
+        return httpx.Response(404)
+
+    clock = _Clock()
+    provider = AcgripSubtitleSearchProvider(
+        transport=httpx.MockTransport(handler),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    request = SubtitleSearchRequest(
+        ("空之色,水之色", "空之色 水之色"),
+        1,
+        None,
+        10,
+    )
+    try:
+        result = asyncio.run(provider.search(request))
+    finally:
+        asyncio.run(provider.aclose())
+
+    assert queries == ["空之色,水之色", "空之色 水之色"]
+    assert result.diagnostics.alias_thread_counts == (0, 1)
+    assert len(result.page.items) == 1
+    assert result.capabilities[0].thread_id == 13588
 
 
 def test_provider_keeps_only_anonymous_cookie_and_resolves_one_search_redirect() -> None:

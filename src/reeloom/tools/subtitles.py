@@ -25,6 +25,7 @@ from reeloom.ports.subtitle_acquisition import (
     SubtitleSearchResult,
     VideoSubtitleInspector,
 )
+from reeloom.policy.subtitle_search import compile_subtitle_search_aliases
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
     EmbeddedSubtitlesInspected,
@@ -433,8 +434,19 @@ async def search_sub(
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE,
             retryable=False,
         )
+    title_aliases = compile_subtitle_search_aliases(
+        state.selected_series.title_zh_cn
+    )
+    if not title_aliases:
+        return _search_unavailable(
+            runtime,
+            call_id=call_id,
+            season_number=season_number,
+            code=RuntimeErrorCode.SUBTITLE_SEARCH_FAILED,
+            retryable=False,
+        )
     request = SubtitleSearchRequest(
-        title_aliases=(state.selected_series.title_zh_cn,),
+        title_aliases=title_aliases,
         season_number=season_number,
         cursor=parsed_cursor,
         limit=MAX_SEARCH_RESULTS_PER_PAGE,
