@@ -43,7 +43,7 @@ release-group hint 和 opaque ID。帖子 HTML、完整正文、动态 attachmen
   一次经结构化校验的精确同源结果跳转。
 - 每 run 最多三个标题别名、20 个 HTTP response、8 MiB HTML、50 个 release、
   100 个 attachment；每页 1 MiB、每 tool 30 秒、每 request 5 秒、并发 1、全局
-  至少一秒请求间隔。
+  至少一秒请求间隔；论坛搜索 POST 另设五秒冷却，不依赖中间 GET 或网络延迟。
 - 动态 `aid` URL 永不持久化。capability/plan 只绑定 thread ID、post ID 和数字
   attachment ID；planning/apply 都重新解析当次签名链接。
 - 允许 ZIP、7z、RAR 和完整多卷 RAR。多卷必须来自同一 post、序列连续、header

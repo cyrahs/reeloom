@@ -303,6 +303,34 @@ def test_provider_diagnoses_explicit_forum_search_empty_result() -> None:
     assert result.diagnostics.empty_stage is SubtitleSearchEmptyStage.FORUM_SEARCH
 
 
+def test_provider_spaces_search_submissions_by_five_seconds() -> None:
+    clock = _Clock()
+    search_submission_times: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, content=_FORM)
+        search_submission_times.append(clock.value)
+        return httpx.Response(
+            200,
+            content="<html><body>没有找到匹配结果</body></html>".encode(),
+        )
+
+    provider = AcgripSubtitleSearchProvider(
+        transport=httpx.MockTransport(handler),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    try:
+        result = asyncio.run(provider.search(_request()))
+    finally:
+        asyncio.run(provider.aclose())
+
+    assert result.diagnostics.alias_thread_counts == (0, 0)
+    assert search_submission_times == [1.0, 6.0]
+    assert clock.sleeps == [1.0, 5.0]
+
+
 def test_provider_uses_ascii_space_alias_to_recall_punctuated_title() -> None:
     queries: list[str] = []
     title = "空之色，水之色"
@@ -360,6 +388,7 @@ def test_provider_uses_ascii_space_alias_to_recall_punctuated_title() -> None:
 
 def test_provider_keeps_only_anonymous_cookie_and_resolves_one_search_redirect() -> None:
     requests: list[httpx.Request] = []
+    search_submission_times: list[float] = []
     thread = _thread(
         _post(
             95257,
@@ -391,6 +420,7 @@ def test_provider_keeps_only_anonymous_cookie_and_resolves_one_search_redirect()
                 ],
             )
         if request.method == "POST":
+            search_submission_times.append(clock.value)
             assert cookie == "3RQm_2132_sid=anonymous123"
             return httpx.Response(
                 302,
@@ -423,6 +453,7 @@ def test_provider_keeps_only_anonymous_cookie_and_resolves_one_search_redirect()
 
     assert len(result.page.items) == 1
     assert len(requests) == 6
+    assert search_submission_times == [1.0, 6.0]
 
 
 @pytest.mark.parametrize(
