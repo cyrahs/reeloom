@@ -95,6 +95,7 @@ type FolderAttempt = {
 type SubtitleAttempt = {
   planHash: string;
   key: string;
+  retry?: boolean;
 };
 type AttentionAttempt = {
   kind: "retry" | "fail";
@@ -479,9 +480,11 @@ export function RunPage({ runId }: { runId: string }) {
   });
 
   const subtitleAcquisition = useMutation({
-    mutationFn: async ({ planHash, key }: SubtitleAttempt) =>
+    mutationFn: async ({ planHash, key, retry }: SubtitleAttempt) =>
       api.request(
-        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/approve`,
+        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/${
+          retry ? "retry" : "approve"
+        }`,
         subtitleAcquisitionResultSchema,
         {
           method: "POST",
@@ -876,6 +879,24 @@ export function RunPage({ runId }: { runId: string }) {
                     {attentionControl.isPending
                       ? "正在安排重试…"
                       : "重新尝试"}
+                  </button>
+                ) : null}
+                {available.has("retry_subtitle_acquisition") &&
+                run.data.subtitle_acquisition ? (
+                  <button
+                    className="primary wide"
+                    disabled={blocked || subtitleAcquisition.isPending}
+                    onClick={() =>
+                      subtitleAcquisition.mutate({
+                        planHash: run.data.subtitle_acquisition!.plan_hash,
+                        key: idempotencyKey(),
+                        retry: true,
+                      })
+                    }
+                  >
+                    {subtitleAcquisition.isPending
+                      ? "正在恢复并发布字幕…"
+                      : "重试字幕获取"}
                   </button>
                 ) : null}
                 {available.has("fail_run") ? (

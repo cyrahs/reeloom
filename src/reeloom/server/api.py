@@ -1658,6 +1658,65 @@ def create_api(
         )
 
     @app.post(
+        "/api/v1/runs/{run_id}/subtitle-acquisition/retry",
+        response_model=SubtitleAcquisitionResponse,
+    )
+    async def retry_subtitle_acquisition(
+        run_id: str,
+        body: SubtitleAcquisitionApprovalRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        del body
+        coordinator = dependencies.subtitle_acquisitions
+        if coordinator is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def payload(
+            record: SubtitleAcquisitionRequestRecord,
+        ) -> dict[str, object]:
+            return {
+                "run_id": record.run_id,
+                "plan_hash": record.plan_hash,
+                "policy": record.policy.value,
+                "status": record.status,
+                "approval_id": record.approval_id,
+                "transaction_id": record.transaction_id,
+                "failure_code": record.failure_code,
+                "failure_diagnostic": record.failure_diagnostic,
+                "successor_status": None,
+            }
+
+        def execute() -> dict[str, object]:
+            return payload(
+                coordinator.retry_blocked_and_execute(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+
+        def resolve() -> dict[str, object] | None:
+            record = coordinator.resolve(
+                run_id=run_id,
+                plan_hash=plan_hash,
+            )
+            return None if record is None else payload(record)
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="retry_subtitle_acquisition",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={"plan_hash": plan_hash},
+                execute=execute,
+                resolve=resolve,
+            )
+        )
+
+    @app.post(
         "/api/v1/runs/{run_id}/folder-disposition",
         response_model=FolderDispositionResultResponse,
     )

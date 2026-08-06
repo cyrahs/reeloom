@@ -174,6 +174,7 @@ class RunResponse(_StrictModel):
             "dispose_failed_folder",
             "recover_folder_disposition",
             "approve_subtitle_acquisition",
+            "retry_subtitle_acquisition",
             "retry_run",
             "fail_run",
             "delete_run",
