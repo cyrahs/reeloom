@@ -186,6 +186,35 @@ class RunResponse(_StrictModel):
     subtitle_acquisition: SubtitleAcquisitionView | None = None
 
 
+class SubtitleFailureDiagnostic(_StrictModel):
+    schema_version: Literal[1]
+    stage: Literal[
+        "destination_preflight",
+        "staging_prepare",
+        "staging_validate",
+        "member_write",
+        "publish",
+    ]
+    reason: Literal[
+        "name_exists",
+        "create_failed",
+        "entry_type_mismatch",
+        "unsafe_permissions",
+        "owner_mismatch",
+        "not_empty",
+        "unexpected_entries",
+        "casefold_collision",
+    ]
+    actual_mode: int | None = Field(default=None, ge=0, le=0o777)
+    actual_uid: int | None = Field(default=None, ge=0)
+    entry_count: int | None = Field(default=None, ge=0, le=256)
+    expected_policy: Literal[
+        "owner_rwx_no_group_or_other_write"
+    ] | None = None
+    expected_uid: int | None = Field(default=None, ge=0)
+    member_index: int | None = Field(default=None, ge=0, le=255)
+
+
 class SubtitleAcquisitionView(_StrictModel):
     plan_hash: str
     policy: Literal["plan_only", "manual", "automatic"]
@@ -193,6 +222,7 @@ class SubtitleAcquisitionView(_StrictModel):
     approval_id: str | None
     transaction_id: str | None
     failure_code: str | None
+    failure_diagnostic: SubtitleFailureDiagnostic | None = None
     successor_status: Literal[
         "queued", "retry_wait", "leased", "completed", "blocked"
     ] | None = None

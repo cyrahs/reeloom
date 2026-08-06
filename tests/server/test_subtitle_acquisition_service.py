@@ -6,6 +6,7 @@ from typing import cast
 from psycopg_pool import ConnectionPool
 
 from reeloom.executor.subtitle_acquisition import SubtitleAcquisitionResult
+from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
@@ -66,3 +67,40 @@ def test_executor_and_transport_close_share_one_event_loop() -> None:
     assert result.status == "completed"
     assert approval_id == "approval-v1-" + "c" * 64
     assert lease.closed
+
+
+def test_destination_collision_diagnostic_is_strict_and_bounded() -> None:
+    diagnostic = SubtitleAcquisitionCoordinator._failure_diagnostic(
+        ExecutorError(
+            ExecutorErrorCode.DESTINATION_COLLISION,
+            context={
+                "stage": "staging_validate",
+                "reason": "unsafe_permissions",
+                "actual_mode": 0o775,
+                "expected_policy": "owner_rwx_no_group_or_other_write",
+            },
+        )
+    )
+
+    assert diagnostic == {
+        "schema_version": 1,
+        "stage": "staging_validate",
+        "reason": "unsafe_permissions",
+        "actual_mode": 0o775,
+        "expected_policy": "owner_rwx_no_group_or_other_write",
+    }
+
+
+def test_untrusted_collision_context_is_not_persisted() -> None:
+    diagnostic = SubtitleAcquisitionCoordinator._failure_diagnostic(
+        ExecutorError(
+            ExecutorErrorCode.DESTINATION_COLLISION,
+            context={
+                "stage": "staging_validate",
+                "reason": "unsafe_permissions",
+                "path": "/private/source",
+            },
+        )
+    )
+
+    assert diagnostic is None

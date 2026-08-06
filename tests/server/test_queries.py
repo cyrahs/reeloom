@@ -93,7 +93,7 @@ def _completed_run_row(
     layout_matches_current_plan: bool,
     interaction_budget_available: bool = True,
 ) -> tuple[object, ...]:
-    row: list[object] = [None] * 49
+    row: list[object] = [None] * 50
     row[:14] = (
         "run-1",
         "completed",
@@ -201,6 +201,7 @@ def test_manual_subtitle_acquisition_exposes_only_independent_action() -> None:
         "approval_id": None,
         "transaction_id": None,
         "failure_code": None,
+        "failure_diagnostic": None,
         "successor_status": None,
     }
 
@@ -244,6 +245,13 @@ def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
     )
     row[45] = True
     row[47] = True
+    row[49] = {
+        "schema_version": 1,
+        "stage": "staging_validate",
+        "reason": "unsafe_permissions",
+        "actual_mode": 0o775,
+        "expected_policy": "owner_rwx_no_group_or_other_write",
+    }
     queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
 
     run = queries.get_run("run-1")
@@ -251,6 +259,7 @@ def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
     assert run is not None
     assert run["status"] == "needs_attention"
     assert run["available_actions"] == ["fail_run"]
+    assert run["subtitle_acquisition"]["failure_diagnostic"] == row[49]
 
 
 def test_pending_job_hides_manual_subtitle_action() -> None:

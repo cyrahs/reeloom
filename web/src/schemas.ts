@@ -71,6 +71,38 @@ export const foldersSchema = z
   })
   .strict();
 
+const subtitleFailureDiagnosticSchema = z
+  .object({
+    schema_version: z.literal(1),
+    stage: z.enum([
+      "destination_preflight",
+      "staging_prepare",
+      "staging_validate",
+      "member_write",
+      "publish",
+    ]),
+    reason: z.enum([
+      "name_exists",
+      "create_failed",
+      "entry_type_mismatch",
+      "unsafe_permissions",
+      "owner_mismatch",
+      "not_empty",
+      "unexpected_entries",
+      "casefold_collision",
+    ]),
+    actual_mode: z.number().int().min(0).max(0o777).nullable().optional(),
+    actual_uid: z.number().int().nonnegative().nullable().optional(),
+    entry_count: z.number().int().min(0).max(256).nullable().optional(),
+    expected_policy: z
+      .literal("owner_rwx_no_group_or_other_write")
+      .nullable()
+      .optional(),
+    expected_uid: z.number().int().nonnegative().nullable().optional(),
+    member_index: z.number().int().min(0).max(255).nullable().optional(),
+  })
+  .strict();
+
 export const runSchema = z
   .object({
     run_id: z.string(),
@@ -177,6 +209,9 @@ export const runSchema = z
         approval_id: z.string().nullable(),
         transaction_id: z.string().nullable(),
         failure_code: z.string().nullable(),
+        failure_diagnostic: subtitleFailureDiagnosticSchema
+          .nullable()
+          .default(null),
         successor_status: z
           .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
           .nullable()
@@ -488,6 +523,9 @@ export const subtitleAcquisitionResultSchema = z
     approval_id: z.string().nullable(),
     transaction_id: z.string().nullable(),
     failure_code: z.string().nullable(),
+    failure_diagnostic: subtitleFailureDiagnosticSchema
+      .nullable()
+      .default(null),
     successor_status: z
       .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
       .nullable()

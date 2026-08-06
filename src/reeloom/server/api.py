@@ -1624,6 +1624,7 @@ def create_api(
                 "approval_id": record.approval_id,
                 "transaction_id": record.transaction_id,
                 "failure_code": record.failure_code,
+                "failure_diagnostic": record.failure_diagnostic,
                 "successor_status": None,
             }
 
