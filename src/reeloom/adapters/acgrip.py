@@ -34,6 +34,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseSummary,
     SubtitleSearchCursorId,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
 )
 from reeloom.ports.subtitle_acquisition import (
@@ -868,6 +869,9 @@ class AcgripSubtitleSearchProvider:
         self._response_count = 0
         self._total_bytes = 0
         self._last_request_at: float | None = None
+        self._failure_stage = SubtitleSearchFailureStage.PROVIDER_SETUP
+        self._failure_alias_index: int | None = None
+        self._last_http_status: int | None = None
         self._release_ids: dict[tuple[int, int], SubtitleReleaseId] = {}
         self._archive_ids: dict[tuple[int, int, tuple[int, ...]], SubtitleArchiveSetId] = {}
         self._cursor_counter = 0
@@ -908,10 +912,23 @@ class AcgripSubtitleSearchProvider:
         try:
             async with asyncio.timeout(ACGRIP_TOOL_TIMEOUT_SECONDS):
                 items, capabilities, diagnostics = await self._collect(request)
+        except SubtitleSearchProviderError as error:
+            raise error.with_diagnostics(
+                stage=self._failure_stage,
+                query_alias_index=self._failure_alias_index,
+                http_response_count=self._response_count,
+                received_html_bytes=self._total_bytes,
+                http_status=self._last_http_status,
+            ) from None
         except TimeoutError:
-            raise _provider_error(
+            raise SubtitleSearchProviderError(
                 SubtitleSearchErrorCode.UNAVAILABLE,
                 retryable=True,
+                stage=self._failure_stage,
+                query_alias_index=self._failure_alias_index,
+                http_response_count=self._response_count,
+                received_html_bytes=self._total_bytes,
+                http_status=self._last_http_status,
             ) from None
         return self._page(
             _CachedSearch(signature, 0, items, capabilities, diagnostics)
@@ -961,11 +978,15 @@ class AcgripSubtitleSearchProvider:
         tuple[SubtitleArchiveSetCapability, ...],
         SubtitleSearchDiagnostics,
     ]:
+        self._failure_stage = SubtitleSearchFailureStage.SEARCH_LANDING
+        self._failure_alias_index = None
         landing = await self._request("GET", _SEARCH_PATH)
         formhash = self._parser.search_formhash(landing)
         thread_ids: list[int] = []
         alias_thread_counts: list[int] = []
-        for alias in request.title_aliases:
+        for alias_index, alias in enumerate(request.title_aliases):
+            self._failure_stage = SubtitleSearchFailureStage.FORUM_SEARCH
+            self._failure_alias_index = alias_index
             alias_thread_ids: set[int] = set()
             body = urlencode(
                 (
@@ -1018,6 +1039,8 @@ class AcgripSubtitleSearchProvider:
         parsed_post_count = 0
         seen_posts: set[tuple[int, int]] = set()
         for thread_id in thread_ids:
+            self._failure_stage = SubtitleSearchFailureStage.THREAD_FETCH
+            self._failure_alias_index = None
             pages: list[_ParsedThread] = []
             first = self._parser.thread(
                 await self._request("GET", f"/thread-{thread_id}-1-1.html"),
@@ -1253,6 +1276,7 @@ class AcgripSubtitleSearchProvider:
                 self._response_count += 1
                 _retain_anonymous_session_cookies(self._client)
                 status = response.status_code
+                self._last_http_status = status
                 if 300 <= status < 400:
                     locations = response.headers.get_list("location")
                     if not (

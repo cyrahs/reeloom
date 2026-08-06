@@ -24,6 +24,7 @@ from reeloom.kernel.subtitle_acquisition import (
     EmbeddedSubtitleInspection,
     SubtitleArchiveSetCapability,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureDiagnostics,
     SubtitleSearchRecord,
     SubtitleSelectionDecision,
     SubtitleSelectionStatus,
@@ -913,6 +914,10 @@ def reduce_event(
         )
 
     if isinstance(event, SubtitleSearchFailed):
+        if event.diagnostics is not None and not isinstance(
+            event.diagnostics, SubtitleSearchFailureDiagnostics
+        ):
+            raise RuntimeDomainError(RuntimeErrorCode.INVALID_EVENT)
         eligible_seasons = {
             item.season_number
             for item in state.embedded_subtitle_inspections

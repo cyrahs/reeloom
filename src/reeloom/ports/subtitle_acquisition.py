@@ -22,6 +22,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleAcquisitionPlan,
     SubtitleSearchCursorId,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
 )
 
@@ -129,12 +130,65 @@ class SubtitleSearchProviderError(RuntimeError):
         code: SubtitleSearchErrorCode,
         *,
         retryable: bool,
+        stage: SubtitleSearchFailureStage = (
+            SubtitleSearchFailureStage.PROVIDER_SETUP
+        ),
+        query_alias_index: int | None = None,
+        http_response_count: int = 0,
+        received_html_bytes: int = 0,
+        http_status: int | None = None,
     ) -> None:
-        if not isinstance(code, SubtitleSearchErrorCode):
+        if (
+            not isinstance(code, SubtitleSearchErrorCode)
+            or type(retryable) is not bool
+            or not isinstance(stage, SubtitleSearchFailureStage)
+            or (
+                query_alias_index is not None
+                and (
+                    type(query_alias_index) is not int
+                    or not 0 <= query_alias_index < 3
+                )
+            )
+            or type(http_response_count) is not int
+            or not 0 <= http_response_count <= 10_000
+            or type(received_html_bytes) is not int
+            or not 0 <= received_html_bytes <= 64 * 1024 * 1024
+            or (
+                http_status is not None
+                and (
+                    type(http_status) is not int
+                    or not 100 <= http_status <= 599
+                )
+            )
+        ):
             raise TypeError("invalid subtitle search error code")
         self.code = code
         self.retryable = retryable
+        self.stage = stage
+        self.query_alias_index = query_alias_index
+        self.http_response_count = http_response_count
+        self.received_html_bytes = received_html_bytes
+        self.http_status = http_status
         super().__init__(code.value)
+
+    def with_diagnostics(
+        self,
+        *,
+        stage: SubtitleSearchFailureStage,
+        query_alias_index: int | None,
+        http_response_count: int,
+        received_html_bytes: int,
+        http_status: int | None,
+    ) -> SubtitleSearchProviderError:
+        return SubtitleSearchProviderError(
+            self.code,
+            retryable=self.retryable,
+            stage=stage,
+            query_alias_index=query_alias_index,
+            http_response_count=http_response_count,
+            received_html_bytes=received_html_bytes,
+            http_status=http_status,
+        )
 
 
 class SubtitleArchiveErrorCode(StrEnum):

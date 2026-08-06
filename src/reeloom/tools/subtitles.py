@@ -12,6 +12,9 @@ from reeloom.kernel.subtitle_acquisition import (
     EmbeddedSubtitleInspection,
     SubtitleArchiveSetId,
     SubtitleSearchCursorId,
+    SubtitleSearchFailureCode,
+    SubtitleSearchFailureDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
     SubtitleSearchRecord,
     SubtitleSelection,
@@ -306,20 +309,21 @@ def _search_unavailable(
     call_id: str,
     season_number: int,
     code: RuntimeErrorCode,
-    retryable: bool,
+    diagnostics: SubtitleSearchFailureDiagnostics,
 ) -> str:
     runtime.store.append(
         SubtitleSearchFailed(
             call_id=call_id,
             season_number=season_number,
             reason_code="subtitle_search_unavailable",
+            diagnostics=diagnostics,
         )
     )
     return _search_reject(
         runtime,
         call_id=call_id,
         code=code,
-        retryable=retryable,
+        retryable=diagnostics.retryable,
     )
 
 
@@ -427,23 +431,39 @@ async def search_sub(
         f"{CURRENT_SUBTITLE_SEARCH_PARSER_VERSION}"
     )
     if provider is None or provider.provider_version != expected_version:
+        failure_code = (
+            SubtitleSearchFailureCode.PROVIDER_MISSING
+            if provider is None
+            else SubtitleSearchFailureCode.PROVIDER_VERSION_MISMATCH
+        )
         return _search_unavailable(
             runtime,
             call_id=call_id,
             season_number=season_number,
             code=RuntimeErrorCode.CAPABILITY_NOT_AVAILABLE,
-            retryable=False,
+            diagnostics=SubtitleSearchFailureDiagnostics(
+                failure_code,
+                SubtitleSearchFailureStage.PROVIDER_SETUP,
+                False,
+            ),
         )
-    title_aliases = compile_subtitle_search_aliases(
-        state.selected_series.title_zh_cn
-    )
+    try:
+        title_aliases = compile_subtitle_search_aliases(
+            state.selected_series.title_zh_cn
+        )
+    except DomainError:
+        title_aliases = ()
     if not title_aliases:
         return _search_unavailable(
             runtime,
             call_id=call_id,
             season_number=season_number,
             code=RuntimeErrorCode.SUBTITLE_SEARCH_FAILED,
-            retryable=False,
+            diagnostics=SubtitleSearchFailureDiagnostics(
+                SubtitleSearchFailureCode.QUERY_COMPILATION_FAILED,
+                SubtitleSearchFailureStage.QUERY_COMPILATION,
+                False,
+            ),
         )
     request = SubtitleSearchRequest(
         title_aliases=title_aliases,
@@ -464,7 +484,16 @@ async def search_sub(
             call_id=call_id,
             season_number=season_number,
             code=RuntimeErrorCode.SUBTITLE_SEARCH_FAILED,
-            retryable=error.retryable,
+            diagnostics=SubtitleSearchFailureDiagnostics(
+                SubtitleSearchFailureCode(error.code.value),
+                error.stage,
+                error.retryable,
+                title_aliases,
+                error.query_alias_index,
+                error.http_response_count,
+                error.received_html_bytes,
+                error.http_status,
+            ),
         )
     except (DomainError, ValueError):
         return _search_unavailable(
@@ -472,7 +501,12 @@ async def search_sub(
             call_id=call_id,
             season_number=season_number,
             code=RuntimeErrorCode.SUBTITLE_SEARCH_FAILED,
-            retryable=False,
+            diagnostics=SubtitleSearchFailureDiagnostics(
+                SubtitleSearchFailureCode.INVALID_PROVIDER_RESULT,
+                SubtitleSearchFailureStage.RESULT_VALIDATION,
+                False,
+                title_aliases,
+            ),
         )
     runtime.store.append(
         SubtitleSearchObserved(

@@ -9,6 +9,9 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleSelectionDecision,
     SubtitleArchiveSetId,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureCode,
+    SubtitleSearchFailureDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
     SubtitleSearchRecord,
 )
@@ -17,6 +20,7 @@ from reeloom.observability.trace import _attributes, build_trace
 from reeloom.runtime.events import (
     CandidateSnapshotCreated,
     EmbeddedSubtitlesInspected,
+    SubtitleSearchFailed,
     SubtitleSearchObserved,
     SubtitleSelectionSubmitted,
     RunStarted,
@@ -117,4 +121,35 @@ def test_subtitle_search_trace_records_query_and_filter_funnel() -> None:
         "release_count": 0,
         "season_number": 1,
         "selectable_archive_set_count": 0,
+    }
+
+
+def test_subtitle_search_failure_trace_records_only_bounded_evidence() -> None:
+    event = SubtitleSearchFailed(
+        "model-controlled-call-id",
+        1,
+        "subtitle_search_unavailable",
+        SubtitleSearchFailureDiagnostics(
+            SubtitleSearchFailureCode.PARSER_DRIFT,
+            SubtitleSearchFailureStage.THREAD_FETCH,
+            False,
+            ("作品!", "作品"),
+            1,
+            7,
+            65_536,
+            200,
+        ),
+    )
+
+    assert _attributes(event) == {
+        "error_code": "parser_drift",
+        "failed_query_alias": "作品",
+        "failure_stage": "thread_fetch",
+        "http_response_count": 7,
+        "http_status": 200,
+        "query_aliases": "作品! | 作品",
+        "reason_code": "subtitle_search_unavailable",
+        "received_html_bytes": 65_536,
+        "retryable": False,
+        "season_number": 1,
     }

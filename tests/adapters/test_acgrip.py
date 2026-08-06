@@ -19,6 +19,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseId,
     SubtitleSearchCursorId,
     SubtitleSearchEmptyStage,
+    SubtitleSearchFailureStage,
 )
 from reeloom.ports.subtitle_acquisition import (
     SubtitleArchiveError,
@@ -451,6 +452,11 @@ def test_provider_rejects_non_exact_search_redirect(location: str) -> None:
         asyncio.run(provider.aclose())
 
     assert raised.value.code is SubtitleSearchErrorCode.PARSER_DRIFT
+    assert raised.value.stage is SubtitleSearchFailureStage.FORUM_SEARCH
+    assert raised.value.query_alias_index == 0
+    assert raised.value.http_response_count == 2
+    assert raised.value.received_html_bytes == len(_FORM)
+    assert raised.value.http_status == 302
 
 
 def test_provider_cursor_is_single_use_and_bound_to_exact_request() -> None:

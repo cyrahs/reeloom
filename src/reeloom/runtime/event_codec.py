@@ -46,6 +46,9 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseSummary,
     SubtitleSearchCursorId,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureCode,
+    SubtitleSearchFailureDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
     SubtitleSearchRecord,
     SubtitleSelection,
@@ -623,6 +626,63 @@ def _subtitle_search_diagnostics(value: object) -> SubtitleSearchDiagnostics:
         _invalid()
 
 
+def _subtitle_search_failure_diagnostics_payload(
+    value: SubtitleSearchFailureDiagnostics,
+) -> dict[str, object]:
+    return {
+        "error_code": value.error_code.value,
+        "http_response_count": value.http_response_count,
+        "http_status": value.http_status,
+        "query_alias_index": value.query_alias_index,
+        "query_aliases": list(value.query_aliases),
+        "received_html_bytes": value.received_html_bytes,
+        "retryable": value.retryable,
+        "stage": value.stage.value,
+    }
+
+
+def _subtitle_search_failure_diagnostics(
+    value: object,
+) -> SubtitleSearchFailureDiagnostics:
+    payload = check_fields(
+        value,
+        frozenset(
+            {
+                "error_code",
+                "http_response_count",
+                "http_status",
+                "query_alias_index",
+                "query_aliases",
+                "received_html_bytes",
+                "retryable",
+                "stage",
+            }
+        ),
+        field="subtitle_search_failure_diagnostics",
+    )
+    raw_alias_index = payload["query_alias_index"]
+    raw_http_status = payload["http_status"]
+    try:
+        return SubtitleSearchFailureDiagnostics(
+            error_code=SubtitleSearchFailureCode(_str(payload["error_code"])),
+            stage=SubtitleSearchFailureStage(_str(payload["stage"])),
+            retryable=_bool(payload["retryable"]),
+            query_aliases=tuple(
+                _str(item) for item in _list(payload["query_aliases"])
+            ),
+            query_alias_index=(
+                None if raw_alias_index is None else _int(raw_alias_index)
+            ),
+            http_response_count=_int(payload["http_response_count"]),
+            received_html_bytes=_int(payload["received_html_bytes"]),
+            http_status=(
+                None if raw_http_status is None else _int(raw_http_status)
+            ),
+        )
+    except (DomainError, ValueError):
+        _invalid()
+
+
 def _subtitle_capability_payload(
     value: SubtitleArchiveSetCapability,
 ) -> dict[str, object]:
@@ -1039,11 +1099,18 @@ def _event_payload(event: RuntimeEvent) -> tuple[str, dict[str, object]]:
             )
         return "subtitle_search_observed", payload
     if isinstance(event, SubtitleSearchFailed):
-        return "subtitle_search_failed", {
+        payload = {
             "call_id": event.call_id,
             "reason_code": event.reason_code,
             "season_number": event.season_number,
         }
+        if event.diagnostics is not None:
+            payload["diagnostics"] = (
+                _subtitle_search_failure_diagnostics_payload(
+                    event.diagnostics
+                )
+            )
+        return "subtitle_search_failed", payload
     if isinstance(event, SubtitleSelectionSubmitted):
         return "subtitle_selection_submitted", {
             "call_id": event.call_id,
@@ -1431,15 +1498,21 @@ def _event_from_payload(
             ),
         )
     if event_type == "subtitle_search_failed":
-        p = _fields(
-            value,
-            {"call_id", "reason_code", "season_number"},
-            field=event_type,
-        )
+        raw = require_object(value, field=event_type)
+        old_fields = frozenset({"call_id", "reason_code", "season_number"})
+        new_fields = old_fields | {"diagnostics"}
+        if frozenset(raw) not in {old_fields, new_fields}:
+            _invalid()
+        p = dict(raw)
         return SubtitleSearchFailed(
             call_id=_str(p["call_id"]),
             season_number=_int(p["season_number"]),
             reason_code=_str(p["reason_code"]),
+            diagnostics=(
+                None
+                if "diagnostics" not in p
+                else _subtitle_search_failure_diagnostics(p["diagnostics"])
+            ),
         )
     if event_type == "subtitle_selection_submitted":
         p = _fields(

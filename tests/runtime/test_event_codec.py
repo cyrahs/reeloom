@@ -41,6 +41,9 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleReleaseId,
     SubtitleReleaseSummary,
     SubtitleSearchDiagnostics,
+    SubtitleSearchFailureCode,
+    SubtitleSearchFailureDiagnostics,
+    SubtitleSearchFailureStage,
     SubtitleSearchPage,
     SubtitleSearchRecord,
     SubtitleSelection,
@@ -313,6 +316,16 @@ def _event_samples() -> tuple[object, ...]:
             "call-search-failed",
             1,
             "subtitle_search_unavailable",
+            SubtitleSearchFailureDiagnostics(
+                SubtitleSearchFailureCode.PARSER_DRIFT,
+                SubtitleSearchFailureStage.FORUM_SEARCH,
+                False,
+                ("测试动画",),
+                0,
+                3,
+                12_345,
+                200,
+            ),
         ),
         SubtitleSelectionSubmitted(
             "call-select-sub",
@@ -395,6 +408,25 @@ def test_subtitle_search_event_codec_accepts_legacy_event_without_diagnostics() 
     decoded = decode_event(legacy)
 
     assert isinstance(decoded, SubtitleSearchObserved)
+    assert decoded.diagnostics is None
+
+
+def test_subtitle_search_failure_codec_accepts_legacy_event() -> None:
+    event = next(
+        item for item in _event_samples() if isinstance(item, SubtitleSearchFailed)
+    )
+    payload = json.loads(encode_event(event))
+    del payload["payload"]["diagnostics"]
+    legacy = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+    decoded = decode_event(legacy)
+
+    assert isinstance(decoded, SubtitleSearchFailed)
     assert decoded.diagnostics is None
 
 
