@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+import reeloom.executor.atomic_rename as rename_module
 import reeloom.executor.subtitle_acquisition as executor_module
 from reeloom.adapters.approval import FilesystemApprovalStore
 from reeloom.adapters.subtitle_journal import (
@@ -299,7 +300,7 @@ def test_apply_refetches_verifies_and_publishes_exact_plan(
     environment = _environment(tmp_path)
     monkeypatch.setattr(
         executor_module,
-        "_native_rename_noreplace",
+        "_rename_noreplace",
         _simulated_native_rename,
     )
 
@@ -427,32 +428,41 @@ def test_destination_collision_is_fail_closed_before_network(tmp_path: Path) -> 
     assert environment.fetcher.calls == 0
 
 
-def test_native_no_replace_unavailable_never_falls_back(
+def test_fuse_checked_rename_publishes_when_native_is_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     environment = _environment(tmp_path)
 
-    def unavailable(*args) -> None:
+    def unavailable(*args: object) -> None:
+        del args
         raise OSError(errno.ENOSYS, "unsupported")
 
     monkeypatch.setattr(
-        executor_module,
-        "_native_rename_noreplace",
+        rename_module,
+        "rename_noreplace",
         unavailable,
     )
+    monkeypatch.setattr(rename_module, "_is_fuse_fd", lambda _: True)
 
-    with pytest.raises(ExecutorError) as raised:
-        asyncio.run(
-            environment.executor.apply(
-                plan_hash=environment.plan.plan_hash,
-                approval_id=environment.approval.approval_id,
-            )
+    result = asyncio.run(
+        environment.executor.apply(
+            plan_hash=environment.plan.plan_hash,
+            approval_id=environment.approval.approval_id,
         )
+    )
 
-    assert raised.value.code is ExecutorErrorCode.ATOMIC_MOVE_UNSUPPORTED
-    assert (environment.source_folder / environment.transaction.staging_name).is_dir()
-    assert not (environment.source_folder / environment.transaction.destination_name).exists()
+    destination = (
+        environment.source_folder / environment.transaction.destination_name
+    )
+    assert result.status == "completed"
+    assert not (
+        environment.source_folder / environment.transaction.staging_name
+    ).exists()
+    assert destination.is_dir()
+    assert tuple(path.name for path in destination.iterdir()) == (
+        environment.plan.members[0].destination_name,
+    )
 
 
 def test_recovery_adopts_empty_staging_created_after_started_event(
@@ -468,7 +478,7 @@ def test_recovery_adopts_empty_staging_created_after_started_event(
     staging.chmod(0o755)
     monkeypatch.setattr(
         executor_module,
-        "_native_rename_noreplace",
+        "_rename_noreplace",
         _simulated_native_rename,
     )
 
@@ -532,7 +542,7 @@ def test_recovery_accepts_exact_unjournaled_member(
     )
     monkeypatch.setattr(
         executor_module,
-        "_native_rename_noreplace",
+        "_rename_noreplace",
         _simulated_native_rename,
     )
 
@@ -705,7 +715,7 @@ def test_recovery_reconciles_parent_fsync_failure_after_rename(
 
     monkeypatch.setattr(
         executor_module,
-        "_native_rename_noreplace",
+        "_rename_noreplace",
         _simulated_native_rename,
     )
     monkeypatch.setattr(executor_module.os, "fsync", fail_first_root_fsync)

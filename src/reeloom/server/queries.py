@@ -612,7 +612,11 @@ class PostgresQueries:
                 if (
                     acquisition_attention
                     and row[40] is not None
-                    and row[42] == "destination_collision"
+                    and row[42]
+                    in {
+                        "destination_collision",
+                        "atomic_move_unsupported",
+                    }
                 ):
                     actions.append("retry_subtitle_acquisition")
                 actions.append("fail_run")

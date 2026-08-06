@@ -41,8 +41,10 @@ folder identity、candidate snapshot、TMDB identity、provider/parser/policy
 128 MiB、压缩比上限 100。加密、嵌套归档、特殊文件、不安全路径、`.env*` 和
 名字冲突均 fail closed。
 
-真实发布必须使用独立 approval scope、journal 和 native no-replace directory
-rename。发布后旧 snapshot 终止，通过 durable outbox 幂等建立唯一 successor；
+真实发布必须使用独立 approval scope、journal 和 no-replace directory rename；
+原生能力不可用时，只允许在源与目标均被确认是 FUSE 挂载的 CloudDrive2 类环境中
+使用目标不存在预检后的 checked-rename。发布后旧 snapshot 终止，通过 durable
+outbox 幂等建立唯一 successor；
 每条 discovery lineage 最多一次自动获取。
 
 ## M13.0 边界
@@ -128,10 +130,13 @@ volume size/hash、technical manifest、member/rejected set 和 source folder id
 与 plan 完全一致。每个计划 member 由 inspector 单独输出，应用使用
 `openat(O_EXCL|O_NOFOLLOW)` 写入 plan 派生文件名并完成文件与 staging fsync。
 
-发布只调用平台原生 `renameat2(RENAME_NOREPLACE)` 或 `renamex_np(RENAME_EXCL)`；
-不支持时返回 `ATOMIC_MOVE_UNSUPPORTED`，即使文件系统存在 checked-rename 兼容路径
-也不得退化使用。write-once journal 绑定 staging inode/device，并允许在 mkdir、member
-fsync、directory rename 和 parent fsync 后的 crash window 中验证实际状态后幂等继续；
+发布优先调用平台原生 `renameat2(RENAME_NOREPLACE)` 或
+`renamex_np(RENAME_EXCL)`。只有原生调用明确返回 unsupported，且 source/destination
+parent fd 都确认属于 FUSE 时，才允许在 no-follow 目标不存在检查后使用同目录
+checked-rename；其他挂载仍返回 `ATOMIC_MOVE_UNSUPPORTED`。该兼容路径用于
+CloudDrive2 类挂载，并通过既有 source-effect mutex、绑定 staging identity 的
+write-once journal 与发布后 identity 校验约束。journal 允许在 mkdir、member fsync、
+directory rename 和 parent fsync 后的 crash window 中验证实际状态后幂等继续；
 不匹配的残留、symlink、大小写等价冲突和未知目录 identity 一律停止。M13.4b 不终止
 旧 run，也不创建 successor；这些状态转换留给 durable outbox 增量。
 

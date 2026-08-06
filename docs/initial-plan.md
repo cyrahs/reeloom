@@ -650,8 +650,10 @@ plan、state 或 trace。加密、嵌套归档、危险路径/特殊文件、资
 `SUBTITLE_ACQUIRE` approval scope、deterministic transaction 和 write-once journal；
 M13.4b 的独立 executor 在 claim 后重新获取并精确复核 archive、manifest、member 与
 source identity，以 `O_EXCL|O_NOFOLLOW` 逐 member 写入隐藏 staging，经文件和目录
-fsync 后只允许 native no-replace directory rename 发布。碰撞、symlink、hash 漂移、
-不支持原子 rename 和 crash window 均 fail closed 或由 journal 幂等恢复。M13.4c
+fsync 后优先使用 native no-replace directory rename 发布；仅当源与目标均确认位于
+FUSE 挂载且原生能力明确不受支持时，允许在目标 no-follow 不存在预检后使用
+checked-rename 兼容 CloudDrive2 类挂载。碰撞、symlink、hash 漂移、非 FUSE 的原子
+rename 不支持和 crash window 均 fail closed 或由 journal 幂等恢复。M13.4c
 新增 schema 27 durable successor outbox：发布 settlement、旧 run `superseded`、旧
 job terminal、lineage 单次获取记录与 outbox enqueue 构成一个事务。worker 通过
 watch/folder capability 触发 fresh no-follow scan，只有原 source folder identity、
@@ -672,11 +674,12 @@ snapshot/successor，后继字幕重新成为普通 `subtitle:N` 且 lineage 闸
   选择；
 - M13.3（完成）：受限下载、ZIP/7z/RAR/多卷 RAR inspector、独立 durable store 与
   acquisition plan compiler；
-- M13.4：独立审批、journal、native no-replace 发布、durable successor 和 lineage
+- M13.4：独立审批、journal、no-replace/FUSE checked-rename 发布、durable successor 和 lineage
   循环闸门。其中 M13.4a 已完成 config schema v5、显式 ACG.RIP opt-in、独立
   acquisition policy、`SUBTITLE_ACQUIRE` scope，以及 deterministic transaction/
-  write-once journal；M13.4b 已完成 re-fetch、逐 member 安全写入、native-only publish
-  与 crash recovery executor；M13.4c 已完成 durable successor outbox、fresh scan
+  write-once journal；M13.4b 已完成 re-fetch、逐 member 安全写入、native 优先且仅限
+  已确认 FUSE 的 checked-rename 兼容发布与 crash recovery executor；M13.4c 已完成
+  durable successor outbox、fresh scan
   registration、supersede 与 lineage 循环闸门；M13.4d 已完成 production composition、
   独立 API/UI/read model、blocked successor attention projection 与端到端审计。
 

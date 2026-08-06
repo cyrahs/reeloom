@@ -328,7 +328,7 @@ class SubtitleAcquisitionCoordinator:
         run_id: str,
         plan_hash: str,
     ) -> SubtitleAcquisitionRequestRecord:
-        policy = self._reopen_blocked_collision(
+        policy = self._reopen_retryable_failure(
             run_id=run_id,
             plan_hash=plan_hash,
         )
@@ -604,7 +604,7 @@ class SubtitleAcquisitionCoordinator:
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
 
-    def _reopen_blocked_collision(
+    def _reopen_retryable_failure(
         self,
         *,
         run_id: str,
@@ -623,8 +623,10 @@ class SubtitleAcquisitionCoordinator:
                         WHERE request.run_id = %s
                           AND request.plan_hash = %s
                           AND request.status = 'blocked'
-                          AND request.failure_code =
-                              'destination_collision'
+                          AND request.failure_code IN (
+                              'destination_collision',
+                              'atomic_move_unsupported'
+                          )
                           AND request.approval_id IS NOT NULL
                           AND request.policy IN ('manual', 'automatic')
                           AND run.run_id = request.run_id

@@ -69,6 +69,7 @@ class _RetryConnection:
         assert "request.status = 'blocked'" in query
         assert "request.failure_code" in query
         assert "'destination_collision'" in query
+        assert "'atomic_move_unsupported'" in query
         assert "run.status = 'running'" in query
         self.params = params
         return self
@@ -146,7 +147,7 @@ def test_untrusted_collision_context_is_not_persisted() -> None:
     assert diagnostic is None
 
 
-def test_retry_reopens_only_the_exact_blocked_collision() -> None:
+def test_retry_reopens_only_an_exact_retryable_blocked_failure() -> None:
     pool = _RetryPool(("automatic",))
     coordinator = SubtitleAcquisitionCoordinator(
         pool=cast(ConnectionPool, pool),
@@ -156,7 +157,7 @@ def test_retry_reopens_only_the_exact_blocked_collision() -> None:
         successors=cast(object, object()),  # type: ignore[arg-type]
     )
 
-    policy = coordinator._reopen_blocked_collision(
+    policy = coordinator._reopen_retryable_failure(
         run_id="run-1",
         plan_hash="sha256:" + "b" * 64,
     )
@@ -178,7 +179,7 @@ def test_retry_rejects_nonmatching_blocked_request() -> None:
     )
 
     try:
-        coordinator._reopen_blocked_collision(
+        coordinator._reopen_retryable_failure(
             run_id="run-1",
             plan_hash="sha256:" + "b" * 64,
         )

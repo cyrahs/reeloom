@@ -237,7 +237,7 @@ def test_selected_archive_becomes_one_fresh_run_without_acquisition_loop(
     )
     monkeypatch.setattr(
         executor_module,
-        "_native_rename_noreplace",
+        "_rename_noreplace",
         _native_rename_noreplace,
     )
 
