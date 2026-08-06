@@ -354,6 +354,7 @@ def test_admin_can_approve_independent_subtitle_acquisition() -> None:
         "approval_id": "approval-subtitle-1",
         "transaction_id": "subtitle-txn-v1-" + "c" * 64,
         "failure_code": None,
+        "failure_diagnostic": None,
         "successor_status": None,
     }
     assert acquisitions.calls == [("run-1", plan_hash, False)]

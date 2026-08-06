@@ -2606,6 +2606,16 @@
             ],
             "title": "Failure Code"
           },
+          "failure_diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleFailureDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "plan_hash": {
             "title": "Plan Hash",
             "type": "string"
@@ -2700,6 +2710,16 @@
             ],
             "title": "Failure Code"
           },
+          "failure_diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleFailureDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "plan_hash": {
             "title": "Plan Hash",
             "type": "string"
@@ -2762,6 +2782,123 @@
           "failure_code"
         ],
         "title": "SubtitleAcquisitionView",
+        "type": "object"
+      },
+      "SubtitleFailureDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "actual_mode": {
+            "anyOf": [
+              {
+                "maximum": 511.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Mode"
+          },
+          "actual_uid": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Uid"
+          },
+          "entry_count": {
+            "anyOf": [
+              {
+                "maximum": 256.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Count"
+          },
+          "expected_policy": {
+            "anyOf": [
+              {
+                "const": "owner_rwx_no_group_or_other_write",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Policy"
+          },
+          "expected_uid": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Uid"
+          },
+          "member_index": {
+            "anyOf": [
+              {
+                "maximum": 255.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Member Index"
+          },
+          "reason": {
+            "enum": [
+              "name_exists",
+              "create_failed",
+              "entry_type_mismatch",
+              "unsafe_permissions",
+              "owner_mismatch",
+              "not_empty",
+              "unexpected_entries",
+              "casefold_collision"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "stage": {
+            "enum": [
+              "destination_preflight",
+              "staging_prepare",
+              "staging_validate",
+              "member_write",
+              "publish"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "stage",
+          "reason"
+        ],
+        "title": "SubtitleFailureDiagnostic",
         "type": "object"
       },
       "TelegramConfigRequest": {

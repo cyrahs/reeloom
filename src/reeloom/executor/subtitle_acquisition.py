@@ -45,6 +45,24 @@ from reeloom.server.watcher import NoFollowWatcher
 _native_rename_noreplace = rename_noreplace
 
 
+def _collision(
+    *,
+    stage: str,
+    reason: str,
+    **details: object,
+) -> ExecutorError:
+    return ExecutorError(
+        ExecutorErrorCode.DESTINATION_COLLISION,
+        context={"stage": stage, "reason": reason, **details},
+    )
+
+
+def _safe_staging_mode(mode: int) -> bool:
+    """Require owner rwx and prohibit writes by group or other."""
+
+    return mode & 0o700 == 0o700 and mode & 0o022 == 0
+
+
 @dataclass(frozen=True, slots=True)
 class SubtitleAcquisitionResult:
     run_id: str
@@ -175,8 +193,9 @@ class SubtitleAcquisitionExecutor:
                 self._name_state(source_fd, transaction.destination_name)
                 != "absent"
             ):
-                raise ExecutorError(
-                    ExecutorErrorCode.DESTINATION_COLLISION
+                raise _collision(
+                    stage="destination_preflight",
+                    reason="name_exists",
                 )
             if completed or published:
                 raise ExecutorError(ExecutorErrorCode.RECOVERY_REQUIRED)
@@ -239,6 +258,11 @@ class SubtitleAcquisitionExecutor:
                 identity=identity,
             ):
                 if failure_code is not None:
+                    if failure_code is ExecutorErrorCode.DESTINATION_COLLISION:
+                        raise _collision(
+                            stage="publish",
+                            reason="name_exists",
+                        )
                     raise ExecutorError(failure_code)
                 raise ExecutorError(ExecutorErrorCode.STATE_AMBIGUOUS)
             try:
@@ -347,18 +371,25 @@ class SubtitleAcquisitionExecutor:
         created_this_attempt = False
         if identity is None and not started:
             if self._name_state(root_fd, transaction.staging_name) != "absent":
-                raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
+                raise _collision(
+                    stage="staging_prepare",
+                    reason="name_exists",
+                )
             self.journals.record(transaction, "staging_create_started")
             try:
                 os.mkdir(transaction.staging_name, 0o700, dir_fd=root_fd)
                 created_this_attempt = True
             except OSError as error:
-                raise ExecutorError(
-                    filesystem_error_code(
-                        error,
-                        default=ExecutorErrorCode.DESTINATION_COLLISION,
-                    )
-                ) from None
+                code = filesystem_error_code(
+                    error,
+                    default=ExecutorErrorCode.DESTINATION_COLLISION,
+                )
+                if code is ExecutorErrorCode.DESTINATION_COLLISION:
+                    raise _collision(
+                        stage="staging_prepare",
+                        reason="create_failed",
+                    ) from None
+                raise ExecutorError(code) from None
         elif identity is None:
             state = self._name_state(root_fd, transaction.staging_name)
             if state == "absent":
@@ -366,14 +397,21 @@ class SubtitleAcquisitionExecutor:
                     os.mkdir(transaction.staging_name, 0o700, dir_fd=root_fd)
                     created_this_attempt = True
                 except OSError as error:
-                    raise ExecutorError(
-                        filesystem_error_code(
-                            error,
-                            default=ExecutorErrorCode.DESTINATION_COLLISION,
-                        )
-                    ) from None
+                    code = filesystem_error_code(
+                        error,
+                        default=ExecutorErrorCode.DESTINATION_COLLISION,
+                    )
+                    if code is ExecutorErrorCode.DESTINATION_COLLISION:
+                        raise _collision(
+                            stage="staging_prepare",
+                            reason="create_failed",
+                        ) from None
+                    raise ExecutorError(code) from None
             elif state != "directory":
-                raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
+                raise _collision(
+                    stage="staging_prepare",
+                    reason="entry_type_mismatch",
+                )
         staging_fd = self._open_directory(root_fd, transaction.staging_name)
         metadata = os.fstat(staging_fd)
         actual_identity = (metadata.st_dev, metadata.st_ino)
@@ -381,13 +419,32 @@ class SubtitleAcquisitionExecutor:
             os.close(staging_fd)
             raise ExecutorError(ExecutorErrorCode.SOURCE_DRIFT)
         if identity is None:
-            if (
-                stat.S_IMODE(metadata.st_mode) != 0o700
-                or metadata.st_uid != os.geteuid()
-                or (not created_this_attempt and os.listdir(staging_fd))
-            ):
+            mode = stat.S_IMODE(metadata.st_mode)
+            if not _safe_staging_mode(mode):
                 os.close(staging_fd)
-                raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
+                raise _collision(
+                    stage="staging_validate",
+                    reason="unsafe_permissions",
+                    actual_mode=mode,
+                    expected_policy="owner_rwx_no_group_or_other_write",
+                )
+            if metadata.st_uid != os.geteuid():
+                os.close(staging_fd)
+                raise _collision(
+                    stage="staging_validate",
+                    reason="owner_mismatch",
+                    actual_uid=metadata.st_uid,
+                    expected_uid=os.geteuid(),
+                )
+            if not created_this_attempt:
+                entries = os.listdir(staging_fd)
+                if entries:
+                    os.close(staging_fd)
+                    raise _collision(
+                        stage="staging_validate",
+                        reason="not_empty",
+                        entry_count=len(entries),
+                    )
             self.journals.record_staging(
                 transaction,
                 device=metadata.st_dev,
@@ -444,7 +501,11 @@ class SubtitleAcquisitionExecutor:
                 remaining = remaining[written:]
             os.fsync(descriptor)
         except FileExistsError:
-            raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION) from None
+            raise _collision(
+                stage="member_write",
+                reason="name_exists",
+                member_index=index,
+            ) from None
         except OSError as error:
             raise ExecutorError(
                 filesystem_error_code(
@@ -488,9 +549,17 @@ class SubtitleAcquisitionExecutor:
             or filesystem_name_key(name) not in expected_keys
             for name in names
         ):
-            raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
+            raise _collision(
+                stage="staging_validate",
+                reason="unexpected_entries",
+                entry_count=len(names),
+            )
         if len({filesystem_name_key(name) for name in names}) != len(names):
-            raise ExecutorError(ExecutorErrorCode.DESTINATION_COLLISION)
+            raise _collision(
+                stage="staging_validate",
+                reason="casefold_collision",
+                entry_count=len(names),
+            )
 
     @staticmethod
     def _file_matches(

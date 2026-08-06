@@ -165,6 +165,7 @@ test("executes only the independently authorized subtitle action", async () => {
             ? `subtitle-txn-v1-${"c".repeat(64)}`
             : null,
           failure_code: null,
+          failure_diagnostic: null,
           successor_status: published ? "queued" : null,
         },
       });
@@ -197,6 +198,7 @@ test("executes only the independently authorized subtitle action", async () => {
         approval_id: "approval-subtitle-1",
         transaction_id: `subtitle-txn-v1-${"c".repeat(64)}`,
         failure_code: null,
+        failure_diagnostic: null,
         successor_status: "queued",
       });
     }
@@ -216,6 +218,62 @@ test("executes only the independently authorized subtitle action", async () => {
   expect(screen.queryByRole("button", {
     name: "审批并获取字幕",
   })).toBeNull();
+});
+
+test("shows bounded subtitle collision diagnostics", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const path = String(input);
+    if (path === "/api/v1/session") {
+      return jsonResponse({ api_version: "1.0.0", role: "admin" });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}`) {
+      return jsonResponse({
+        ...runResponse(),
+        status: "needs_attention",
+        phase: "build_subtitle_acquisition_plan",
+        plan_hash: null,
+        available_actions: ["fail_run"],
+        subtitle_acquisition: {
+          plan_hash: `sha256:${"b".repeat(64)}`,
+          policy: "automatic",
+          status: "blocked",
+          approval_id: "approval-subtitle-1",
+          transaction_id: null,
+          failure_code: "destination_collision",
+          failure_diagnostic: {
+            schema_version: 1,
+            stage: "staging_validate",
+            reason: "unsafe_permissions",
+            actual_mode: 0o775,
+            expected_policy: "owner_rwx_no_group_or_other_write",
+          },
+          successor_status: null,
+        },
+      });
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+
+  renderRunPage();
+
+  expect(
+    await screen.findByText(
+      "临时目录校验：目录权限允许非 owner 写入（实际权限 0775）",
+    ),
+  ).toBeVisible();
 });
 
 test("offers event-bound controls for a planless needs-attention run", async () => {

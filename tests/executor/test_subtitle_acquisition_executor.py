@@ -419,6 +419,10 @@ def test_destination_collision_is_fail_closed_before_network(tmp_path: Path) -> 
         )
 
     assert raised.value.code is ExecutorErrorCode.DESTINATION_COLLISION
+    assert raised.value.context == {
+        "stage": "destination_preflight",
+        "reason": "name_exists",
+    }
     assert marker.read_bytes() == b"keep"
     assert environment.fetcher.calls == 0
 
@@ -461,6 +465,7 @@ def test_recovery_adopts_empty_staging_created_after_started_event(
     environment.journals.record(transaction, "staging_create_started")
     staging = environment.source_folder / transaction.staging_name
     staging.mkdir(mode=0o700)
+    staging.chmod(0o755)
     monkeypatch.setattr(
         executor_module,
         "_native_rename_noreplace",
@@ -476,6 +481,34 @@ def test_recovery_adopts_empty_staging_created_after_started_event(
 
     assert result.status == "completed"
     assert environment.journals.staging_identity(transaction) is not None
+
+
+def test_recovery_rejects_group_writable_unjournaled_staging(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    transaction = environment.transaction
+    _claim_for_recovery(environment)
+    environment.journals.record(transaction, "staging_create_started")
+    staging = environment.source_folder / transaction.staging_name
+    staging.mkdir(mode=0o700)
+    staging.chmod(0o775)
+
+    with pytest.raises(ExecutorError) as raised:
+        asyncio.run(
+            environment.executor.recover(
+                plan_hash=environment.plan.plan_hash,
+                approval_id=environment.approval.approval_id,
+            )
+        )
+
+    assert raised.value.code is ExecutorErrorCode.DESTINATION_COLLISION
+    assert raised.value.context == {
+        "stage": "staging_validate",
+        "reason": "unsafe_permissions",
+        "actual_mode": 0o775,
+        "expected_policy": "owner_rwx_no_group_or_other_write",
+    }
 
 
 def test_recovery_accepts_exact_unjournaled_member(

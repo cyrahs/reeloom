@@ -676,6 +676,13 @@ export function RunPage({ runId }: { runId: string }) {
             <div className="notice danger" role="alert">
               {errorMessage(run.data.subtitle_acquisition.failure_code)}
               <code>{run.data.subtitle_acquisition.failure_code}</code>
+              {run.data.subtitle_acquisition.failure_diagnostic ? (
+                <p>
+                  {subtitleFailureDiagnostic(
+                    run.data.subtitle_acquisition.failure_diagnostic,
+                  )}
+                </p>
+              ) : null}
             </div>
           ) : null}
           {run.data.subtitle_acquisition.successor_status === "blocked" ? (
@@ -1059,6 +1066,52 @@ export function RunPage({ runId }: { runId: string }) {
       ) : null}
     </main>
   );
+}
+
+function subtitleFailureDiagnostic(diagnostic: {
+  stage: string;
+  reason: string;
+  actual_mode?: number | null;
+  actual_uid?: number | null;
+  expected_uid?: number | null;
+  entry_count?: number | null;
+  member_index?: number | null;
+}) {
+  const stage = {
+    destination_preflight: "最终发布目录预检",
+    staging_prepare: "临时目录创建",
+    staging_validate: "临时目录校验",
+    member_write: "字幕文件写入",
+    publish: "原子发布",
+  }[diagnostic.stage] ?? diagnostic.stage;
+  const reason = {
+    name_exists: "目标名称已存在",
+    create_failed: "目录创建发生冲突",
+    entry_type_mismatch: "同名条目类型不正确",
+    unsafe_permissions: "目录权限允许非 owner 写入",
+    owner_mismatch: "目录 owner 与服务进程不一致",
+    not_empty: "待接管的临时目录不是空目录",
+    unexpected_entries: "临时目录包含计划外条目",
+    casefold_collision: "存在大小写或 Unicode 等价重名",
+  }[diagnostic.reason] ?? diagnostic.reason;
+  const details = [
+    diagnostic.actual_mode == null
+      ? null
+      : `实际权限 0${diagnostic.actual_mode.toString(8)}`,
+    diagnostic.actual_uid == null
+      ? null
+      : `实际 UID ${diagnostic.actual_uid}`,
+    diagnostic.expected_uid == null
+      ? null
+      : `期望 UID ${diagnostic.expected_uid}`,
+    diagnostic.entry_count == null
+      ? null
+      : `条目数 ${diagnostic.entry_count}`,
+    diagnostic.member_index == null
+      ? null
+      : `member #${diagnostic.member_index + 1}`,
+  ].filter((value): value is string => value !== null);
+  return `${stage}：${reason}${details.length ? `（${details.join("，")}）` : ""}`;
 }
 
 export function canApproveCurrentPlan(

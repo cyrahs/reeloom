@@ -41,6 +41,39 @@ from reeloom.server.subtitle_successor_repository import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_FAILURE_STAGES = frozenset(
+    {
+        "destination_preflight",
+        "staging_prepare",
+        "staging_validate",
+        "member_write",
+        "publish",
+    }
+)
+_FAILURE_REASONS = frozenset(
+    {
+        "name_exists",
+        "create_failed",
+        "entry_type_mismatch",
+        "unsafe_permissions",
+        "owner_mismatch",
+        "not_empty",
+        "unexpected_entries",
+        "casefold_collision",
+    }
+)
+_FAILURE_DETAIL_FIELDS = frozenset(
+    {
+        "actual_mode",
+        "actual_uid",
+        "entry_count",
+        "expected_policy",
+        "expected_uid",
+        "member_index",
+        "reason",
+        "stage",
+    }
+)
 
 
 def _now() -> datetime:
@@ -67,6 +100,7 @@ class SubtitleAcquisitionRequestRecord:
     approval_id: str | None = None
     transaction_id: str | None = None
     failure_code: str | None = None
+    failure_diagnostic: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +208,8 @@ class SubtitleAcquisitionCoordinator:
                     existing = connection.execute(
                         """
                         SELECT plan_hash, policy, status, approval_id,
-                               transaction_id, failure_code
+                               transaction_id, failure_code,
+                               failure_diagnostic
                         FROM subtitle_acquisition_requests
                         WHERE run_id = %s
                         """,
@@ -267,6 +302,9 @@ class SubtitleAcquisitionCoordinator:
                             run_id=run_id,
                             plan_hash=plan_hash,
                             failure_code=self._failure_code(error),
+                            failure_diagnostic=(
+                                self._failure_diagnostic(error)
+                            ),
                         )
                     raise
                 plan = SubtitleAcquisitionPlan.from_canonical_bytes(
@@ -351,7 +389,8 @@ class SubtitleAcquisitionCoordinator:
                 row = connection.execute(
                     """
                     SELECT plan_hash, policy, status, approval_id,
-                           transaction_id, failure_code
+                           transaction_id, failure_code,
+                           failure_diagnostic
                     FROM subtitle_acquisition_requests
                     WHERE run_id = %s AND plan_hash = %s
                     """,
@@ -555,6 +594,7 @@ class SubtitleAcquisitionCoordinator:
         run_id: str,
         plan_hash: str,
         failure_code: str,
+        failure_diagnostic: dict[str, object] | None,
     ) -> None:
         try:
             with self._pool.connection() as connection:
@@ -563,12 +603,22 @@ class SubtitleAcquisitionCoordinator:
                         """
                         UPDATE subtitle_acquisition_requests
                         SET status = 'blocked', failure_code = %s,
+                            failure_diagnostic = %s::jsonb,
                             transaction_id = NULL,
                             updated_at = clock_timestamp()
                         WHERE run_id = %s AND plan_hash = %s
                           AND status IN ('planned', 'approved')
                         """,
-                        (failure_code, run_id, plan_hash),
+                        (
+                            failure_code,
+                            (
+                                None
+                                if failure_diagnostic is None
+                                else json.dumps(failure_diagnostic)
+                            ),
+                            run_id,
+                            plan_hash,
+                        ),
                     )
         except Exception:
             raise ServerError(
@@ -644,6 +694,9 @@ class SubtitleAcquisitionCoordinator:
             approval_id=None if values[3] is None else str(values[3]),
             transaction_id=None if values[4] is None else str(values[4]),
             failure_code=None if values[5] is None else str(values[5]),
+            failure_diagnostic=(
+                None if values[6] is None else dict(values[6])
+            ),
         )
 
     @staticmethod
@@ -677,3 +730,41 @@ class SubtitleAcquisitionCoordinator:
         if isinstance(error, (ExecutorError, ApprovalError)):
             return error.code.value
         return "subtitle_acquisition_failed"
+
+    @staticmethod
+    def _failure_diagnostic(
+        error: Exception,
+    ) -> dict[str, object] | None:
+        if (
+            not isinstance(error, ExecutorError)
+            or error.code is not ExecutorErrorCode.DESTINATION_COLLISION
+        ):
+            return None
+        context = dict(error.context)
+        if (
+            not context
+            or not set(context) <= _FAILURE_DETAIL_FIELDS
+            or context.get("stage") not in _FAILURE_STAGES
+            or context.get("reason") not in _FAILURE_REASONS
+        ):
+            return None
+        numeric_fields = {
+            "actual_mode": (0, 0o777),
+            "actual_uid": (0, 2**31 - 1),
+            "entry_count": (0, 256),
+            "expected_uid": (0, 2**31 - 1),
+            "member_index": (0, 255),
+        }
+        for field, (minimum, maximum) in numeric_fields.items():
+            value = context.get(field)
+            if value is not None and (
+                type(value) is not int
+                or not minimum <= value <= maximum
+            ):
+                return None
+        if context.get("expected_policy") not in {
+            None,
+            "owner_rwx_no_group_or_other_write",
+        }:
+            return None
+        return {"schema_version": 1, **context}

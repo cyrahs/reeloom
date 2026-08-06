@@ -477,7 +477,8 @@ class PostgresQueries:
                            d.folder_generation_id IS NOT NULL,
                            COALESCE(observation.retry_count, 3),
                            COALESCE(observation.status = 'active', false),
-                           job.status
+                           job.status,
+                           acquisition.failure_diagnostic
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -749,6 +750,9 @@ class PostgresQueries:
                     ),
                     "failure_code": (
                         None if row[42] is None else str(row[42])
+                    ),
+                    "failure_diagnostic": (
+                        row[49] if isinstance(row[49], dict) else None
                     ),
                     "successor_status": (
                         None if row[43] is None else str(row[43])

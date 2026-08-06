@@ -22,12 +22,13 @@ def test_foundation_migration_is_versioned_and_immutable() -> None:
     assert all(len(item.checksum) == 64 for item in migrations)
     assert "service_boots" in migrations[0].sql
     assert "schema_migrations" in migrations[0].sql
-    assert "subtitle_successor_outbox" in migrations[-3].sql
-    assert "subtitle_acquisition_lineages" in migrations[-3].sql
-    assert "superseded" in migrations[-3].sql
-    assert "subtitle_acquisition_requests" in migrations[-2].sql
-    assert "subtitle_acquire" in migrations[-2].sql
-    assert "expected_event_sequence" in migrations[-1].sql
+    assert "subtitle_successor_outbox" in migrations[-4].sql
+    assert "subtitle_acquisition_lineages" in migrations[-4].sql
+    assert "superseded" in migrations[-4].sql
+    assert "subtitle_acquisition_requests" in migrations[-3].sql
+    assert "subtitle_acquire" in migrations[-3].sql
+    assert "expected_event_sequence" in migrations[-2].sql
+    assert "failure_diagnostic" in migrations[-1].sql
 
 
 def test_checksum_drift_fails_closed() -> None:
