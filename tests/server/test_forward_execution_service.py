@@ -34,6 +34,8 @@ from reeloom.server.forward_execution_service import (
 from reeloom.server.forward_operation_repository import (
     ForwardOperationError,
     ForwardOperationErrorCode,
+    ForwardOperationView,
+    execution_operation_id,
 )
 
 _NOW = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
@@ -115,6 +117,7 @@ class _Operations:
     def __init__(self) -> None:
         self.operation: ExecutionOperation | None = None
         self.settled = 0
+        self.rescans = 0
 
     def get(self, operation_id: str) -> ExecutionOperation:
         if self.operation is None:
@@ -163,6 +166,13 @@ class _Operations:
         self.operation = result.operation
         self.settled += 1
         return result.operation
+
+    def get_view(self, operation_id: str) -> ForwardOperationView:
+        return ForwardOperationView(operation=self.get(operation_id))
+
+    def requeue_rescan(self, **_: object) -> None:
+        assert self.operation is not None
+        self.rescans += 1
 
 
 class _Executor:
@@ -253,3 +263,54 @@ def test_plan_only_never_authorizes_forward_operation() -> None:
 
     assert approvals.issued == 0
     assert operations.operation is None
+
+
+def test_rescan_reuses_terminal_operation_without_new_approval() -> None:
+    coordinator, approvals, operations, plan = _coordinator(
+        ApplyPolicy.MANUAL
+    )
+    operations.operation = ExecutionOperation.restore(
+        schema_version="2",
+        operation_id=execution_operation_id(
+            run_id=plan.run_id,
+            plan_hash=plan.plan_hash,
+        ),
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+        status="stale",
+        attempt_count=1,
+        outcomes=("stale",),
+    )
+
+    view = coordinator.request_rescan(
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+    )
+
+    assert view.operation is operations.operation
+    assert operations.rescans == 1
+    assert approvals.issued == 0
+
+
+def test_rescan_rejects_nonterminal_operation() -> None:
+    coordinator, _approvals, operations, plan = _coordinator(
+        ApplyPolicy.MANUAL
+    )
+    operations.operation = ExecutionOperation.authorized(
+        operation_id=execution_operation_id(
+            run_id=plan.run_id,
+            plan_hash=plan.plan_hash,
+        ),
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+    )
+
+    with pytest.raises(
+        ForwardExecutionServiceError, match="rescan_not_allowed"
+    ):
+        coordinator.request_rescan(
+            run_id=plan.run_id,
+            plan_hash=plan.plan_hash,
+        )
+
+    assert operations.rescans == 0

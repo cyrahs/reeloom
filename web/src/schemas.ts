@@ -217,6 +217,7 @@ export const runSchema = z
         "revision",
         "approve_apply",
         "execute",
+        "rescan",
         "reapply",
         "recover",
         "settle_folder",

@@ -31,13 +31,13 @@ class _UnavailableConfigs:
     (
         (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, False, True),
         (ApplyPolicy.PLAN_ONLY, ServerWorkType.TV, False, True),
-        (ApplyPolicy.PLAN_ONLY, ServerWorkType.MOVIE, False, False),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.MOVIE, False, True),
         (ApplyPolicy.MANUAL, ServerWorkType.ANIME, False, True),
         (ApplyPolicy.AUTOMATIC, ServerWorkType.ANIME, False, True),
         (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, True, True),
     ),
 )
-def test_semantic_watch_enabled_for_all_episode_policies(
+def test_semantic_watch_enabled_for_all_work_types_and_policies(
     policy: ApplyPolicy,
     work_type: ServerWorkType,
     acgrip: bool,

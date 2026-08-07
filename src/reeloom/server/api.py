@@ -260,6 +260,7 @@ class ApiDependencies:
     attention_fail: (
         Callable[[str, int], dict[str, object]] | None
     ) = None
+    legacy_effects_enabled: bool = True
     sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
     sse_poll_seconds: float = _SSE_POLL_SECONDS
     sse_heartbeat_seconds: float = 15.0
@@ -1594,6 +1595,37 @@ def create_api(
         return _forward_execution_payload(view)
 
     @app.post(
+        "/api/v1/runs/{run_id}/rescan",
+        response_model=ForwardExecuteResponse,
+    )
+    async def rescan_forward_plan(
+        run_id: str,
+        body: ForwardExecuteRequest,
+        plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        del body
+        coordinator = dependencies.forward_execution
+        if coordinator is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+        try:
+            view = await _shield_thread(
+                lambda: coordinator.request_rescan(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+        except ForwardExecutionServiceError as error:
+            raise HTTPException(
+                409, detail={"code": str(error)}
+            ) from None
+        except ForwardOperationError as error:
+            raise HTTPException(
+                409, detail={"code": error.code.value}
+            ) from None
+        return _forward_execution_payload(view)
+
+    @app.post(
         "/api/v1/runs/{run_id}/approve-and-apply",
         response_model=ApplyResponse,
     )
@@ -1604,6 +1636,10 @@ def create_api(
         plan_hash: str = Depends(_plan_hash),
         _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
+        if not dependencies.legacy_effects_enabled:
+            raise HTTPException(
+                410, detail={"code": "legacy_effect_superseded"}
+            )
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
 
@@ -1900,6 +1936,10 @@ def create_api(
         key: str = Depends(_idempotency_key),
         _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
+        if not dependencies.legacy_effects_enabled:
+            raise HTTPException(
+                410, detail={"code": "legacy_effect_superseded"}
+            )
         if dependencies.folder_dispositions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         if body.automatic:
@@ -1951,6 +1991,10 @@ def create_api(
         key: str = Depends(_idempotency_key),
         _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
+        if not dependencies.legacy_effects_enabled:
+            raise HTTPException(
+                410, detail={"code": "legacy_effect_superseded"}
+            )
         if dependencies.folder_dispositions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
 
@@ -2002,6 +2046,10 @@ def create_api(
         plan_hash: str = Depends(_plan_hash),
         _: None = Depends(require_visible_run),
     ) -> dict[str, object]:
+        if not dependencies.legacy_effects_enabled:
+            raise HTTPException(
+                410, detail={"code": "legacy_effect_superseded"}
+            )
         if dependencies.apply is None:
             raise HTTPException(503, detail={"code": "unavailable"})
         approval_id = _text(body.approval_id)

@@ -7,6 +7,7 @@ from reeloom.kernel.candidates import CandidateId
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.naming import (
     MovieIdentity,
     SeriesIdentity,
@@ -59,7 +60,7 @@ class PlanCompiler(Protocol):
             ...,
         ],
         created_at: datetime,
-    ) -> MovieRenamePlan: ...
+    ) -> MovieRenamePlan | MovieRenamePlanV2: ...
 
 
 class PlanStore(Protocol):

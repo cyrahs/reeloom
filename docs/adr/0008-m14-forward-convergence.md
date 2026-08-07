@@ -194,6 +194,27 @@ approval、filesystem journal 或 recovery。它使用确定性的 run-owned 目
 返回错误后按当前 source/destination 路径重新判断。collision、权限、fsync 与收尾失败只
 形成 warning，不改变已终结的 media operation。Agent 终态失败使用相同的 fail queue。
 
+## M14.4 边界
+
+Movie 与 episode 共用 semantic snapshot、plan-only compiler、operation ledger 和 forward
+executor，但保留独立的 canonical `MovieRenamePlan v2` family；不把 episode mapping
+或命名规则渗入电影计划。所有新 watch generation 均为 v2，生产 API 与 background
+不再允许 v1 media/folder effect。
+
+一次性迁移把所有仍活跃的 v1 generation，以及存在未结算 media claim、folder claim
+或已批准/阻塞 subtitle transaction 的 run 记入 immutable supersession history。迁移只
+终结 control-plane job/run、释放 `run_operations` 协调锁，并把来源 observation 放回
+普通跨 poll 稳定扫描；不会执行、回滚、删除或改名任何文件，也不会伪造 settlement。
+completed/rolled-back v1 历史保持原终态。迁移后的 superseded run 和已记录 handled
+inventory 的 v2 terminal run 不再被旧 claim/observation 阻止删除。
+
+终态 `partial/stale/collision/unsafe/unavailable` 的显式“重新扫描”与 read model 使用同一
+`forward_available_actions` 函数。命令只重投既有 operation 的 durable rescan outbox，
+不复活 operation、不创建审批，也不接受 approval ID。live filesystem conformance smoke
+必须显式指定空的绝对 throwaway 目录；普通 pytest/CI 仍不访问真实挂载。v1 executor
+实现仅为部署稳定观察和历史读取暂留，生产开关固定关闭；观察窗口结束后再物理删除，
+避免把代码删除与不可逆 schema/data 迁移放进同一次上线。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

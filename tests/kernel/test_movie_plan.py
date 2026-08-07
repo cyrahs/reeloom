@@ -10,11 +10,19 @@ from reeloom.kernel.errors import DomainError
 from reeloom.kernel.movie import (
     MovieMappingDraft,
     compile_movie_plan_draft,
+    compile_movie_plan_draft_v2,
 )
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.naming import MovieIdentity, SubtitleVariant
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticRootBinding,
+    SemanticSourceIdentity,
+)
+from reeloom.kernel.candidates import CandidateId
 
 
 def _plan() -> MovieRenamePlan:
@@ -97,3 +105,58 @@ def test_movie_plan_rejects_semantic_tamper_with_new_hash() -> None:
             content,
             plan_hash=plan_hash,
         )
+
+
+def _v2_plan() -> MovieRenamePlanV2:
+    snapshot = SemanticCandidateSnapshot.create(
+        (
+            SemanticSourceIdentity(
+                CandidateId(CandidateKind.VIDEO, 1),
+                CandidateKind.VIDEO,
+                PurePosixPath("Incoming/movie.mkv"),
+                10,
+            ),
+            SemanticSourceIdentity(
+                CandidateId(CandidateKind.SUBTITLE, 1),
+                CandidateKind.SUBTITLE,
+                PurePosixPath("Incoming/movie.ass"),
+                5,
+                "a" * 64,
+            ),
+        )
+    )
+    mapping = MovieMappingDraft.from_dict(
+        {"video_id": "video:1", "subtitle_ids": ["subtitle:1"]},
+        candidates=snapshot.candidates,
+    )
+    variants = ((mapping.subtitle_ids[0], SubtitleVariant.CHS),)
+    draft = compile_movie_plan_draft_v2(
+        movie=MovieIdentity("电影", 2024, 99),
+        mapping=mapping,
+        candidates=snapshot,
+        subtitle_variants=variants,
+    )
+    return MovieRenamePlanV2.create(
+        run_id="run-movie-v2",
+        config_revision=2,
+        watch_id="watch-movie",
+        created_at=datetime(2026, 8, 7, tzinfo=UTC),
+        source_root=SemanticRootBinding(PurePosixPath("/watch")),
+        output_root=SemanticRootBinding(PurePosixPath("/archive")),
+        candidate_snapshot=snapshot,
+        subtitle_variants=variants,
+        draft=draft,
+    )
+
+
+def test_movie_v2_plan_round_trips_without_stat_identity() -> None:
+    plan = _v2_plan()
+
+    restored = MovieRenamePlanV2.from_canonical_bytes(
+        plan.canonical_bytes(), plan_hash=plan.plan_hash
+    )
+
+    assert restored == plan
+    assert restored.work_type.value == "movie"
+    assert b'"device"' not in restored.canonical_bytes()
+    assert b'"mtime"' not in restored.canonical_bytes()

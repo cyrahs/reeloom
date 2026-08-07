@@ -14,6 +14,7 @@ const planHash = `sha256:${"a".repeat(64)}`;
 test("executes a v2 plan without browser policy or recovery controls", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
   let executed = false;
+  let rescanned = false;
   const execution = {
     operation_id: "operation:m14",
     plan_hash: planHash,
@@ -51,7 +52,7 @@ test("executes a v2 plan without browser policy or recovery controls", async () 
     if (path === `/api/v1/runs/${encodedRunId}`) {
       return jsonResponse({
         ...runResponse(),
-        available_actions: executed ? [] : ["execute"],
+        available_actions: executed ? ["rescan"] : ["execute"],
         recovery_approval_id: null,
         execution: executed ? execution : null,
       });
@@ -97,6 +98,15 @@ test("executes a v2 plan without browser policy or recovery controls", async () 
       executed = true;
       return jsonResponse({ ...execution, run_id: runId });
     }
+    if (
+      path === `/api/v1/runs/${encodedRunId}/rescan` &&
+      init?.method === "POST"
+    ) {
+      expect(init.headers).toMatchObject({ "If-Match": planHash });
+      expect(JSON.parse(String(init.body))).toEqual({});
+      rescanned = true;
+      return jsonResponse({ ...execution, run_id: runId });
+    }
     throw new Error(`unexpected request: ${path}`);
   });
 
@@ -117,6 +127,13 @@ test("executes a v2 plan without browser policy or recovery controls", async () 
   ).toBeVisible();
   expect(screen.queryByText("执行定向恢复")).toBeNull();
   expect(screen.getByText("directory_fsync_unsupported")).toBeVisible();
+  await user.click(
+    screen.getByRole("button", { name: "重新扫描当前目录" }),
+  );
+  expect(
+    await screen.findByText("已提交当前来源目录的重新扫描请求。"),
+  ).toBeVisible();
+  expect(rescanned).toBe(true);
 });
 
 test("hides empty history, then shows the durable reply before plan review", async () => {

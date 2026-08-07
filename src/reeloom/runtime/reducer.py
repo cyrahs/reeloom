@@ -16,6 +16,7 @@ from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.forward_execution import RenamePlanV2
@@ -1250,7 +1251,7 @@ def reduce_event(
 
     if isinstance(event, PlanBuilt):
         plan = event.plan
-        movie_plan = isinstance(plan, MovieRenamePlan)
+        movie_plan = isinstance(plan, (MovieRenamePlan, MovieRenamePlanV2))
         plan_matches_domain = (
             (
                 movie_plan
@@ -1271,7 +1272,8 @@ def reduce_event(
             or state.plan_hash is not None
             or state.pending_tool_calls
             or not isinstance(
-                plan, (RenamePlan, MovieRenamePlan, RenamePlanV2)
+                plan,
+                (RenamePlan, MovieRenamePlan, RenamePlanV2, MovieRenamePlanV2),
             )
             or not plan.verify_hash()
             or plan.run_id != state.run_id

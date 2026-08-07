@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ from reeloom.server.errors import ServerError, ServerErrorCode
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _PLAN_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_LOG = logging.getLogger(__name__)
 
 
 class ForwardOperationErrorCode(StrEnum):
@@ -290,7 +292,7 @@ class PostgresForwardOperationRepository:
                                plan_hash, status, attempt_count, outcomes
                         FROM execution_operations_v2
                         WHERE attempt_count < 100
-                          AND (%s IS NULL OR operation_id = %s)
+                          AND (%s::text IS NULL OR operation_id = %s)
                           AND (
                               status = 'authorized'
                               OR (
@@ -339,6 +341,7 @@ class PostgresForwardOperationRepository:
         except (ForwardOperationError, ServerError):
             raise
         except Exception:
+            _LOG.exception("forward_operation_claim_failed")
             raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
     def settle(
@@ -724,6 +727,48 @@ class PostgresForwardOperationRepository:
                         attempt_count=attempt,
                         lease_expires_at=expires,
                     )
+        except ForwardOperationError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+
+    def requeue_rescan(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+        now: datetime,
+    ) -> None:
+        """Re-read current state; never resurrect the terminal operation."""
+
+        _validate_time(now)
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        UPDATE execution_rescan_outbox_v2 AS request
+                        SET state = 'queued', attempt_count = 0,
+                            available_at = %s, lease_owner = NULL,
+                            lease_expires_at = NULL, dispatched_at = NULL,
+                            successor_run_id = NULL, last_error = NULL,
+                            updated_at = %s
+                        FROM execution_operations_v2 AS operation
+                        WHERE request.operation_id = operation.operation_id
+                          AND operation.run_id = %s
+                          AND operation.plan_hash = %s
+                          AND operation.status IN (
+                              'partial', 'stale', 'collision', 'unsafe',
+                              'unavailable'
+                          )
+                        RETURNING request.operation_id
+                        """,
+                        (now, now, run_id, plan_hash),
+                    ).fetchone()
+                    if row is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.OPERATION_CONFLICT
+                        )
         except ForwardOperationError:
             raise
         except Exception:

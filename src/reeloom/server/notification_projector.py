@@ -13,6 +13,7 @@ from reeloom.kernel.candidates import CandidateKind
 from reeloom.kernel.folder_disposition import FolderDispositionAction
 from reeloom.kernel.initial_plan import InitialPlan, parse_initial_plan
 from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.kernel.forward_execution import RenamePlanV2
 from reeloom.ports.plans import PlanStore
@@ -51,7 +52,7 @@ def _notification_id(dedupe_key: str) -> str:
 
 
 def _scope(plan: InitialPlan) -> str:
-    if isinstance(plan, MovieRenamePlan):
+    if isinstance(plan, (MovieRenamePlan, MovieRenamePlanV2)):
         return "电影"
     spans = {
         (move.span.season, move.span.episode_start, move.span.episode_end)

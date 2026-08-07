@@ -13,8 +13,10 @@ from reeloom.adapters.filesystem import (
 )
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.forward_execution import RenamePlanV2
+from reeloom.kernel.movie import MovieMappingDraft
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
-from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
+from reeloom.kernel.naming import MovieIdentity, SeriesIdentity, SubtitleVariant
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.watcher import NoFollowWatcher
@@ -131,6 +133,41 @@ def test_v2_plan_compiler_uses_semantic_identity_and_path_only_roots(
     assert plan.candidate_snapshot_id == semantic.snapshot_id
     assert plan.source_root.payload() == {"path": source.as_posix()}
     assert plan.output_root.payload() == {"path": output.as_posix()}
+    assert tuple(output.iterdir()) == ()
+
+
+def test_v2_plan_compiler_supports_movie_without_stat_identity(
+    tmp_path: Path,
+) -> None:
+    source, output, _mapping, legacy = _setup(tmp_path)
+    semantic = NoFollowWatcher().scan(
+        AuthorizedRoot.create(source)
+    ).semantic_snapshot
+    compiler = FilesystemPlanCompilerV2(
+        scan=legacy.scan,
+        semantic_snapshot=semantic,
+        output_root=AuthorizedRoot.create(output),
+        config_revision=10,
+        watch_id="watch-movie",
+    )
+    mapping = MovieMappingDraft.from_dict(
+        {"video_id": "video:1", "subtitle_ids": ["subtitle:1"]},
+        candidates=semantic.candidates,
+    )
+
+    plan = compiler.compile_movie(
+        run_id="run-movie-v2",
+        movie=MovieIdentity("正确电影", 2025, 300),
+        mapping=mapping,
+        subtitle_variants=(
+            (semantic.sources[1].candidate_id, SubtitleVariant.CHS),
+        ),
+        created_at=_CREATED_AT,
+    )
+
+    assert isinstance(plan, MovieRenamePlanV2)
+    assert plan.source_root.payload() == {"path": source.as_posix()}
+    assert b'"inode"' not in plan.canonical_bytes()
     assert tuple(output.iterdir()) == ()
 
 

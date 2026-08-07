@@ -785,6 +785,7 @@ def build_application(
                 scheduler=scheduler,
             ),
             folder_housekeeping_v2=folder_housekeeping_v2,
+            legacy_effects_enabled=False,
         )
 
         def health() -> object:
@@ -864,6 +865,7 @@ def build_application(
                 run_delete_resolve=run_deletions.get,
                 attention_retry=retry_attention,
                 attention_fail=fail_attention,
+                legacy_effects_enabled=False,
                 sse_max_empty_polls=None,
                 sse_poll_seconds=0.5,
                 sse_heartbeat_seconds=15.0,

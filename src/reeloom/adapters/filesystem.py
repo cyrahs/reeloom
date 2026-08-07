@@ -20,7 +20,12 @@ from reeloom.kernel.forward_execution import (
 )
 from reeloom.kernel.file_types import candidate_kind_for_filename
 from reeloom.kernel.mapping import MappingDraft
-from reeloom.kernel.movie import MovieMappingDraft, compile_movie_plan_draft
+from reeloom.kernel.movie import (
+    MovieMappingDraft,
+    compile_movie_plan_draft,
+    compile_movie_plan_draft_v2,
+)
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.naming import (
     MovieIdentity,
@@ -662,9 +667,29 @@ class FilesystemPlanCompilerV2:
             tuple[CandidateId, SubtitleVariant], ...
         ],
         created_at: datetime,
-    ) -> MovieRenamePlan:
-        del run_id, movie, mapping, subtitle_variants, created_at
-        raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+    ) -> MovieRenamePlanV2:
+        draft = compile_movie_plan_draft_v2(
+            movie=movie,
+            mapping=mapping,
+            candidates=self.semantic_snapshot,
+            subtitle_variants=subtitle_variants,
+        )
+        FilesystemPlanCompiler(
+            self.scan, self.output_root
+        )._check_destinations(
+            tuple(move.destination for move in draft.moves)
+        )
+        return MovieRenamePlanV2.create(
+            run_id=run_id,
+            config_revision=self.config_revision,
+            watch_id=self.watch_id,
+            created_at=created_at,
+            source_root=self.source_root_binding,
+            output_root=self.output_root_binding,
+            candidate_snapshot=self.semantic_snapshot,
+            subtitle_variants=subtitle_variants,
+            draft=draft,
+        )
 
 
 @dataclass(frozen=True, slots=True)

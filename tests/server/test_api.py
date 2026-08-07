@@ -307,6 +307,7 @@ def _app(
 class _ForwardExecution:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.rescans: list[tuple[str, str]] = []
 
     def execute_manual(self, *, run_id: str, plan_hash: str) -> None:
         self.calls.append((run_id, plan_hash))
@@ -338,6 +339,12 @@ class _ForwardExecution:
             fresh_scan_required=True,
             rescan_state="queued",
         )
+
+    def request_rescan(
+        self, *, run_id: str, plan_hash: str
+    ) -> ForwardOperationView:
+        self.rescans.append((run_id, plan_hash))
+        return self.view(run_id=run_id, plan_hash=plan_hash)
 
 
 def test_forward_execute_has_no_browser_controlled_automatic_flag() -> None:
@@ -398,6 +405,30 @@ def test_forward_execute_has_no_browser_controlled_automatic_flag() -> None:
     }
     assert rejected.status_code == 422
     assert coordinator.calls == [("run-1", plan_hash)]
+
+
+def test_forward_rescan_reuses_terminal_operation_without_approval() -> None:
+    coordinator = _ForwardExecution()
+    app = _app(forward_execution=coordinator)
+    plan_hash = "sha256:" + "a" * 64
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "if-match": plan_hash,
+            },
+        ) as client:
+            return await client.post(
+                "/api/v1/runs/run-1/rescan", json={}
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert coordinator.rescans == [("run-1", plan_hash)]
 
 
 class _Interactions:
@@ -986,6 +1017,41 @@ def test_list_read_models_serialize_query_tuples() -> None:
     runs, discoveries = asyncio.run(scenario())
     assert runs.status_code == 200
     assert discoveries.status_code == 200
+
+
+def test_production_gate_retires_legacy_effect_endpoints() -> None:
+    app = create_api(
+        ApiDependencies(
+            queries=_Queries(),
+            apply=object(),  # type: ignore[arg-type]
+            legacy_effects_enabled=False,
+        ),
+        auth=AuthSettings.create(
+            admin_token="admin-token-strong",
+            allowed_hosts=("reeloom.test",),
+            allowed_origins=("https://ui.example.test",),
+        ),
+    )
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "legacy-disabled",
+                "if-match": "sha256:" + "a" * 64,
+            },
+        ) as client:
+            return await client.post(
+                "/api/v1/runs/run-1/approve-and-apply",
+                json={"automatic": False},
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 410
+    assert response.json()["error"]["code"] == "legacy_effect_superseded"
 
 
 def test_admin_auth_host_and_origin_matrix() -> None:

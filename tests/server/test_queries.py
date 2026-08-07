@@ -154,6 +154,7 @@ def test_v2_run_uses_operation_actions_and_hides_legacy_recovery() -> None:
     assert run["recovery_approval_id"] is None
     assert "recover" not in run["available_actions"]
     assert "approve_apply" not in run["available_actions"]
+    assert "rescan" in run["available_actions"]
     assert run["execution"] == {
         "operation_id": "operation:m14",
         "plan_hash": "sha256:" + "a" * 64,

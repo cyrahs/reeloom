@@ -433,6 +433,26 @@ export function RunPage({ runId }: { runId: string }) {
     },
   });
 
+  const forwardRescan = useMutation({
+    mutationFn: async ({ planHash }: { planHash: string }) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}/rescan`,
+        forwardExecutionResultSchema,
+        {
+          method: "POST",
+          headers: { "If-Match": planHash },
+          body: {},
+        },
+      ),
+    onSuccess: async () => {
+      setActionNotice("已提交当前来源目录的重新扫描请求。");
+      await invalidateRun();
+    },
+    onError: async () => {
+      await invalidateRun();
+    },
+  });
+
   const folderDisposition = useMutation({
     mutationFn: async ({
       planHash,
@@ -581,6 +601,7 @@ export function RunPage({ runId }: { runId: string }) {
     action.isPending ||
     apply.isPending ||
     forwardExecution.isPending ||
+    forwardRescan.isPending ||
     recover.isPending ||
     subtitleAcquisition.isPending ||
     folderDisposition.isPending ||
@@ -1113,6 +1134,21 @@ export function RunPage({ runId }: { runId: string }) {
                     恢复文件夹事务
                   </button>
                 ) : null}
+                {available.has("rescan") && run.data.plan_hash ? (
+                  <button
+                    className="secondary wide"
+                    disabled={blocked || forwardRescan.isPending}
+                    onClick={() =>
+                      forwardRescan.mutate({
+                        planHash: run.data.plan_hash!,
+                      })
+                    }
+                  >
+                    {forwardRescan.isPending
+                      ? "正在提交重新扫描…"
+                      : "重新扫描当前目录"}
+                  </button>
+                ) : null}
                 {available.has("delete_run") ? (
                   <div className="danger-zone">
                     <p className="danger-zone-note">
@@ -1139,6 +1175,9 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {forwardExecution.error instanceof ApiError ? (
               <PageError code={forwardExecution.error.code} />
+            ) : null}
+            {forwardRescan.error instanceof ApiError ? (
+              <PageError code={forwardRescan.error.code} />
             ) : null}
             {recover.error instanceof ApiError ? (
               <PageError

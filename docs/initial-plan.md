@@ -4,7 +4,8 @@
 
 日期：2026-08-07
 
-当前进度：M0-M13、M14.0-M14.3c 已完成；M14.4 尚未开始。
+当前进度：M0-M13、M14.0-M14.4 已完成。v1 effect 历史保留只读，生产写路径
+已关闭；其物理代码删除须等部署后的稳定观察窗口结束。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -691,7 +692,7 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 
 ### M14：基于当前状态的前向收敛执行器
 
-当前状态：M14.0-M14.3c 已完成。除 v2 语义身份、plan、operation ledger、
+当前状态：M14.0-M14.4 已完成。除 v2 语义身份、plan、operation ledger、
 forward executor 与 server-owned execute/reconcile control plane 外，现已增加 canonical
 字幕 publication manifest、直接写 plan-owned 最终目录的 forward-only marker publisher，
 并让 watcher 只接纳 marker 与全部 member 当前 hash 一致的发布目录。现有 M13 publisher
@@ -747,9 +748,16 @@ best-effort housekeeping，不再决定 media operation 终态。
     当前状态重观察；archive/fail 只写独立 housekeeping warning，永不回滚或改变 media
     operation 终态。terminal run 持久记录 handled semantic inventory；残留目录相同则不
     重复建 run，inventory 改变才经过普通稳定窗口生成新 generation。episode manual、
-    automatic 与启用 ACG.RIP 的 production 均已切换到 v2；Movie 暂留 v1。
-- M14.4：一次性 supersede 未结算 v1 effect、投递 fresh scan、清除旧锁，并在稳定后
-  删除 legacy recovery 与 v1 executor 写路径。
+    automatic 与启用 ACG.RIP 的 production 均已切换到 v2。
+- M14.4（完成）：Movie 也切换到 semantic snapshot、`MovieRenamePlan v2` 与统一
+  forward executor。迁移 `0037` 将所有仍活跃的 v1 generation 及未结算 media、folder、
+  subtitle effect 标为 `superseded_v1`，只清除协调锁并把原 observation 放回普通稳定
+  扫描；文件、claim、settlement 与 journal 历史均不修改。生产 API/background 已关闭
+  v1 effect 写入口，Run API 不再暴露 legacy recovery ID；终态 v2 operation 可用同一
+  domain action 请求 durable rescan，也始终可删除。新增显式
+  `scripts/m14_filesystem_smoke.py --live-filesystem <空的绝对目录>`，只在用户指定的
+  throwaway 目录验证真实 rename、重观察与 fsync 诊断并保留现场。legacy executor 代码
+  仅作为只读历史兼容保留，等部署稳定观察窗口结束后物理删除。
 
 完整决策、已接受的完整性取舍与 M14.0 副作用边界见
 [ADR 0008](adr/0008-m14-forward-convergence.md)。

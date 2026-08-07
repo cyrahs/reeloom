@@ -57,7 +57,11 @@ def _semantic_watch_v2_enabled(
     work_type: ServerWorkType,
 ) -> bool:
     del config
-    return work_type is not ServerWorkType.MOVIE
+    return work_type in {
+        ServerWorkType.ANIME,
+        ServerWorkType.TV,
+        ServerWorkType.MOVIE,
+    }
 
 
 @dataclass(slots=True)
@@ -77,6 +81,7 @@ class BackgroundServices:
     forward_execution: ForwardExecutionCoordinator | None = None
     forward_rescans: ForwardRescanWorker | None = None
     folder_housekeeping_v2: FolderHousekeepingWorker | None = None
+    legacy_effects_enabled: bool = True
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -354,6 +359,8 @@ class BackgroundServices:
                     )
                 succeeded = True
                 return
+            if not self.legacy_effects_enabled:
+                raise RuntimeError("legacy_effect_superseded")
             disposition = (
                 None
                 if (

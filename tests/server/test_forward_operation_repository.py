@@ -228,6 +228,14 @@ def test_postgres_operation_ledger_authorizes_leases_and_settles() -> None:
         assert repository.get_view(operation.operation_id).rescan_state == (
             "completed"
         )
+        repository.requeue_rescan(
+            run_id=run_id,
+            plan_hash=plan_hash,
+            now=now + timedelta(seconds=4),
+        )
+        assert repository.get_view(operation.operation_id).rescan_state == (
+            "queued"
+        )
         assert repository.claim(
             operation.operation_id,
             worker_id=f"worker-{suffix}",

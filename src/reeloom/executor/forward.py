@@ -17,6 +17,7 @@ from reeloom.kernel.forward_execution import (
     RenamePlanV2,
     decide_forward_move,
 )
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.plan import PlannedMove
 from reeloom.kernel.semantic_identity import SemanticSourceIdentity
 from reeloom.executor.effect_mutex import effect_mutex
@@ -24,6 +25,7 @@ from reeloom.ports.forward_filesystem import (
     ForwardFilesystem,
     ForwardMoveDiagnostic,
 )
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -104,11 +106,11 @@ class ForwardExecutor:
 
     def execute(
         self,
-        plan: RenamePlanV2,
+        plan: RenamePlanV2 | MovieRenamePlanV2,
         lease: ExecutionOperationLease,
     ) -> ForwardExecutionResult:
         if (
-            not isinstance(plan, RenamePlanV2)
+            not isinstance(plan, (RenamePlanV2, MovieRenamePlanV2))
             or not plan.verify_hash()
             or not isinstance(lease, ExecutionOperationLease)
             or lease.operation.run_id != plan.run_id
@@ -137,7 +139,7 @@ class ForwardExecutor:
 
     def _execute_move(
         self,
-        plan: RenamePlanV2,
+        plan: RenamePlanV2 | MovieRenamePlanV2,
         move: PlannedMove,
     ) -> tuple[ForwardExecutionItemResult, tuple[str, ...]]:
         expected = plan.candidate_snapshot.source_for(move.source_id)
@@ -173,7 +175,7 @@ class ForwardExecutor:
 
     def _reobserve_after_move(
         self,
-        plan: RenamePlanV2,
+        plan: RenamePlanV2 | MovieRenamePlanV2,
         move: PlannedMove,
         expected: SemanticSourceIdentity,
     ) -> ExecutionItemOutcome:
@@ -202,7 +204,7 @@ class ForwardExecutor:
 
     def _observe(
         self,
-        plan: RenamePlanV2,
+        plan: RenamePlanV2 | MovieRenamePlanV2,
         move: PlannedMove,
         expected: SemanticSourceIdentity,
     ) -> tuple[PathObservationState, PathObservationState]:

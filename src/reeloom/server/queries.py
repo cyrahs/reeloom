@@ -494,13 +494,16 @@ class PostgresQueries:
                            forward.fresh_scan_required,
                            forward.rescan_state,
                            forward.successor_run_id,
-                           d.snapshot_id LIKE 'candidate-snapshot-v2:%%'
+                           d.snapshot_id LIKE 'candidate-snapshot-v2:%%',
+                           legacy.run_id IS NOT NULL
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
                     JOIN config_revisions AS c
                       ON c.revision = r.config_revision
                     LEFT JOIN jobs AS job ON job.run_id = r.run_id
+                    LEFT JOIN legacy_effect_supersessions_v2 AS legacy
+                      ON legacy.run_id = r.run_id
                     LEFT JOIN run_states AS s ON s.run_id = r.run_id
                     LEFT JOIN LATERAL (
                         SELECT c.approval_id
@@ -649,7 +652,9 @@ class PostgresQueries:
             if row[52] is None
             else ExecutionOperationStatus(str(row[52]))
         )
-        semantic_v2 = bool(row[60])
+        semantic_v2 = bool(row[60]) or (
+            len(row) > 61 and bool(row[61])
+        )
         busy = busy or forward_status is ExecutionOperationStatus.RUNNING
         attention_state = (
             stored_status in {"running", "failed"}

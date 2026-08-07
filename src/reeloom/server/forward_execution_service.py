@@ -15,6 +15,7 @@ from reeloom.kernel.forward_execution import (
     ExecutionOperationLease,
     RenamePlanV2,
 )
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.initial_plan import parse_initial_plan
 from reeloom.ports.plans import PlanStore
 from reeloom.server.approval_repository import PostgresApprovalStore
@@ -115,6 +116,28 @@ class ForwardExecutionCoordinator:
             )
         )
 
+    def request_rescan(
+        self, *, run_id: str, plan_hash: str
+    ) -> ForwardOperationView:
+        plan, config = self._load(run_id=run_id, plan_hash=plan_hash)
+        view = self._operations.get_view(
+            execution_operation_id(
+                run_id=plan.run_id,
+                plan_hash=plan.plan_hash,
+            )
+        )
+        if ForwardAvailableAction.RESCAN not in forward_available_actions(
+            policy=config.apply_policy,
+            operation_status=view.operation.status,
+        ):
+            raise ForwardExecutionServiceError("rescan_not_allowed")
+        self._operations.requeue_rescan(
+            run_id=plan.run_id,
+            plan_hash=plan.plan_hash,
+            now=self._clock(),
+        )
+        return self.view(run_id=run_id, plan_hash=plan_hash)
+
     def reconcile_one(self) -> ForwardExecutionCommandResult | None:
         """Lease one unfinished operation without consulting browser state."""
 
@@ -193,7 +216,7 @@ class ForwardExecutionCoordinator:
         return self._run_existing(plan)
 
     def _run_existing(
-        self, plan: RenamePlanV2
+        self, plan: RenamePlanV2 | MovieRenamePlanV2
     ) -> ForwardExecutionCommandResult:
         operation_id = execution_operation_id(
             run_id=plan.run_id, plan_hash=plan.plan_hash
@@ -216,7 +239,7 @@ class ForwardExecutionCoordinator:
 
     def _run_lease(
         self,
-        plan: RenamePlanV2,
+        plan: RenamePlanV2 | MovieRenamePlanV2,
         lease: ExecutionOperationLease,
     ) -> ForwardExecutionCommandResult:
         result = self._executor.execute(plan, lease)
@@ -229,11 +252,14 @@ class ForwardExecutionCoordinator:
 
     def _load(
         self, *, run_id: str, plan_hash: str
-    ) -> tuple[RenamePlanV2, ConfigRevision]:
+    ) -> tuple[RenamePlanV2 | MovieRenamePlanV2, ConfigRevision]:
         plan = parse_initial_plan(
             self._plans.load(plan_hash), plan_hash=plan_hash
         )
-        if not isinstance(plan, RenamePlanV2) or plan.run_id != run_id:
+        if (
+            not isinstance(plan, (RenamePlanV2, MovieRenamePlanV2))
+            or plan.run_id != run_id
+        ):
             raise ForwardExecutionServiceError("invalid_v2_plan")
         config = self._configs.get(plan.config_revision)
         watch = next(
