@@ -17,6 +17,7 @@ from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     EmbeddedSubtitleInspection,
     SubtitleArchiveSetCapability,
@@ -123,8 +124,8 @@ class RunState:
     candidate_count: int = 0
     candidate_ids: tuple[CandidateId, ...] | None = None
     subtitle_acquisition_enabled: bool | None = None
-    authorized_source_root: RootBinding | None = None
-    authorized_output_root: RootBinding | None = None
+    authorized_source_root: RootBinding | SemanticRootBinding | None = None
+    authorized_output_root: RootBinding | SemanticRootBinding | None = None
     tmdb_candidates: frozenset[TmdbCandidateRef] = frozenset()
     selected_series: SeriesIdentity | None = None
     selected_movie: MovieIdentity | None = None

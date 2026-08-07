@@ -30,6 +30,7 @@ from reeloom.kernel.naming import (
 )
 from reeloom.kernel.initial_plan import parse_initial_plan
 from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     EmbeddedChineseStatus,
     EmbeddedSubtitleCodec,
@@ -782,7 +783,11 @@ def _subtitle_selection(value: object) -> SubtitleSelectionDecision:
         _invalid()
 
 
-def _root_payload(root: RootBinding) -> dict[str, object]:
+def _root_payload(
+    root: RootBinding | SemanticRootBinding,
+) -> dict[str, object]:
+    if isinstance(root, SemanticRootBinding):
+        return root.payload()
     return {
         "device": root.device,
         "inode": root.inode,
@@ -790,11 +795,11 @@ def _root_payload(root: RootBinding) -> dict[str, object]:
     }
 
 
-def _root(value: object) -> RootBinding:
+def _root(value: object) -> RootBinding | SemanticRootBinding:
+    if isinstance(value, dict) and set(value) == {"path"}:
+        return SemanticRootBinding.from_payload(value)
     payload = check_fields(
-        value,
-        frozenset({"device", "inode", "path"}),
-        field="root",
+        value, frozenset({"device", "inode", "path"}), field="root"
     )
     return RootBinding(
         PurePosixPath(_str(payload["path"])),

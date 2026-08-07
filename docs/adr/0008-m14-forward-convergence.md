@@ -111,6 +111,14 @@ transaction 在迁移时统一标为 `superseded_v1`，不执行、不回滚、�
 watcher、plan compiler、approval、journal、executor、API 或 UI，不执行 rename，也不
 迁移任何 v1 记录。后续 M14.1-M14.4 必须分别在离线测试通过后才开放对应行为。
 
+## M14.1 边界
+
+M14.1 只切换 watcher identity、PostgreSQL discovery 与 episode plan-only 规划。语义
+discovery payload 和 `RenamePlan v2` 不持久化 stat identity；规划开始前按授权路径进行
+一次 no-follow 当前状态重扫。manual/automatic、Movie 以及启用 ACG.RIP 的 M13 流程仍
+生成 v1 计划，避免在 M14.2 forward executor 和 M14.3 marker publisher 完成前把 v2
+计划交给旧副作用路径。plan-only 不再创建 folder disposition plan。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Protocol
 
 from agents import MaxTurnsExceeded
@@ -10,6 +11,7 @@ from psycopg_pool import ConnectionPool
 
 from reeloom.adapters.filesystem import (
     FilesystemPlanCompiler,
+    FilesystemPlanCompilerV2,
     FilesystemScanResult,
     FilesystemSubtitleSampleProvider,
     FilesystemVideoSubtitleInspector,
@@ -18,11 +20,16 @@ from reeloom.agents.organizer import (
     create_organizer_context,
     run_episode_organizer,
 )
-from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.scanner import (
+    ScannedCandidateSnapshot,
+    ScannedFile,
+    build_candidate_snapshot,
+)
+from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.archive_directory import ArchiveDirectoryError
-from reeloom.ports.plans import PlanStore
+from reeloom.ports.plans import PlanCompiler, PlanStore
 from reeloom.ports.tmdb import TmdbProvider
 from reeloom.ports.subtitle_acquisition import SubtitleSearchProvider
 from reeloom.runtime.errors import BudgetExceeded
@@ -65,6 +72,7 @@ from reeloom.server.subtitle_acquisition import (
     SubtitleAcquisitionPlanner,
     SubtitleAcquisitionPlanningRequest,
 )
+from reeloom.server.watcher import NoFollowWatcher
 from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlan
 from reeloom.tools.candidates import SnapshotCandidateSource
 
@@ -163,13 +171,33 @@ class InitialAgentWorker:
         job = self.scheduler.get_job_context(run_id=run_id)
         config = self.configs.get(job.registration.config_revision)
         watch, work_type = self._resolve_scope(job, config)
-        snapshot = self._reconstruct_snapshot(job)
         source_root = AuthorizedRoot.create(watch.root)
         output_root = AuthorizedRoot.create(watch.library_root)
+        snapshot, semantic_snapshot = self._resolve_snapshots(
+            job, source_root
+        )
         scan = FilesystemScanResult(source_root, snapshot)
-        candidates = SnapshotCandidateSource.from_scanned(snapshot)
-        compiler = FilesystemPlanCompiler(scan, output_root)
-        subtitle_provider = FilesystemSubtitleSampleProvider(scan)
+        if semantic_snapshot is None:
+            candidates = SnapshotCandidateSource.from_scanned(snapshot)
+            compiler: PlanCompiler = FilesystemPlanCompiler(
+                scan, output_root
+            )
+            snapshot_id_override = None
+        else:
+            candidates = SnapshotCandidateSource.from_semantic(
+                semantic_snapshot
+            )
+            compiler = FilesystemPlanCompilerV2(
+                scan=scan,
+                semantic_snapshot=semantic_snapshot,
+                output_root=output_root,
+                config_revision=config.revision,
+                watch_id=watch.watch_id,
+            )
+            snapshot_id_override = semantic_snapshot.snapshot_id
+        subtitle_provider = FilesystemSubtitleSampleProvider(
+            scan, snapshot_id_override=snapshot_id_override
+        )
         session_id = run_id
         event_store = PostgresEventStore(
             self.pool,
@@ -280,7 +308,10 @@ class InitialAgentWorker:
                 ),
                 subtitle_provider=subtitle_provider,
                 video_subtitle_inspector=(
-                    FilesystemVideoSubtitleInspector(scan)
+                    FilesystemVideoSubtitleInspector(
+                        scan,
+                        snapshot_id_override=snapshot_id_override,
+                    )
                     if search_enabled
                     else None
                 ),
@@ -364,7 +395,7 @@ class InitialAgentWorker:
         *,
         job: AgentJobContext,
         config: ConfigRevision,
-        compiler: FilesystemPlanCompiler,
+        compiler: PlanCompiler,
         state: object,
     ) -> SubtitleAcquisitionPlan:
         decision = getattr(state, "subtitle_selection_decision", None)
@@ -390,7 +421,11 @@ class InitialAgentWorker:
                     run_id=job.registration.run_id,
                     config_revision_id=config.revision_id,
                     created_at=discovery.discovered_at,
-                    source_root=compiler.source_root_binding,
+                    source_root=(
+                        compiler.legacy_source_root_binding
+                        if isinstance(compiler, FilesystemPlanCompilerV2)
+                        else compiler.source_root_binding
+                    ),
                     source_folder=discovery.source_folder,
                     source_folder_device=discovery.source_folder_device,
                     source_folder_inode=discovery.source_folder_inode,
@@ -454,3 +489,46 @@ class InitialAgentWorker:
         if snapshot.snapshot_id != persisted.snapshot_id:
             raise ValueError("discovery snapshot identity mismatch")
         return snapshot
+
+    @classmethod
+    def _resolve_snapshots(
+        cls,
+        job: AgentJobContext,
+        source_root: AuthorizedRoot,
+    ) -> tuple[
+        ScannedCandidateSnapshot,
+        SemanticCandidateSnapshot | None,
+    ]:
+        if not job.discovery.snapshot_id.startswith(
+            "candidate-snapshot-v2:"
+        ):
+            return cls._reconstruct_snapshot(job), None
+        discovery = job.discovery
+        persisted = discovery.snapshot
+        if persisted is None or discovery.source_folder is None:
+            raise ValueError("semantic discovery snapshot is unavailable")
+        expected = persisted.semantic_snapshot
+        if expected.snapshot_id != discovery.snapshot_id:
+            raise ValueError("semantic discovery identity mismatch")
+        current = NoFollowWatcher().scan_folder(
+            source_root,
+            PurePosixPath(discovery.source_folder),
+            logical_name=discovery.source_folder,
+        )
+        semantic = current.candidates.semantic_snapshot
+        if semantic.snapshot_id != discovery.snapshot_id:
+            raise ValueError("semantic discovery is no longer current")
+        snapshot = build_candidate_snapshot(
+            ScannedFile(
+                relative_path=item.relative_path,
+                kind=item.kind,
+                size_bytes=item.size_bytes,
+                device=item.device,
+                inode=item.inode,
+                mtime_ns=item.mtime_ns,
+                ctime_ns=item.ctime_ns,
+                sample_digest=item.sample_digest,
+            )
+            for item in current.candidates.files
+        )
+        return snapshot, semantic

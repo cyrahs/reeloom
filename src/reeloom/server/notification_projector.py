@@ -14,6 +14,7 @@ from reeloom.kernel.folder_disposition import FolderDispositionAction
 from reeloom.kernel.initial_plan import InitialPlan, parse_initial_plan
 from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.rename_plan import RenamePlan
+from reeloom.kernel.forward_execution import RenamePlanV2
 from reeloom.ports.plans import PlanStore
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.notification_outbox import PostgresNotificationOutbox
@@ -346,7 +347,7 @@ class PostgresNotificationProjector:
             if row is None or row[0] is None
             else TmdbPosterRef(str(row[0]))
         )
-        if isinstance(plan, RenamePlan):
+        if isinstance(plan, (RenamePlan, RenamePlanV2)):
             identity = plan.draft.series
             return NotificationSubject(
                 title=identity.title_zh_cn,

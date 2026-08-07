@@ -18,6 +18,7 @@ from reeloom.kernel.plan import PlanDraft, PlannedMove
 from reeloom.kernel.semantic_identity import (
     SemanticCandidateSnapshot,
     SemanticRootBinding,
+    SemanticSourceIdentity,
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 
@@ -526,6 +527,14 @@ class RenamePlanV2:
     subtitle_variants: tuple[tuple[CandidateId, SubtitleVariant], ...]
     draft: PlanDraft
     plan_hash: str
+
+    @property
+    def candidate_snapshot_id(self) -> str:
+        return self.candidate_snapshot.snapshot_id
+
+    @property
+    def sources(self) -> tuple[SemanticSourceIdentity, ...]:
+        return self.candidate_snapshot.sources
 
     @classmethod
     def create(

@@ -15,6 +15,7 @@ from reeloom.kernel.candidates import (
 )
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.scanner import ScannedCandidateSnapshot
+from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
 from reeloom.runtime.errors import (
     RuntimeDomainError,
     RuntimeErrorCode,
@@ -106,6 +107,16 @@ class SnapshotCandidateSource:
     def from_scanned(
         cls,
         snapshot: ScannedCandidateSnapshot,
+    ) -> SnapshotCandidateSource:
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "snapshot", snapshot.candidates)
+        object.__setattr__(instance, "snapshot_id", snapshot.snapshot_id)
+        return instance
+
+    @classmethod
+    def from_semantic(
+        cls,
+        snapshot: SemanticCandidateSnapshot,
     ) -> SnapshotCandidateSource:
         instance = object.__new__(cls)
         object.__setattr__(instance, "snapshot", snapshot.candidates)

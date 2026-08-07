@@ -4,7 +4,7 @@
 
 日期：2026-08-07
 
-当前进度：M0-M13、M14.0、M14.1a 已完成；M14.1b-M14.4 尚未开始。
+当前进度：M0-M13、M14.0-M14.1b 已完成；M14.2-M14.4 尚未开始。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -691,13 +691,15 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 
 ### M14：基于当前状态的前向收敛执行器
 
-当前状态：M14.0、M14.1a 已完成。已增加不含持久 stat identity 的 strict frozen v2 语义身份、
+当前状态：M14.0-M14.1b 已完成。已增加不含持久 stat identity 的 strict frozen v2 语义身份、
 canonical `RenamePlan v2`、纯 `ExecutionOperation v2` 状态机和完整 source/destination
 真值表。Watcher 现在单次 poll 只生成一个 namespace snapshot，同时计算保留兼容性的
 v1 identity 与 `path + kind + size` v2 inventory；视频 v2 identity 不读取内容，字幕使用
 完整文件 SHA-256。离线 scheduler contract 已可按 v2 identity 跨 poll 判断稳定，因此
-metadata-only 变化与同路径同大小的视频替换不会重启 generation。M14.1a 尚未切换
-PostgreSQL discovery、production plan-only 或 executor，也不开放新的文件副作用。
+metadata-only 变化与同路径同大小的视频替换不会重启 generation。PostgreSQL discovery
+与 episode production plan-only 已切换到语义 snapshot/plan v2；Agent 在规划前按当前路径
+no-follow 重扫并核对语义身份。manual/automatic、Movie 与启用 ACG.RIP 的 M13 流程继续
+使用 v1，直至 M14.2/M14.3 分别接管；本增量不开放新的文件副作用。
 
 固定决策：
 
@@ -717,8 +719,9 @@ PostgreSQL discovery、production plan-only 或 executor，也不开放新的文
 
 - M14.1a（完成）：watcher 双 identity、完整字幕 hash、单次 namespace scan 与离线
   scheduler semantic generation contract。
-- M14.1b：PostgreSQL discovery 与 production plan-only 切换到语义 snapshot/plan v2；
-  v1 manual/automatic 写路径保持隔离，直至 M14.2 接管执行。
+- M14.1b（完成）：PostgreSQL discovery、runtime/store codec 与 episode production
+  plan-only 切换到语义 snapshot/plan v2；v1 manual/automatic、Movie 与 M13 写路径保持
+  隔离。
 - M14.2：统一 operation ledger/lease、forward executor、自动 rescan 和 v2 API/UI；先
   使用 semantic fake filesystem 离线验收。
 - M14.3：字幕 marker 发布、普通 durable scan request 和非阻塞 folder housekeeping；

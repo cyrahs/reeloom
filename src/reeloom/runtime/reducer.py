@@ -18,7 +18,9 @@ from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
+from reeloom.kernel.forward_execution import RenamePlanV2
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     EmbeddedChineseStatus,
     EmbeddedSubtitleInspection,
@@ -373,12 +375,13 @@ def reduce_event(
                 )
             )
         )
+        root_types = (RootBinding, SemanticRootBinding)
         valid_roots = (
             event.source_root is None
             and event.output_root is None
         ) or (
-            isinstance(event.source_root, RootBinding)
-            and isinstance(event.output_root, RootBinding)
+            isinstance(event.source_root, root_types)
+            and type(event.source_root) is type(event.output_root)
         )
         if (
             state.candidate_snapshot_id is not None
@@ -1256,7 +1259,7 @@ def reduce_event(
                 and plan.draft.mapping == state.movie_mapping_draft
             )
             or (
-                isinstance(plan, RenamePlan)
+                isinstance(plan, (RenamePlan, RenamePlanV2))
                 and state.work_type is not TmdbWorkType.MOVIE
                 and plan.draft.series == state.selected_series
                 and plan.draft.mapping == state.mapping_draft
@@ -1267,7 +1270,9 @@ def reduce_event(
             or state.rename_plan is not None
             or state.plan_hash is not None
             or state.pending_tool_calls
-            or not isinstance(plan, (RenamePlan, MovieRenamePlan))
+            or not isinstance(
+                plan, (RenamePlan, MovieRenamePlan, RenamePlanV2)
+            )
             or not plan.verify_hash()
             or plan.run_id != state.run_id
             or plan.work_type is not state.work_type
@@ -1277,9 +1282,7 @@ def reduce_event(
             or plan.source_root != state.authorized_source_root
             or plan.output_root != state.authorized_output_root
             or state.candidate_ids is None
-            or {
-                source.candidate_id for source in plan.sources
-            }
+            or {source.candidate_id for source in plan.sources}
             != set(state.candidate_ids)
         ):
             raise RuntimeDomainError(

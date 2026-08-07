@@ -8,13 +8,16 @@ import pytest
 
 from reeloom.adapters.filesystem import (
     FilesystemPlanCompiler,
+    FilesystemPlanCompilerV2,
     FilesystemScanner,
 )
 from reeloom.kernel.errors import DomainError, ErrorCode
+from reeloom.kernel.forward_execution import RenamePlanV2
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.server.watcher import NoFollowWatcher
 
 _CREATED_AT = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
 
@@ -96,6 +99,39 @@ def test_plan_compiler_is_a_read_only_dry_run(tmp_path: Path) -> None:
     assert tuple(output.iterdir()) == ()
     assert (source / "episode.mkv").read_bytes() == b"video"
     assert plan.output_root.path.as_posix() == output.as_posix()
+
+
+def test_v2_plan_compiler_uses_semantic_identity_and_path_only_roots(
+    tmp_path: Path,
+) -> None:
+    source, output, mapping, legacy = _setup(tmp_path)
+    semantic = NoFollowWatcher().scan(
+        AuthorizedRoot.create(source)
+    ).semantic_snapshot
+    compiler = FilesystemPlanCompilerV2(
+        scan=legacy.scan,
+        semantic_snapshot=semantic,
+        output_root=AuthorizedRoot.create(output),
+        config_revision=9,
+        watch_id="watch-anime",
+    )
+
+    plan = compiler.compile(
+        run_id="run-m14-plan-only",
+        work_type=TmdbWorkType.ANIME,
+        series=SeriesIdentity("正确动画", 2024, 200),
+        mapping=mapping,
+        subtitle_variants=(
+            (semantic.sources[1].candidate_id, SubtitleVariant.CHS),
+        ),
+        created_at=_CREATED_AT,
+    )
+
+    assert isinstance(plan, RenamePlanV2)
+    assert plan.candidate_snapshot_id == semantic.snapshot_id
+    assert plan.source_root.payload() == {"path": source.as_posix()}
+    assert plan.output_root.payload() == {"path": output.as_posix()}
+    assert tuple(output.iterdir()) == ()
 
 
 def test_plan_compiler_rejects_an_existing_destination(

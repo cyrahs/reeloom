@@ -17,6 +17,7 @@ from reeloom.kernel.naming import MovieIdentity, SeriesIdentity
 from reeloom.kernel.naming import SubtitleVariant
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     EmbeddedSubtitleInspection,
     SubtitleArchiveSetCapability,
@@ -45,8 +46,8 @@ class CandidateSnapshotCreated:
     snapshot_id: str
     candidate_count: int
     candidate_ids: tuple[CandidateId, ...] | None = None
-    source_root: RootBinding | None = None
-    output_root: RootBinding | None = None
+    source_root: RootBinding | SemanticRootBinding | None = None
+    output_root: RootBinding | SemanticRootBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)

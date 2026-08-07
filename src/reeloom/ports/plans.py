@@ -13,7 +13,9 @@ from reeloom.kernel.naming import (
     SubtitleVariant,
 )
 from reeloom.kernel.initial_plan import InitialPlan
+from reeloom.kernel.forward_execution import RenamePlanV2
 from reeloom.kernel.rename_plan import RenamePlan, RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.tmdb import TmdbWorkType
 
 
@@ -27,10 +29,10 @@ class PlanCompiler(Protocol):
     def candidate_count(self) -> int: ...
 
     @property
-    def source_root_binding(self) -> RootBinding: ...
+    def source_root_binding(self) -> RootBinding | SemanticRootBinding: ...
 
     @property
-    def output_root_binding(self) -> RootBinding: ...
+    def output_root_binding(self) -> RootBinding | SemanticRootBinding: ...
 
     def compile(
         self,
@@ -44,7 +46,7 @@ class PlanCompiler(Protocol):
             ...,
         ],
         created_at: datetime,
-    ) -> RenamePlan: ...
+    ) -> RenamePlan | RenamePlanV2: ...
 
     def compile_movie(
         self,

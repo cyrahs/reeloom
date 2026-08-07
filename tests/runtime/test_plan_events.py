@@ -6,9 +6,13 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
+from reeloom.kernel.forward_execution import (
+    RenamePlanV2,
+    compile_plan_draft_v2,
+)
 from reeloom.kernel.naming import SeriesIdentity
 from reeloom.kernel.rename_plan import (
     RenamePlan,
@@ -16,6 +20,11 @@ from reeloom.kernel.rename_plan import (
     compile_plan_draft,
 )
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticRootBinding,
+    SemanticSourceIdentity,
+)
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError, RuntimeErrorCode
 from reeloom.runtime.events import (
@@ -127,6 +136,78 @@ def test_plan_events_reach_a_stopped_approval_boundary() -> None:
     )
     assert state.status is RunStatus.STOPPED
     assert state.stop_reason is StopReason.AWAITING_APPROVAL
+
+
+def test_plan_event_accepts_semantic_plan_only_capabilities() -> None:
+    source = SemanticSourceIdentity(
+        candidate_id=CandidateId(CandidateKind.VIDEO, 1),
+        kind=CandidateKind.VIDEO,
+        relative_path=PurePosixPath("Work/episode.mkv"),
+        size_bytes=5,
+    )
+    snapshot = SemanticCandidateSnapshot.create((source,))
+    series = SeriesIdentity("动画", 2024, 200)
+    mapping = MappingDraft.from_dict(
+        {
+            "videos": [
+                {
+                    "video_id": "video:1",
+                    "season": 1,
+                    "episode_start": 1,
+                    "episode_end": 1,
+                }
+            ],
+            "subtitles": [],
+        },
+        candidates=snapshot.candidates,
+        catalog=EpisodeCatalog.from_counts({1: 1}),
+    )
+    draft = compile_plan_draft_v2(
+        series=series,
+        mapping=mapping,
+        candidates=snapshot,
+        subtitle_variants=(),
+    )
+    source_root = SemanticRootBinding(PurePosixPath("/incoming"))
+    output_root = SemanticRootBinding(PurePosixPath("/anime"))
+    plan = RenamePlanV2.create(
+        run_id="run-m14",
+        config_revision=2,
+        watch_id="watch-anime",
+        work_type=TmdbWorkType.ANIME,
+        created_at=datetime(2026, 8, 7, tzinfo=UTC),
+        source_root=source_root,
+        output_root=output_root,
+        candidate_snapshot=snapshot,
+        subtitle_variants=(),
+        draft=draft,
+    )
+    state = reduce_event(
+        None,
+        RunStarted("run-m14", TmdbWorkType.ANIME),
+    )
+    state = reduce_event(
+        state,
+        CandidateSnapshotCreated(
+            snapshot.snapshot_id,
+            1,
+            (source.candidate_id,),
+            source_root,
+            output_root,
+        ),
+    )
+    state = replace(
+        state,
+        phase=Phase.BUILD_PLAN,
+        selected_series=series,
+        selected_work_type=TmdbWorkType.ANIME,
+        mapping_draft=mapping,
+    )
+
+    built = reduce_event(state, PlanBuilt(plan))
+
+    assert built.rename_plan == plan
+    assert built.plan_hash == plan.plan_hash
 
 
 def test_build_plan_cannot_stop_on_plain_model_text() -> None:

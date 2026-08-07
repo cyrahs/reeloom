@@ -22,6 +22,7 @@ from reeloom.kernel.forward_execution import (
     decide_forward_move,
     reduce_execution_status,
 )
+from reeloom.kernel.initial_plan import parse_initial_plan
 from reeloom.kernel.mapping import EpisodeCatalog, MappingDraft
 from reeloom.kernel.naming import SeriesIdentity, SubtitleVariant
 from reeloom.kernel.semantic_identity import (
@@ -229,6 +230,9 @@ def test_v2_plan_is_canonical_strict_and_free_of_stat_identity() -> None:
 
     assert plan.verify_hash()
     assert RenamePlanV2.from_canonical_bytes(
+        plan.canonical_bytes(), plan_hash=plan.plan_hash
+    ) == plan
+    assert parse_initial_plan(
         plan.canonical_bytes(), plan_hash=plan.plan_hash
     ) == plan
     assert payload["schema_version"] == "2"

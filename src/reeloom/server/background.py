@@ -21,7 +21,11 @@ from reeloom.server.agent_worker import (
     InitialAgentWorker,
 )
 from reeloom.server.apply_service import ApplyCoordinator
-from reeloom.server.config import ApplyPolicy, ConfigRevision
+from reeloom.server.config import (
+    ApplyPolicy,
+    ConfigRevision,
+    ServerWorkType,
+)
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
@@ -40,6 +44,17 @@ from reeloom.server.subtitle_successor import SubtitleSuccessorWorker
 _LOG = logging.getLogger(__name__)
 _MAX_FOLDER_FAILURE_RETRIES = 3
 _SUBTITLE_RECONCILE_INTERVAL_SECONDS = 30.0
+
+
+def _semantic_watch_v2_enabled(
+    config: ConfigRevision,
+    work_type: ServerWorkType,
+) -> bool:
+    return (
+        config.apply_policy is ApplyPolicy.PLAN_ONLY
+        and work_type is not ServerWorkType.MOVIE
+        and not config.acgrip.enabled
+    )
 
 
 @dataclass(slots=True)
@@ -166,6 +181,9 @@ class BackgroundServices:
                 fence=config.revision,
                 work_type=watch.work_type,
                 settle_interval_seconds=watch.settle_interval_seconds,
+                semantic_v2=_semantic_watch_v2_enabled(
+                    config, watch.work_type
+                ),
             )
             self._next_poll.setdefault(watch.watch_id, 0.0)
         self._configured_revision = config.revision
@@ -292,16 +310,19 @@ class BackgroundServices:
                     job_already_settled = request.status == "published"
                 succeeded = True
                 return
+            config = self.configs.get(
+                context.registration.config_revision
+            )
             disposition = (
                 None
-                if self.folder_dispositions is None
+                if (
+                    self.folder_dispositions is None
+                    or config.apply_policy is ApplyPolicy.PLAN_ONLY
+                )
                 else self.folder_dispositions.prepare_success(
                     run_id=run_id,
                     media_plan_hash=plan_hash,
                 )
-            )
-            config = self.configs.get(
-                context.registration.config_revision
             )
             if config.apply_policy is ApplyPolicy.AUTOMATIC:
                 result = self.apply.approve_and_apply(

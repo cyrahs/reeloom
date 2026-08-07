@@ -8,9 +8,13 @@ import pytest
 from reeloom.executor.apply import ApplyResult, ApplyStatus
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.kernel.candidates import CandidateKind
-from reeloom.server.background import BackgroundServices
+from reeloom.server.background import (
+    BackgroundServices,
+    _semantic_watch_v2_enabled,
+)
 from reeloom.server.config import (
     ApplyPolicy,
+    ServerWorkType,
     SubtitleAcquisitionPolicy,
 )
 from reeloom.server.agent_worker import AgentWorkKind, AgentWorkResult
@@ -20,6 +24,33 @@ from reeloom.server.errors import ServerError, ServerErrorCode
 class _UnavailableConfigs:
     def head(self) -> None:
         raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE)
+
+
+@pytest.mark.parametrize(
+    ("policy", "work_type", "acgrip", "expected"),
+    (
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, False, True),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.TV, False, True),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.MOVIE, False, False),
+        (ApplyPolicy.MANUAL, ServerWorkType.ANIME, False, False),
+        (ApplyPolicy.AUTOMATIC, ServerWorkType.ANIME, False, False),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, True, False),
+    ),
+)
+def test_semantic_watch_isolated_to_side_effect_free_episode_plans(
+    policy: ApplyPolicy,
+    work_type: ServerWorkType,
+    acgrip: bool,
+    expected: bool,
+) -> None:
+    config = SimpleNamespace(
+        apply_policy=policy,
+        acgrip=SimpleNamespace(enabled=acgrip),
+    )
+
+    assert _semantic_watch_v2_enabled(  # type: ignore[arg-type]
+        config, work_type
+    ) is expected
 
 
 def test_database_unavailable_stops_background_fail_closed() -> None:

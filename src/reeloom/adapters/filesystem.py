@@ -14,6 +14,10 @@ from typing import Protocol, runtime_checkable
 
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
+from reeloom.kernel.forward_execution import (
+    RenamePlanV2,
+    compile_plan_draft_v2,
+)
 from reeloom.kernel.file_types import candidate_kind_for_filename
 from reeloom.kernel.mapping import MappingDraft
 from reeloom.kernel.movie import MovieMappingDraft, compile_movie_plan_draft
@@ -34,6 +38,10 @@ from reeloom.kernel.scanner import (
     ScannedCandidateSnapshot,
     ScannedFile,
     build_candidate_snapshot,
+)
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticRootBinding,
 )
 from reeloom.kernel.subtitle_acquisition import (
     MAX_EMBEDDED_SUBTITLE_TRACKS,
@@ -562,14 +570,113 @@ class FilesystemPlanCompiler:
 
 
 @dataclass(frozen=True, slots=True)
+class FilesystemPlanCompilerV2:
+    """Compile a semantic plan without persisting filesystem metadata."""
+
+    scan: FilesystemScanResult
+    semantic_snapshot: SemanticCandidateSnapshot
+    output_root: AuthorizedRoot
+    config_revision: int
+    watch_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.scan.snapshot.candidates
+            != self.semantic_snapshot.candidates
+            or type(self.config_revision) is not int
+            or self.config_revision < 1
+            or not isinstance(self.watch_id, str)
+            or not self.watch_id
+        ):
+            raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)
+
+    @property
+    def snapshot_id(self) -> str:
+        return self.semantic_snapshot.snapshot_id
+
+    @property
+    def candidate_count(self) -> int:
+        return len(self.semantic_snapshot.sources)
+
+    @property
+    def source_root_binding(self) -> SemanticRootBinding:
+        return SemanticRootBinding(
+            PurePosixPath(self.scan.authorized_root.path.as_posix())
+        )
+
+    @property
+    def output_root_binding(self) -> SemanticRootBinding:
+        return SemanticRootBinding(
+            PurePosixPath(self.output_root.path.as_posix())
+        )
+
+    @property
+    def legacy_source_root_binding(self) -> RootBinding:
+        return FilesystemPlanCompiler._root_binding(
+            self.scan.authorized_root
+        )
+
+    def compile(
+        self,
+        *,
+        run_id: str,
+        work_type: TmdbWorkType,
+        series: SeriesIdentity,
+        mapping: MappingDraft,
+        subtitle_variants: tuple[
+            tuple[CandidateId, SubtitleVariant], ...
+        ],
+        created_at: datetime,
+    ) -> RenamePlanV2:
+        draft = compile_plan_draft_v2(
+            series=series,
+            mapping=mapping,
+            candidates=self.semantic_snapshot,
+            subtitle_variants=subtitle_variants,
+        )
+        FilesystemPlanCompiler(
+            self.scan, self.output_root
+        )._check_destinations(
+            tuple(move.destination for move in draft.moves)
+        )
+        return RenamePlanV2.create(
+            run_id=run_id,
+            config_revision=self.config_revision,
+            watch_id=self.watch_id,
+            work_type=work_type,
+            created_at=created_at,
+            source_root=self.source_root_binding,
+            output_root=self.output_root_binding,
+            candidate_snapshot=self.semantic_snapshot,
+            subtitle_variants=subtitle_variants,
+            draft=draft,
+        )
+
+    def compile_movie(
+        self,
+        *,
+        run_id: str,
+        movie: MovieIdentity,
+        mapping: MovieMappingDraft,
+        subtitle_variants: tuple[
+            tuple[CandidateId, SubtitleVariant], ...
+        ],
+        created_at: datetime,
+    ) -> MovieRenamePlan:
+        del run_id, movie, mapping, subtitle_variants, created_at
+        raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+
+
+@dataclass(frozen=True, slots=True)
 class FilesystemSubtitleSampleProvider:
     """Read only a bounded prefix for a subtitle already in one scan."""
 
     scan: FilesystemScanResult
+    snapshot_id_override: str | None = None
 
     @property
     def snapshot_id(self) -> str:
-        return self.scan.snapshot.snapshot_id
+        return self.snapshot_id_override or self.scan.snapshot.snapshot_id
 
     @property
     def candidate_count(self) -> int:
@@ -675,10 +782,11 @@ class FilesystemVideoSubtitleInspector:
 
     scan: FilesystemScanResult
     runner: FfprobeRunner = FixedFfprobeRunner()
+    snapshot_id_override: str | None = None
 
     @property
     def snapshot_id(self) -> str:
-        return self.scan.snapshot.snapshot_id
+        return self.snapshot_id_override or self.scan.snapshot.snapshot_id
 
     @property
     def candidate_count(self) -> int:

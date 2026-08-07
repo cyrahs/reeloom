@@ -8,6 +8,7 @@ from typing import Any, Literal
 from psycopg_pool import ConnectionPool
 
 from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
 from reeloom.server.config import ServerWorkType
 from reeloom.server.config_repository import CONFIG_LOCK_ID
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -29,7 +30,22 @@ from reeloom.server.watcher import (
 )
 
 
-def _snapshot_json(snapshot: WatchSnapshot) -> str:
+def _snapshot_json(
+    snapshot: WatchSnapshot,
+    *,
+    semantic_v2: bool = False,
+) -> str:
+    if semantic_v2:
+        semantic = snapshot.semantic_snapshot
+        return json.dumps(
+            {
+                "files": semantic.payload(),
+                "schema": "semantic-watch-v2",
+                "snapshot_id": semantic.snapshot_id,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     return json.dumps(
         {
             "files": [
@@ -54,6 +70,33 @@ def _snapshot_json(snapshot: WatchSnapshot) -> str:
 
 def _snapshot_from_json(value: object) -> WatchSnapshot:
     raw = value if isinstance(value, dict) else json.loads(str(value))
+    if not isinstance(raw, dict):
+        raise ValueError("invalid snapshot payload")
+    if raw.get("schema") == "semantic-watch-v2":
+        semantic = SemanticCandidateSnapshot.from_payload(
+            raw["files"],
+            snapshot_id=raw["snapshot_id"],
+        )
+        snapshot = WatchSnapshot(
+            snapshot_id=semantic.snapshot_id,
+            files=tuple(
+                WatchFile(
+                    relative_path=source.relative_path,
+                    kind=source.kind,
+                    size_bytes=source.size_bytes,
+                    device=0,
+                    inode=0,
+                    mtime_ns=0,
+                    ctime_ns=0,
+                    sample_digest=None,
+                    sha256=source.sha256,
+                )
+                for source in semantic.sources
+            ),
+        )
+        if snapshot.semantic_snapshot_id != semantic.snapshot_id:
+            raise ValueError("semantic snapshot identity mismatch")
+        return snapshot
     return WatchSnapshot(
         snapshot_id=raw["snapshot_id"],
         files=tuple(
@@ -72,7 +115,25 @@ def _snapshot_from_json(value: object) -> WatchSnapshot:
     )
 
 
-def _inventory_json(folder: FolderSnapshot) -> str:
+def _inventory_json(
+    folder: FolderSnapshot,
+    *,
+    semantic_v2: bool = False,
+) -> str:
+    if semantic_v2:
+        return json.dumps(
+            {
+                "candidate_snapshot_id": (
+                    folder.candidates.semantic_snapshot_id
+                ),
+                "entries": [item.semantic_payload for item in folder.entries],
+                "inventory_id": folder.semantic_inventory_id,
+                "schema": "folder-inventory-v2",
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     return json.dumps(
         {
             "candidate_snapshot_id": folder.candidates.snapshot_id,
@@ -252,13 +313,14 @@ class PostgresSchedulerRepository:
         fence: int,
         work_type: ServerWorkType,
         settle_interval_seconds: int,
+        semantic_v2: bool = False,
     ) -> None:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
                     previous = connection.execute(
                         """
-                        SELECT config_revision, fence
+                        SELECT config_revision, fence, semantic_v2
                         FROM watch_states
                         WHERE watch_id = %s
                         FOR UPDATE
@@ -269,14 +331,15 @@ class PostgresSchedulerRepository:
                         """
                         INSERT INTO watch_states
                             (watch_id, config_revision, fence, work_type,
-                             settle_interval_seconds)
-                        VALUES (%s, %s, %s, %s, %s)
+                             settle_interval_seconds, semantic_v2)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (watch_id) DO UPDATE SET
                             config_revision = EXCLUDED.config_revision,
                             fence = EXCLUDED.fence,
                             work_type = EXCLUDED.work_type,
                             settle_interval_seconds =
-                                EXCLUDED.settle_interval_seconds
+                                EXCLUDED.settle_interval_seconds,
+                            semantic_v2 = EXCLUDED.semantic_v2
                         """,
                         (
                             watch_id,
@@ -284,12 +347,14 @@ class PostgresSchedulerRepository:
                             fence,
                             work_type.value,
                             settle_interval_seconds,
+                            semantic_v2,
                         ),
                     )
                     if (
                         previous is None
                         or int(previous[0]) != config_revision
                         or int(previous[1]) != fence
+                        or bool(previous[2]) != semantic_v2
                     ):
                         connection.execute(
                             """
@@ -553,7 +618,7 @@ class PostgresSchedulerRepository:
                     state = connection.execute(
                         """
                         SELECT config_revision, fence, work_type,
-                               settle_interval_seconds
+                               settle_interval_seconds, semantic_v2
                         FROM watch_states
                         WHERE watch_id = %s
                         FOR UPDATE
@@ -568,6 +633,7 @@ class PostgresSchedulerRepository:
                         raise ServerError(
                             ServerErrorCode.STALE_WATCH_SCAN
                         )
+                    semantic_v2 = bool(state[4])
                     rows = connection.execute(
                         """
                         SELECT folder_name, config_revision, folder_device,
@@ -752,6 +818,20 @@ class PostgresSchedulerRepository:
                     discoveries: list[Discovery] = []
                     disposition_runs: list[str] = []
                     for folder in scan.folders:
+                        folder_device = (
+                            None if semantic_v2 else folder.device
+                        )
+                        folder_inode = None if semantic_v2 else folder.inode
+                        inventory_id = (
+                            folder.semantic_inventory_id
+                            if semantic_v2
+                            else folder.inventory_id
+                        )
+                        snapshot_id = (
+                            folder.candidates.semantic_snapshot_id
+                            if semantic_v2
+                            else folder.candidates.snapshot_id
+                        )
                         row = previous.get(folder.name)
                         if row is not None and row[8] is not None:
                             if (
@@ -856,11 +936,15 @@ class PostgresSchedulerRepository:
                                         ServerErrorCode.DATABASE_UNAVAILABLE
                                     )
                                 unchanged = (
-                                    row[2] == folder.device
-                                    and row[3] == folder.inode
-                                    and row[4] == folder.inventory_id
-                                    and row[5]
-                                    == folder.candidates.snapshot_id
+                                    (
+                                        semantic_v2
+                                        or (
+                                            row[2] == folder.device
+                                            and row[3] == folder.inode
+                                        )
+                                    )
+                                    and row[4] == inventory_id
+                                    and row[5] == snapshot_id
                                 )
                                 if unchanged:
                                     if (
@@ -925,12 +1009,18 @@ class PostgresSchedulerRepository:
                                         """,
                                         (
                                             config_revision,
-                                            folder.device,
-                                            folder.inode,
-                                            folder.inventory_id,
-                                            _inventory_json(folder),
-                                            folder.candidates.snapshot_id,
-                                            _snapshot_json(folder.candidates),
+                                            folder_device,
+                                            folder_inode,
+                                            inventory_id,
+                                            _inventory_json(
+                                                folder,
+                                                semantic_v2=semantic_v2,
+                                            ),
+                                            snapshot_id,
+                                            _snapshot_json(
+                                                folder.candidates,
+                                                semantic_v2=semantic_v2,
+                                            ),
                                             observed_at,
                                             watch_id,
                                             folder.name,
@@ -961,10 +1051,15 @@ class PostgresSchedulerRepository:
                         same = (
                             row is not None
                             and int(row[1]) == config_revision
-                            and row[2] == folder.device
-                            and row[3] == folder.inode
-                            and row[4] == folder.inventory_id
-                            and row[5] == folder.candidates.snapshot_id
+                            and (
+                                semantic_v2
+                                or (
+                                    row[2] == folder.device
+                                    and row[3] == folder.inode
+                                )
+                            )
+                            and row[4] == inventory_id
+                            and row[5] == snapshot_id
                             and str(row[9]) == "settling"
                         )
                         if not same:
@@ -1010,12 +1105,18 @@ class PostgresSchedulerRepository:
                                     watch_id,
                                     folder.name,
                                     config_revision,
-                                    folder.device,
-                                    folder.inode,
-                                    folder.inventory_id,
-                                    _inventory_json(folder),
-                                    folder.candidates.snapshot_id,
-                                    _snapshot_json(folder.candidates),
+                                    folder_device,
+                                    folder_inode,
+                                    inventory_id,
+                                    _inventory_json(
+                                        folder,
+                                        semantic_v2=semantic_v2,
+                                    ),
+                                    snapshot_id,
+                                    _snapshot_json(
+                                        folder.candidates,
+                                        semantic_v2=semantic_v2,
+                                    ),
                                     observed_at,
                                 ),
                             )
@@ -1045,21 +1146,30 @@ class PostgresSchedulerRepository:
                                 (observed_at, watch_id, folder.name),
                             )
                             mutated = True
-                        generation_id = _id(
-                            "folder",
-                            watch_id,
-                            folder.name,
-                            str(folder.device),
-                            str(folder.inode),
-                            folder.inventory_id,
-                            first_observed.isoformat(),
+                        generation_parts = (
+                            (
+                                watch_id,
+                                folder.name,
+                                inventory_id,
+                                first_observed.isoformat(),
+                            )
+                            if semantic_v2
+                            else (
+                                watch_id,
+                                folder.name,
+                                str(folder.device),
+                                str(folder.inode),
+                                inventory_id,
+                                first_observed.isoformat(),
+                            )
                         )
+                        generation_id = _id("folder", *generation_parts)
                         discovery_id = _id(
                             "discovery",
                             watch_id,
                             str(config_revision),
                             generation_id,
-                            folder.candidates.snapshot_id,
+                            snapshot_id,
                         )
                         inserted = connection.execute(
                             """
@@ -1078,13 +1188,16 @@ class PostgresSchedulerRepository:
                                 discovery_id,
                                 watch_id,
                                 config_revision,
-                                folder.candidates.snapshot_id,
-                                _snapshot_json(folder.candidates),
+                                snapshot_id,
+                                _snapshot_json(
+                                    folder.candidates,
+                                    semantic_v2=semantic_v2,
+                                ),
                                 str(state[2]),
                                 observed_at,
                                 folder.name,
                                 generation_id,
-                                folder.inventory_id,
+                                inventory_id,
                             ),
                         ).fetchone()
                         discovery_row = connection.execute(
@@ -1112,7 +1225,7 @@ class PostgresSchedulerRepository:
                                 observed_at,
                                 watch_id,
                                 folder.name,
-                                folder.inventory_id,
+                                inventory_id,
                             ),
                         )
                         if inserted is not None:
@@ -1132,15 +1245,15 @@ class PostgresSchedulerRepository:
                                 discovery_id=str(discovery_row[0]),
                                 watch_id=watch_id,
                                 config_revision=config_revision,
-                                snapshot_id=folder.candidates.snapshot_id,
+                                snapshot_id=snapshot_id,
                                 work_type=ServerWorkType(str(state[2])),
                                 discovered_at=discovery_row[1],
                                 snapshot=folder.candidates,
                                 source_folder=folder.name,
                                 folder_generation_id=generation_id,
-                                inventory_id=folder.inventory_id,
-                                source_folder_device=folder.device,
-                                source_folder_inode=folder.inode,
+                                inventory_id=inventory_id,
+                                source_folder_device=folder_device,
+                                source_folder_inode=folder_inode,
                             )
                         )
                     return FolderPollResult(

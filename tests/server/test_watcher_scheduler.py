@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,9 +11,20 @@ import pytest
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.adapters.filesystem import FilesystemScanner
 from reeloom.server.config import ServerWorkType
+from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.scheduler import InMemorySchedulerRepository
-from reeloom.server.scheduler_repository import _missing_folder_action
+from reeloom.server.scheduler import (
+    AgentJobContext,
+    Discovery,
+    InMemorySchedulerRepository,
+    RunRegistration,
+)
+from reeloom.server.scheduler_repository import (
+    _inventory_json,
+    _missing_folder_action,
+    _snapshot_from_json,
+    _snapshot_json,
+)
 from reeloom.server.watcher import NoFollowWatcher
 
 
@@ -141,6 +153,77 @@ def test_subtitle_semantic_identity_uses_the_full_file_hash(
         before.candidates.semantic_snapshot_id
         != after.candidates.semantic_snapshot_id
     )
+
+
+def test_semantic_watch_payload_omits_persistent_stat_identity(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    work.mkdir()
+    (work / "episode.mkv").write_bytes(b"video")
+    (work / "episode.ass").write_bytes(b"subtitle")
+    folder = NoFollowWatcher().scan_folders(
+        AuthorizedRoot.create(tmp_path)
+    ).folders[0]
+
+    snapshot_payload = _snapshot_json(
+        folder.candidates, semantic_v2=True
+    )
+    inventory_payload = _inventory_json(folder, semantic_v2=True)
+    restored = _snapshot_from_json(json.loads(snapshot_payload))
+
+    forbidden = ("device", "inode", "mtime_ns", "ctime_ns")
+    assert not any(field in snapshot_payload for field in forbidden)
+    assert not any(field in inventory_payload for field in forbidden)
+    assert restored.semantic_snapshot_id == (
+        folder.candidates.semantic_snapshot_id
+    )
+    assert restored.snapshot_id.startswith("candidate-snapshot-v2:")
+
+
+def test_agent_rescans_semantic_discovery_from_current_paths(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    work.mkdir()
+    video = work / "episode.mkv"
+    video.write_bytes(b"first")
+    watcher = NoFollowWatcher()
+    root = AuthorizedRoot.create(tmp_path)
+    folder = watcher.scan_folders(root).folders[0]
+    semantic_id = folder.candidates.semantic_snapshot_id
+    persisted = _snapshot_from_json(
+        json.loads(_snapshot_json(folder.candidates, semantic_v2=True))
+    )
+    os.utime(video, ns=(1_000_000_000, 1_000_000_000))
+    job = AgentJobContext(
+        registration=RunRegistration(
+            run_id="run-v2",
+            job_id="job-v2",
+            discovery_id="discovery-v2",
+            config_revision=1,
+            work_type=ServerWorkType.ANIME,
+            source_capability="capability-v2",
+        ),
+        discovery=Discovery(
+            discovery_id="discovery-v2",
+            watch_id="watch-v2",
+            config_revision=1,
+            snapshot_id=semantic_id,
+            work_type=ServerWorkType.ANIME,
+            discovered_at=datetime.now(UTC),
+            snapshot=persisted,
+            source_folder="Work",
+            folder_generation_id="folder-v2",
+        ),
+    )
+
+    transient, semantic = InitialAgentWorker._resolve_snapshots(job, root)
+
+    assert semantic is not None
+    assert semantic.snapshot_id == semantic_id
+    assert transient.snapshot_id != folder.candidates.snapshot_id
+    assert transient.candidates == semantic.candidates
 
 
 def test_folder_poll_performs_one_namespace_scan(
