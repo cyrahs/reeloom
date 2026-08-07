@@ -4,7 +4,7 @@ import hashlib
 import itertools
 import json
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 
 import pytest
@@ -14,6 +14,7 @@ from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.forward_execution import (
     ExecutionItemOutcome,
     ExecutionOperation,
+    ExecutionOperationLease,
     ExecutionOperationStatus,
     ForwardMoveDecision,
     PathObservationState,
@@ -131,6 +132,90 @@ def test_operation_lifecycle_reconciles_without_a_new_operation() -> None:
         settled.begin_or_reconcile()
     with pytest.raises(FrozenInstanceError):
         operation.status = ExecutionOperationStatus.RUNNING  # type: ignore[misc]
+
+
+def test_operation_lease_is_bounded_and_expiry_fails_closed() -> None:
+    now = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+    operation = ExecutionOperation.authorized(
+        operation_id="operation:1",
+        run_id="run:1",
+        plan_hash="sha256:" + "a" * 64,
+    )
+    lease = ExecutionOperationLease.issue(
+        operation,
+        worker_id="worker:1",
+        now=now,
+        lease_for=timedelta(seconds=30),
+    )
+
+    settled = lease.settle(
+        (ExecutionItemOutcome.SATISFIED,),
+        now=now + timedelta(seconds=29),
+    )
+
+    assert settled.status is ExecutionOperationStatus.COMPLETED
+    assert settled.attempt_count == 1
+    with pytest.raises(DomainError):
+        lease.settle(
+            (ExecutionItemOutcome.SATISFIED,),
+            now=now + timedelta(seconds=30),
+        )
+    with pytest.raises(DomainError):
+        ExecutionOperationLease.issue(
+            operation,
+            worker_id="worker:1",
+            now=now,
+            lease_for=timedelta(hours=2),
+        )
+
+
+def test_persisted_operation_restore_is_strict() -> None:
+    restored = ExecutionOperation.restore(
+        schema_version="2",
+        operation_id="operation:1",
+        run_id="run:1",
+        plan_hash="sha256:" + "a" * 64,
+        status="partial",
+        attempt_count=2,
+        outcomes=("satisfied", "collision"),
+    )
+
+    assert restored.status is ExecutionOperationStatus.PARTIAL
+    assert restored.outcomes == (
+        ExecutionItemOutcome.SATISFIED,
+        ExecutionItemOutcome.COLLISION,
+    )
+    for changes in (
+        {"schema_version": "1"},
+        {"status": "completed", "outcomes": ()},
+        {"status": "running", "outcomes": ("satisfied",)},
+        {"status": "collision", "outcomes": ("stale",)},
+        {"attempt_count": 101},
+    ):
+        values = {
+            "schema_version": "2",
+            "operation_id": "operation:1",
+            "run_id": "run:1",
+            "plan_hash": "sha256:" + "a" * 64,
+            "status": "partial",
+            "attempt_count": 2,
+            "outcomes": ("satisfied", "collision"),
+            **changes,
+        }
+        with pytest.raises(DomainError):
+            ExecutionOperation.restore(**values)
+
+    exhausted = ExecutionOperation.restore(
+        schema_version="2",
+        operation_id="operation:1",
+        run_id="run:1",
+        plan_hash="sha256:" + "a" * 64,
+        status="running",
+        attempt_count=100,
+        outcomes=(),
+    )
+    with pytest.raises(DomainError):
+        exhausted.begin_or_reconcile()
 
 
 def test_unstarted_or_running_operation_can_be_superseded() -> None:

@@ -7,7 +7,7 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from reeloom.kernel.candidates import CandidateId, CandidateKind
@@ -25,6 +25,7 @@ from reeloom.kernel.tmdb import TmdbWorkType
 CURRENT_FORWARD_PLAN_SCHEMA_VERSION = "2"
 CURRENT_FORWARD_PLAN_POLICY_VERSION = "m14-v1"
 CURRENT_EXECUTION_OPERATION_SCHEMA_VERSION = "2"
+MAX_EXECUTION_OPERATION_ATTEMPTS = 100
 
 _PLAN_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_CANONICAL_BYTES = 8 * 1024 * 1024
@@ -154,7 +155,7 @@ class ExecutionOperation:
         if (
             not isinstance(status, ExecutionOperationStatus)
             or type(attempt_count) is not int
-            or attempt_count < 0
+            or not 0 <= attempt_count <= MAX_EXECUTION_OPERATION_ATTEMPTS
             or not isinstance(outcomes, tuple)
             or any(
                 not isinstance(item, ExecutionItemOutcome)
@@ -185,6 +186,8 @@ class ExecutionOperation:
             ExecutionOperationStatus.AUTHORIZED,
             ExecutionOperationStatus.RUNNING,
         }:
+            raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)
+        if self.attempt_count >= MAX_EXECUTION_OPERATION_ATTEMPTS:
             raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)
         return self._create(
             operation_id=self.operation_id,
@@ -222,6 +225,112 @@ class ExecutionOperation:
             attempt_count=self.attempt_count,
             outcomes=(),
         )
+
+    @classmethod
+    def restore(
+        cls,
+        *,
+        schema_version: object,
+        operation_id: object,
+        run_id: object,
+        plan_hash: object,
+        status: object,
+        attempt_count: object,
+        outcomes: object,
+    ) -> ExecutionOperation:
+        if schema_version != CURRENT_EXECUTION_OPERATION_SCHEMA_VERSION:
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        if not isinstance(outcomes, (list, tuple)):
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        try:
+            parsed_status = ExecutionOperationStatus(status)
+            parsed_outcomes = tuple(
+                ExecutionItemOutcome(item) for item in outcomes
+            )
+        except (TypeError, ValueError):
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE) from None
+        operation = cls._create(
+            operation_id=operation_id,  # type: ignore[arg-type]
+            run_id=run_id,  # type: ignore[arg-type]
+            plan_hash=plan_hash,  # type: ignore[arg-type]
+            status=parsed_status,
+            attempt_count=attempt_count,  # type: ignore[arg-type]
+            outcomes=parsed_outcomes,
+        )
+        if operation.status is ExecutionOperationStatus.SUPERSEDED:
+            if parsed_outcomes:
+                raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        elif operation.terminal:
+            if (
+                not parsed_outcomes
+                or reduce_execution_status(parsed_outcomes)
+                is not operation.status
+            ):
+                raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        elif parsed_outcomes:
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        return operation
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionOperationLease:
+    operation: ExecutionOperation
+    worker_id: str
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.operation, ExecutionOperation)
+            or self.operation.status is not ExecutionOperationStatus.RUNNING
+            or self.operation.attempt_count < 1
+            or not isinstance(self.expires_at, datetime)
+            or self.expires_at.tzinfo is None
+            or self.expires_at.utcoffset() is None
+        ):
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        _validate_text(self.worker_id)
+
+    @classmethod
+    def issue(
+        cls,
+        operation: ExecutionOperation,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_for: timedelta,
+    ) -> ExecutionOperationLease:
+        if (
+            not isinstance(operation, ExecutionOperation)
+            or operation.terminal
+            or not isinstance(now, datetime)
+            or now.tzinfo is None
+            or now.utcoffset() is None
+            or not isinstance(lease_for, timedelta)
+            or not timedelta(seconds=1)
+            <= lease_for
+            <= timedelta(hours=1)
+        ):
+            raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+        return cls(
+            operation=operation.begin_or_reconcile(),
+            worker_id=_validate_text(worker_id),
+            expires_at=now + lease_for,
+        )
+
+    def settle(
+        self,
+        outcomes: Iterable[ExecutionItemOutcome],
+        *,
+        now: datetime,
+    ) -> ExecutionOperation:
+        if (
+            not isinstance(now, datetime)
+            or now.tzinfo is None
+            or now.utcoffset() is None
+            or now >= self.expires_at
+        ):
+            raise DomainError(ErrorCode.PLAN_MAPPING_MISMATCH)
+        return self.operation.settle(outcomes)
 
 
 def decide_forward_move(

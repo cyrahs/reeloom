@@ -93,11 +93,23 @@ class PostgresApprovalStore:
                     )
                     claimed = connection.execute(
                         """
-                        SELECT c.approval_id
-                        FROM approval_claims AS c
-                        WHERE c.run_id = %s AND c.plan_hash = %s
+                        SELECT approval_id FROM (
+                            SELECT c.approval_id
+                            FROM approval_claims AS c
+                            WHERE c.run_id = %s AND c.plan_hash = %s
+                            UNION ALL
+                            SELECT o.approval_id
+                            FROM execution_operations_v2 AS o
+                            WHERE o.run_id = %s AND o.plan_hash = %s
+                        ) AS consumed
+                        LIMIT 1
                         """,
-                        (approval.run_id, approval.plan_hash),
+                        (
+                            approval.run_id,
+                            approval.plan_hash,
+                            approval.run_id,
+                            approval.plan_hash,
+                        ),
                     ).fetchone()
                     if claimed is not None:
                         raise ApprovalError(
@@ -110,10 +122,13 @@ class PostgresApprovalStore:
                         FROM approvals AS a
                         LEFT JOIN approval_claims AS c
                           ON c.approval_id = a.approval_id
+                        LEFT JOIN execution_operations_v2 AS o
+                          ON o.approval_id = a.approval_id
                         WHERE a.run_id = %s
                           AND a.plan_hash = %s
                           AND a.expires_at > %s
                           AND c.approval_id IS NULL
+                          AND o.approval_id IS NULL
                         ORDER BY a.issued_at DESC, a.approval_id DESC
                         LIMIT 1
                         """,
@@ -173,6 +188,14 @@ class PostgresApprovalStore:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    connection.execute(
+                        """
+                        SELECT pg_advisory_xact_lock(
+                            hashtextextended(%s, 0)
+                        )
+                        """,
+                        (run_id,),
+                    )
                     approval = self._load(connection, approval_id)
                     self._validate_binding(
                         approval,
@@ -182,6 +205,18 @@ class PostgresApprovalStore:
                     )
                     if approval.is_expired(self._clock()):
                         raise ApprovalError(ApprovalErrorCode.EXPIRED)
+                    v2_claim = connection.execute(
+                        """
+                        SELECT approval_id
+                        FROM execution_operations_v2
+                        WHERE run_id = %s AND plan_hash = %s
+                        """,
+                        (run_id, plan_hash),
+                    ).fetchone()
+                    if v2_claim is not None:
+                        raise ApprovalError(
+                            ApprovalErrorCode.ALREADY_CLAIMED
+                        )
                     inserted = connection.execute(
                         """
                         INSERT INTO approval_claims

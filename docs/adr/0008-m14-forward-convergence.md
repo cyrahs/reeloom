@@ -119,6 +119,13 @@ discovery payload 和 `RenamePlan v2` 不持久化 stat identity；规划开始�
 生成 v1 计划，避免在 M14.2 forward executor 和 M14.3 marker publisher 完成前把 v2
 计划交给旧副作用路径。plan-only 不再创建 folder disposition plan。
 
+## M14.2a 边界
+
+v2 使用单一 `execution_operations_v2` ledger 保存 authorization、lease、attempt 与终态；
+approval 首次绑定 operation 后不再创建 v1 claim/settlement 镜像。v1 claim 与 v2 operation
+通过同一 run advisory lock 互斥消费 approval，lease 过期后可由后台重领，终态不可修改。
+本小步没有连接 executor、API 或 UI，也不会产生文件系统 effect。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。
