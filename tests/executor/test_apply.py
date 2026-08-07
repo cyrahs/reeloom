@@ -147,6 +147,27 @@ def _apply(environment: _Environment):
     )
 
 
+def _begin_legacy_claimed_transaction(
+    environment: _Environment,
+) -> TransactionRecord:
+    manifest = ExecutionManifest.from_canonical_bytes(
+        environment.plans.load(environment.plan.plan_hash),
+        plan_hash=environment.plan.plan_hash,
+    )
+    transaction = TransactionRecord.create(
+        manifest,
+        approval_id=environment.approval.approval_id,
+    )
+    environment.journals.begin(transaction)
+    environment.approvals.claim(
+        approval_id=environment.approval.approval_id,
+        run_id=environment.plan.run_id,
+        plan_hash=environment.plan.plan_hash,
+        scope=ApprovalScope.APPLY,
+    )
+    return transaction
+
+
 def _destination(
     environment: _Environment,
     move_index: int,
@@ -493,6 +514,15 @@ def test_recovery_refuses_to_overwrite_recreated_source(
         )
 
     assert raised.value.code is ExecutorErrorCode.RECOVERY_REQUIRED
+    assert raised.value.context == {
+        "candidate_id": "video:1",
+        "destination_relative_path": (
+            environment.plan.draft.moves[0].destination.as_posix()
+        ),
+        "destination_state": "expected",
+        "source_relative_path": "episode-1.mkv",
+        "source_state": "drifted_regular",
+    }
     assert source.read_bytes() == b"new-source"
     assert _destination(environment, 0).read_bytes() == b"video-1"
 
@@ -900,3 +930,114 @@ def test_source_drift_after_claim_is_settled_without_moves(
         path.name.endswith(".claim.json")
         for path in environment.approvals.root.path.iterdir()
     )
+
+
+def test_legacy_claimed_source_drift_with_absent_destination_settles(
+    tmp_path: Path,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    transaction = _begin_legacy_claimed_transaction(environment)
+    source = environment.source / "episode-1.mkv"
+    source.rename(environment.source / "original-episode-1.mkv")
+    source.write_bytes(b"replacement")
+
+    recovered = environment.executor().recover(
+        plan_hash=environment.plan.plan_hash,
+        approval_id=environment.approval.approval_id,
+    )
+    recovered_again = environment.executor().recover(
+        plan_hash=environment.plan.plan_hash,
+        approval_id=environment.approval.approval_id,
+    )
+
+    assert recovered.status is ApplyStatus.ROLLED_BACK
+    assert recovered.failure_code is None
+    assert recovered.applied_count == 0
+    assert recovered.rolled_back_count == 0
+    assert recovered_again == recovered
+    assert environment.journals.is_rolled_back(transaction)
+    assert source.read_bytes() == b"replacement"
+    assert not _destination(environment, 0).exists()
+
+
+def test_legacy_claimed_recovery_rejects_missing_source_and_destination(
+    tmp_path: Path,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    _begin_legacy_claimed_transaction(environment)
+    (environment.source / "episode-1.mkv").unlink()
+
+    with pytest.raises(ExecutorError) as raised:
+        environment.executor().recover(
+            plan_hash=environment.plan.plan_hash,
+            approval_id=environment.approval.approval_id,
+        )
+
+    assert raised.value.code is ExecutorErrorCode.RECOVERY_REQUIRED
+    assert raised.value.context == {
+        "candidate_id": "video:1",
+        "destination_relative_path": (
+            environment.plan.draft.moves[0].destination.as_posix()
+        ),
+        "destination_state": "absent",
+        "source_relative_path": "episode-1.mkv",
+        "source_state": "absent",
+    }
+
+
+def test_legacy_claimed_recovery_rejects_nonregular_source(
+    tmp_path: Path,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    _begin_legacy_claimed_transaction(environment)
+    source = environment.source / "episode-1.mkv"
+    source.rename(environment.source / "original-episode-1.mkv")
+    source.mkdir()
+
+    with pytest.raises(ExecutorError) as raised:
+        environment.executor().recover(
+            plan_hash=environment.plan.plan_hash,
+            approval_id=environment.approval.approval_id,
+        )
+
+    assert raised.value.code is ExecutorErrorCode.RECOVERY_REQUIRED
+    assert raised.value.context["source_state"] == "other"
+    assert raised.value.context["destination_state"] == "absent"
+    assert source.is_dir()
+    assert not _destination(environment, 0).exists()
+
+
+def test_recovery_does_not_settle_drift_after_recorded_move_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+
+    def crash_before_completed_event(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        FilesystemJournalStore,
+        "record_completed",
+        crash_before_completed_event,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        _apply(environment)
+    monkeypatch.undo()
+    destination = _destination(environment, 0)
+    destination.unlink()
+    source = environment.source / "episode-1.mkv"
+    source.write_bytes(b"replacement")
+
+    with pytest.raises(ExecutorError) as raised:
+        environment.executor().recover(
+            plan_hash=environment.plan.plan_hash,
+            approval_id=environment.approval.approval_id,
+        )
+
+    assert raised.value.code is ExecutorErrorCode.RECOVERY_REQUIRED
+    assert raised.value.context["source_state"] == "drifted_regular"
+    assert raised.value.context["destination_state"] == "absent"
+    assert source.read_bytes() == b"replacement"
+    assert not destination.exists()
