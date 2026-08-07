@@ -1,5 +1,9 @@
 # ADR 0007：M13 动漫字幕探测与获取边界
 
+> M14 更新（2026-08-07）：ADR 0008 在 v2 中取代本 ADR 的 staging-directory
+> rename、持久 folder/inode identity、独立 subtitle recovery 和专用 successor
+> 状态机；论坛搜索、归档校验、完整 hash、独立 approval scope 与 Agent 边界不变。
+
 状态：Accepted
 
 日期：2026-08-03

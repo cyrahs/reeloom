@@ -1,10 +1,10 @@
 # Reeloom 初步实施计划
 
-状态：Draft v0.8
+状态：Draft v0.9
 
-日期：2026-08-01
+日期：2026-08-07
 
-当前进度：M0-M13 已完成。
+当前进度：M0-M13、M14.0 已完成；M14.1-M14.4 尚未开始。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -688,6 +688,41 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 搜索 POST 的精确同源结果跳转；所有 pytest 保持离线。robots.txt 不属于运行时配置或控制面。边界见
 [M13 计划](m13-plan.md) 与
 [ADR 0007](adr/0007-m13-subtitle-acquisition-boundary.md)。
+
+### M14：基于当前状态的前向收敛执行器
+
+当前状态：M14.0 已完成。已增加不含持久 stat identity 的 strict frozen v2 语义身份、
+canonical `RenamePlan v2`、纯 `ExecutionOperation v2` 状态机和完整 source/destination
+真值表。M14.0 只建立领域边界，不替换现有 scanner/watcher/executor，不迁移 v1 状态，
+也不开放文件副作用。
+
+固定决策：
+
+- 视频持久身份只使用相对路径、regular-file 和 size；字幕、下载归档及解压 member
+  继续使用完整 SHA-256；`device/inode/mtime/ctime` 不进入 v2 snapshot、plan hash、
+  freshness 或恢复。
+- root 只绑定 config revision、watch ID 和 no-follow 绝对路径。当前路径状态是执行与
+  reconcile 的唯一事实。
+- 执行 forward-only；独立安全项继续，部分成功不 rollback。原生 no-replace 不可用时，
+  在全局 effect mutex 内做 checked rename，并接受与外部 writer 之间的极小竞态。
+- approval 只授权 operation 首次启动；后台重试收敛同一 operation。v2 不再向用户暴露
+  approval ID 或定向 recovery。
+- 字幕改为 plan-owned 目录逐 member 排他写入并以 complete marker 发布；folder
+  archive/fail 降为 non-blocking best-effort housekeeping。
+
+后续增量：
+
+- M14.1：watcher 与 plan-only 切换到语义 snapshot/plan v2；验证 metadata-only 变化不
+  产生新 generation，同路径同大小替换不被识别。
+- M14.2：统一 operation ledger/lease、forward executor、自动 rescan 和 v2 API/UI；先
+  使用 semantic fake filesystem 离线验收。
+- M14.3：字幕 marker 发布、普通 durable scan request 和非阻塞 folder housekeeping；
+  移除三套面向用户的 recovery 入口。
+- M14.4：一次性 supersede 未结算 v1 effect、投递 fresh scan、清除旧锁，并在稳定后
+  删除 legacy recovery 与 v1 executor 写路径。
+
+完整决策、已接受的完整性取舍与 M14.0 副作用边界见
+[ADR 0008](adr/0008-m14-forward-convergence.md)。
 
 ## 9. 第一条端到端验收测试
 
