@@ -126,6 +126,15 @@ approval 首次绑定 operation 后不再创建 v1 claim/settlement 镜像。v1 
 通过同一 run advisory lock 互斥消费 approval，lease 过期后可由后台重领，终态不可修改。
 本小步没有连接 executor、API 或 UI，也不会产生文件系统 effect。
 
+## M14.2b 边界
+
+统一 forward executor 只依据每个计划项的当前 source/destination 语义状态执行：已满足
+即采用、可移动则前移、其余项以 stale/collision/unsafe/unavailable 终结，且独立项继续、
+从不 rollback。原生 no-replace 不支持时，在单进程 effect mutex 内做目标复检后使用
+checked rename；rename 返回值只是诊断，最终以有界重观察为准。目录 fsync 失败只记录
+warning。该层返回 durable fresh-scan intent，但在 M14.2c 前尚不注册 operation coordinator、
+HTTP API 或 successor run。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

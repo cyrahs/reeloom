@@ -13,6 +13,7 @@ from reeloom.adapters.filesystem import (
     ScanLimits,
 )
 from reeloom.adapters.plan_store import FilesystemPlanStore
+from reeloom.adapters.forward_filesystem import PosixForwardFilesystem
 from reeloom.adapters.subtitle_plan_store import (
     FilesystemSubtitleAcquisitionPlanStore,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "FfprobeResultStatus",
     "FilesystemVideoSubtitleInspector",
     "FilesystemPlanStore",
+    "PosixForwardFilesystem",
     "FilesystemSubtitleAcquisitionPlanStore",
     "FilesystemSubtitleArchiveInspector",
     "FixedSevenZipRunner",

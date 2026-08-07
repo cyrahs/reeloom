@@ -3,6 +3,11 @@
 from reeloom.ports.approvals import ApprovalStore
 from reeloom.ports.journals import JournalStore
 from reeloom.ports.plans import PlanCompiler, PlanStore
+from reeloom.ports.forward_filesystem import (
+    ForwardFilesystem,
+    ForwardMoveDiagnostic,
+    ForwardMoveEffect,
+)
 from reeloom.ports.subtitles import (
     SubtitleSample,
     SubtitleSampleProvider,
@@ -50,6 +55,9 @@ __all__ = [
     "VideoSubtitleInspector",
     "PlanCompiler",
     "PlanStore",
+    "ForwardFilesystem",
+    "ForwardMoveDiagnostic",
+    "ForwardMoveEffect",
     "TmdbErrorCode",
     "TmdbProvider",
     "TmdbProviderError",

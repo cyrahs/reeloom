@@ -4,7 +4,7 @@
 
 日期：2026-08-07
 
-当前进度：M0-M13、M14.0-M14.1b、M14.2a 已完成；M14.2b-M14.4 尚未开始。
+当前进度：M0-M13、M14.0-M14.2b 已完成；M14.2c-M14.4 尚未开始。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -726,7 +726,9 @@ no-follow 重扫并核对语义身份。manual/automatic、Movie 与启用 ACG.R
   使用 semantic fake filesystem 离线验收。
   - M14.2a（完成）：增加单一 PostgreSQL `execution_operations_v2` ledger、严格 lease
     CAS 与 approval/operation 互斥消费；尚未连接文件系统 effect、API 或 UI。
-  - M14.2b：实现 current-state filesystem reconciler、forward executor 与自动 rescan。
+  - M14.2b（完成）：实现 current-state filesystem adapter、forward executor、固定有界
+    重观察与 fresh-scan intent；覆盖 checked rename、延迟可见、rename 报错但已完成、
+    stat identity 不稳定和 fsync 不支持。durable rescan 投递随 M14.2c coordinator 接入。
   - M14.2c：接入 execute/reconcile service、read model、API 与 Web UI。
 - M14.3：字幕 marker 发布、普通 durable scan request 和非阻塞 folder housekeeping；
   移除三套面向用户的 recovery 入口。
