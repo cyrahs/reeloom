@@ -269,6 +269,30 @@ class SubtitleFailureDiagnostic(_StrictModel):
     member_index: int | None = Field(default=None, ge=0, le=255)
 
 
+class SubtitlePublicationFailureDiagnostic(_StrictModel):
+    schema_version: Literal[2]
+    stage: Literal["publication"]
+    reason: Literal[
+        "invalid_binding",
+        "no_follow_unavailable",
+        "directory_unreadable",
+        "unexpected_entry",
+        "casefold_collision",
+        "invalid_complete_marker",
+        "member_mismatch",
+        "content_unavailable",
+        "content_mismatch",
+        "member_post_write_mismatch",
+        "marker_post_write_mismatch",
+        "exclusive_name_exists",
+        "unsafe_path",
+        "filesystem_unavailable",
+        "collision",
+        "unsafe",
+        "unavailable",
+    ]
+
+
 class SubtitleAcquisitionView(_StrictModel):
     plan_hash: str
     policy: Literal["plan_only", "manual", "automatic"]
@@ -276,9 +300,11 @@ class SubtitleAcquisitionView(_StrictModel):
     approval_id: str | None
     transaction_id: str | None
     failure_code: str | None
-    failure_diagnostic: SubtitleFailureDiagnostic | None = None
+    failure_diagnostic: (
+        SubtitleFailureDiagnostic | SubtitlePublicationFailureDiagnostic | None
+    ) = None
     successor_status: Literal[
-        "queued", "retry_wait", "leased", "completed", "blocked"
+        "queued", "retry_wait", "leased", "dispatched", "completed", "blocked"
     ] | None = None
 
 

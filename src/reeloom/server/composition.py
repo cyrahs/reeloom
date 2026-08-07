@@ -25,8 +25,8 @@ from reeloom.adapters.approval import FilesystemApprovalStore
 from reeloom.adapters.subtitle_archive import (
     FilesystemSubtitleArchiveInspector,
 )
-from reeloom.adapters.subtitle_journal import (
-    FilesystemSubtitleAcquisitionJournalStore,
+from reeloom.adapters.subtitle_archive_cache import (
+    FilesystemSubtitleArchiveCache,
 )
 from reeloom.adapters.subtitle_plan_store import (
     FilesystemSubtitleAcquisitionPlanStore,
@@ -34,8 +34,8 @@ from reeloom.adapters.subtitle_plan_store import (
 from reeloom.executor.apply import FilesystemExecutor
 from reeloom.executor.forward import ForwardExecutor
 from reeloom.executor.folder_disposition import FolderDispositionExecutor
-from reeloom.executor.subtitle_acquisition import (
-    SubtitleAcquisitionExecutor,
+from reeloom.executor.subtitle_marker_acquisition import (
+    SubtitleMarkerAcquisitionExecutor,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.api import ApiDependencies, create_api
@@ -60,6 +60,10 @@ from reeloom.server.subtitle_successor import (
 from reeloom.server.subtitle_successor_repository import (
     PostgresSubtitleSuccessorOutbox,
 )
+from reeloom.server.subtitle_publication_repository import (
+    PostgresSubtitlePublicationRepository,
+)
+from reeloom.server.subtitle_scan import SubtitleScanWorker
 from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
 from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.archive_directory import run_directory_io
@@ -177,7 +181,7 @@ class _AcgripPlanningLease:
 @dataclass(frozen=True, slots=True)
 class _AcgripExecutorLease:
     fetcher: AcgripSubtitleArchiveFetcher
-    executor: SubtitleAcquisitionExecutor
+    executor: SubtitleMarkerAcquisitionExecutor
 
     async def close(self) -> None:
         await self.fetcher.aclose()
@@ -395,11 +399,11 @@ def build_application(
         subtitle_approval_root = _state_subdirectory(
             settings.state_root, "subtitle-approvals"
         )
-        subtitle_journal_root = _state_subdirectory(
-            settings.state_root, "subtitle-journals"
-        )
         subtitle_workspace = _state_subdirectory(
             settings.state_root, "subtitle-workspace"
+        )
+        subtitle_archive_cache_root = _state_subdirectory(
+            settings.state_root, "subtitle-archive-cache"
         )
         secrets = FilesystemSecretStore(secret_root)
         plans = FilesystemPlanStore(plan_root)
@@ -479,11 +483,14 @@ def build_application(
         subtitle_approvals = FilesystemApprovalStore(
             subtitle_approval_root
         )
-        subtitle_journals = FilesystemSubtitleAcquisitionJournalStore(
-            subtitle_journal_root
-        )
         subtitle_inspector = FilesystemSubtitleArchiveInspector()
+        subtitle_archive_cache = FilesystemSubtitleArchiveCache(
+            subtitle_archive_cache_root
+        )
         subtitle_successor_outbox = PostgresSubtitleSuccessorOutbox(
+            database.pool
+        )
+        subtitle_publications = PostgresSubtitlePublicationRepository(
             database.pool
         )
 
@@ -495,6 +502,7 @@ def build_application(
                     fetcher,
                     subtitle_inspector,
                     subtitle_plans,
+                    subtitle_archive_cache,
                 ),
             )
 
@@ -502,10 +510,10 @@ def build_application(
             fetcher = AcgripSubtitleArchiveFetcher(subtitle_workspace)
             return _AcgripExecutorLease(
                 fetcher,
-                SubtitleAcquisitionExecutor(
+                SubtitleMarkerAcquisitionExecutor(
                     subtitle_plans,
                     subtitle_approvals,
-                    subtitle_journals,
+                    subtitle_archive_cache,
                     fetcher,
                     subtitle_inspector,
                 ),
@@ -517,6 +525,7 @@ def build_application(
             approvals=subtitle_approvals,
             executor_factory=subtitle_executor_factory,
             successors=subtitle_successor_outbox,
+            publications=subtitle_publications,
         )
         subtitle_acquisitions.reconcile_approved()
         subtitle_successor_worker = SubtitleSuccessorWorker(
@@ -738,7 +747,7 @@ def build_application(
             ),
             subtitle_planning_factory=subtitle_planning_factory,
             subtitle_plan_sink=subtitle_acquisitions.register_plan,
-            subtitle_lineage_gate=subtitle_successor_outbox,
+            subtitle_lineage_gate=subtitle_publications,
         )
         background = BackgroundServices(
             boot_id=boot_id,
@@ -756,6 +765,10 @@ def build_application(
             ),
             subtitle_acquisitions=subtitle_acquisitions,
             subtitle_successors=subtitle_successor_worker,
+            subtitle_scans=SubtitleScanWorker(
+                publications=subtitle_publications,
+                scheduler=scheduler,
+            ),
             forward_execution=forward_execution,
             forward_rescans=ForwardRescanWorker(
                 operations=forward_operations,

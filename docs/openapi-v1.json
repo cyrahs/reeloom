@@ -2953,9 +2953,13 @@
                 "$ref": "#/components/schemas/SubtitleFailureDiagnostic"
               },
               {
+                "$ref": "#/components/schemas/SubtitlePublicationFailureDiagnostic"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Failure Diagnostic"
           },
           "plan_hash": {
             "title": "Plan Hash",
@@ -2989,8 +2993,9 @@
               {
                 "enum": [
                   "queued",
-                  "leased",
                   "retry_wait",
+                  "leased",
+                  "dispatched",
                   "completed",
                   "blocked"
                 ],
@@ -3057,9 +3062,13 @@
                 "$ref": "#/components/schemas/SubtitleFailureDiagnostic"
               },
               {
+                "$ref": "#/components/schemas/SubtitlePublicationFailureDiagnostic"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Failure Diagnostic"
           },
           "plan_hash": {
             "title": "Plan Hash",
@@ -3089,8 +3098,9 @@
               {
                 "enum": [
                   "queued",
-                  "leased",
                   "retry_wait",
+                  "leased",
+                  "dispatched",
                   "completed",
                   "blocked"
                 ],
@@ -3240,6 +3250,51 @@
           "reason"
         ],
         "title": "SubtitleFailureDiagnostic",
+        "type": "object"
+      },
+      "SubtitlePublicationFailureDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "enum": [
+              "invalid_binding",
+              "no_follow_unavailable",
+              "directory_unreadable",
+              "unexpected_entry",
+              "casefold_collision",
+              "invalid_complete_marker",
+              "member_mismatch",
+              "content_unavailable",
+              "content_mismatch",
+              "member_post_write_mismatch",
+              "marker_post_write_mismatch",
+              "exclusive_name_exists",
+              "unsafe_path",
+              "filesystem_unavailable",
+              "collision",
+              "unsafe",
+              "unavailable"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "stage": {
+            "const": "publication",
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "stage",
+          "reason"
+        ],
+        "title": "SubtitlePublicationFailureDiagnostic",
         "type": "object"
       },
       "TelegramConfigRequest": {

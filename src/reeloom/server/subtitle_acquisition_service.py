@@ -24,6 +24,13 @@ from reeloom.executor.subtitle_acquisition import (
     SubtitleAcquisitionExecutor,
     SubtitleAcquisitionResult,
 )
+from reeloom.executor.subtitle_marker_acquisition import (
+    SubtitleMarkerAcquisitionExecutor,
+)
+from reeloom.executor.subtitle_publication import (
+    SubtitlePublicationResult,
+    SubtitlePublicationState,
+)
 from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
 from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlan
 from reeloom.policy.path_policy import AuthorizedRoot
@@ -38,6 +45,9 @@ from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.subtitle_successor import SubtitleAcquisitionSettlement
 from reeloom.server.subtitle_successor_repository import (
     PostgresSubtitleSuccessorOutbox,
+)
+from reeloom.server.subtitle_publication_repository import (
+    PostgresSubtitlePublicationRepository,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,7 +92,9 @@ def _now() -> datetime:
 
 class SubtitleAcquisitionExecutorLease(Protocol):
     @property
-    def executor(self) -> SubtitleAcquisitionExecutor: ...
+    def executor(
+        self,
+    ) -> SubtitleAcquisitionExecutor | SubtitleMarkerAcquisitionExecutor: ...
 
     async def close(self) -> None: ...
 
@@ -120,7 +132,8 @@ class SubtitleAcquisitionCoordinator:
         plans: SubtitleAcquisitionPlanStore,
         approvals: ApprovalStore,
         executor_factory: SubtitleAcquisitionExecutorFactory,
-        successors: PostgresSubtitleSuccessorOutbox,
+        successors: PostgresSubtitleSuccessorOutbox | None = None,
+        publications: PostgresSubtitlePublicationRepository | None = None,
         clock: Callable[[], datetime] = _now,
     ) -> None:
         self._pool = pool
@@ -128,6 +141,9 @@ class SubtitleAcquisitionCoordinator:
         self._approvals = approvals
         self._executor_factory = executor_factory
         self._successors = successors
+        self._publications = publications
+        if successors is None and publications is None:
+            raise TypeError("one subtitle settlement repository is required")
         self._clock = clock
         self._global_gate = threading.Lock()
 
@@ -179,8 +195,6 @@ class SubtitleAcquisitionCoordinator:
                         or str(row[6]) != plan.source_folder
                         or str(row[7]) != plan.folder_generation_id
                         or str(row[8]) != plan.candidate_snapshot_id
-                        or int(row[9]) != plan.source_folder_device
-                        or int(row[10]) != plan.source_folder_inode
                         or str(row[12])
                         != "build_subtitle_acquisition_plan"
                         or config.revision != int(row[1])
@@ -311,12 +325,42 @@ class SubtitleAcquisitionCoordinator:
                     self._plans.load(plan_hash),
                     plan_hash=plan_hash,
                 )
-                settlement = SubtitleAcquisitionSettlement.create(
-                    plan=plan,
-                    result=result,
-                    origin_discovery_id=reservation.discovery_id,
-                )
-                self._successors.settle(settlement)
+                if isinstance(result, SubtitlePublicationResult):
+                    if result.state is not SubtitlePublicationState.COMPLETED:
+                        error = self._publication_error(result)
+                        if self._terminal_failure(error):
+                            self._mark_blocked(
+                                run_id=run_id,
+                                plan_hash=plan_hash,
+                                failure_code=self._failure_code(error),
+                                failure_diagnostic={
+                                    "schema_version": 2,
+                                    "stage": "publication",
+                                    "reason": result.reason or result.state.value,
+                                },
+                            )
+                        raise error
+                    if self._publications is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    self._publications.settle(
+                        plan=plan,
+                        approval_id=approval_id,
+                        result=result,
+                        origin_discovery_id=reservation.discovery_id,
+                    )
+                else:
+                    if self._successors is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    settlement = SubtitleAcquisitionSettlement.create(
+                        plan=plan,
+                        result=result,
+                        origin_discovery_id=reservation.discovery_id,
+                    )
+                    self._successors.settle(settlement)
                 resolved = self.resolve(run_id=run_id, plan_hash=plan_hash)
                 if resolved is None or resolved.status != "published":
                     raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
@@ -433,7 +477,7 @@ class SubtitleAcquisitionCoordinator:
         run_id: str,
         plan_hash: str,
         approval_id: str,
-    ) -> tuple[SubtitleAcquisitionResult, str]:
+    ) -> tuple[SubtitleAcquisitionResult | SubtitlePublicationResult, str]:
         """Apply or recover on one event loop and always close on that loop."""
 
         try:
@@ -444,10 +488,19 @@ class SubtitleAcquisitionCoordinator:
                 )
             except ApprovalError as error:
                 if error.code is ApprovalErrorCode.ALREADY_CLAIMED:
-                    result = await lease.executor.recover(
-                        plan_hash=plan_hash,
-                        approval_id=approval_id,
-                    )
+                    if isinstance(
+                        lease.executor,
+                        SubtitleMarkerAcquisitionExecutor,
+                    ):
+                        result = await lease.executor.reconcile(
+                            plan_hash=plan_hash,
+                            approval_id=approval_id,
+                        )
+                    else:
+                        result = await lease.executor.recover(
+                            plan_hash=plan_hash,
+                            approval_id=approval_id,
+                        )
                 elif error.code is ApprovalErrorCode.EXPIRED:
                     replacement = ApprovalRecord.create(
                         run_id=run_id,
@@ -851,10 +904,32 @@ class SubtitleAcquisitionCoordinator:
         plan: SubtitleAcquisitionPlan,
         root: AuthorizedRoot,
     ) -> bool:
-        return (
-            plan.source_root.path == PurePosixPath(root.path.as_posix())
-            and plan.source_root.device == root.device
-            and plan.source_root.inode == root.inode
+        return plan.source_root.path == PurePosixPath(root.path.as_posix())
+
+    @staticmethod
+    def _publication_error(
+        result: SubtitlePublicationResult,
+    ) -> ExecutorError:
+        code = {
+            SubtitlePublicationState.COLLISION: (
+                ExecutorErrorCode.DESTINATION_COLLISION
+            ),
+            SubtitlePublicationState.UNSAFE: (
+                ExecutorErrorCode.SYMLINK_NOT_ALLOWED
+            ),
+            SubtitlePublicationState.UNAVAILABLE: (
+                ExecutorErrorCode.TRANSIENT_IO
+            ),
+            SubtitlePublicationState.COMPLETED: (
+                ExecutorErrorCode.INVALID_PLAN
+            ),
+        }[result.state]
+        return ExecutorError(
+            code,
+            context={
+                "stage": "publication",
+                "reason": result.reason or result.state.value,
+            },
         )
 
     @staticmethod

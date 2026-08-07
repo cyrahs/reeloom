@@ -1274,7 +1274,8 @@ class PostgresSchedulerRepository:
                 with connection.transaction():
                     discovery = connection.execute(
                         """
-                        SELECT config_revision, work_type
+                        SELECT config_revision, work_type,
+                               watch_id, source_folder
                         FROM discoveries
                         WHERE discovery_id = %s
                         """,
@@ -1286,12 +1287,27 @@ class PostgresSchedulerRepository:
                     )
                     run_id = _id("run", discovery_id)
                     capability = _id("capability", run_id)
+                    pending = connection.execute(
+                        """
+                        SELECT request_id, lineage_key
+                        FROM subtitle_scan_requests_v2
+                        WHERE watch_id = %s AND source_folder = %s
+                          AND state = 'dispatched'
+                          AND successor_discovery_id IS NULL
+                        ORDER BY created_at, request_id
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                        """,
+                        (str(discovery[2]), str(discovery[3])),
+                    ).fetchone()
+                    lineage_key = None if pending is None else str(pending[1])
                     connection.execute(
                         """
                         INSERT INTO runs
                             (run_id, discovery_id, config_revision, work_type,
-                             source_capability, status)
-                        VALUES (%s, %s, %s, %s, %s, 'registered')
+                             source_capability, status,
+                             subtitle_acquisition_lineage_key)
+                        VALUES (%s, %s, %s, %s, %s, 'registered', %s)
                         ON CONFLICT (discovery_id) DO NOTHING
                         """,
                         (
@@ -1300,6 +1316,7 @@ class PostgresSchedulerRepository:
                             int(discovery[0]),
                             str(discovery[1]),
                             capability,
+                            lineage_key,
                         ),
                     )
                     row = connection.execute(
@@ -1312,6 +1329,23 @@ class PostgresSchedulerRepository:
                         (discovery_id,),
                     ).fetchone()
                     actual_run = str(row[0])
+                    if pending is not None:
+                        completed = connection.execute(
+                            """
+                            UPDATE subtitle_scan_requests_v2
+                            SET state = 'completed',
+                                successor_discovery_id = %s,
+                                successor_run_id = %s,
+                                updated_at = clock_timestamp()
+                            WHERE request_id = %s
+                              AND state = 'dispatched'
+                              AND successor_discovery_id IS NULL
+                            RETURNING request_id
+                            """,
+                            (discovery_id, actual_run, str(pending[0])),
+                        ).fetchone()
+                        if completed is None:
+                            raise ServerError(ServerErrorCode.RUN_BUSY)
                     actual_job = _id("job", actual_run)
                     connection.execute(
                         """
@@ -1348,6 +1382,173 @@ class PostgresSchedulerRepository:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
+
+    def dispatch_subtitle_scan(
+        self,
+        *,
+        request_id: str,
+        run_id: str,
+        worker_id: str,
+        attempt_count: int,
+        lease_expires_at: datetime,
+        now: datetime,
+    ) -> None:
+        """Durably return a completed subtitle publication to normal polling."""
+
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    existing = connection.execute(
+                        """
+                        SELECT 1 FROM scheduler_audit
+                        WHERE event_type = 'subtitle_scan_dispatched_v2'
+                          AND subject_id = %s
+                        """,
+                        (request_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        return
+                    request = connection.execute(
+                        """
+                        SELECT scan.watch_id, scan.source_folder,
+                               discovery.discovery_id, scan.lineage_key
+                        FROM subtitle_scan_requests_v2 AS scan
+                        JOIN runs AS run ON run.run_id = scan.run_id
+                        JOIN discoveries AS discovery
+                          ON discovery.discovery_id = run.discovery_id
+                        WHERE scan.request_id = %s
+                          AND scan.run_id = %s
+                          AND scan.state = 'leased'
+                          AND scan.lease_owner = %s
+                          AND scan.attempt_count = %s
+                          AND scan.lease_expires_at = %s
+                          AND scan.lease_expires_at > %s
+                          AND run.status = 'superseded'
+                        FOR UPDATE OF scan
+                        """,
+                        (
+                            request_id,
+                            run_id,
+                            worker_id,
+                            attempt_count,
+                            lease_expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if request is None:
+                        raise ServerError(ServerErrorCode.RUN_BUSY)
+                    observation = connection.execute(
+                        """
+                        SELECT status, discovery_id
+                        FROM watch_folder_observations
+                        WHERE watch_id = %s AND folder_name = %s
+                        FOR UPDATE
+                        """,
+                        (
+                            str(request[0]),
+                            str(request[1]),
+                        ),
+                    ).fetchone()
+                    if observation is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    current_discovery = (
+                        None if observation[1] is None else str(observation[1])
+                    )
+                    successor_run: str | None = None
+                    if (
+                        str(observation[0]) == "active"
+                        and current_discovery == str(request[2])
+                    ):
+                        connection.execute(
+                            """
+                            UPDATE watch_folder_observations
+                            SET discovery_id = NULL, status = 'settling',
+                                first_observed_at = %s, stable_at = NULL,
+                                blocked_reason = NULL, retry_count = 0
+                            WHERE watch_id = %s AND folder_name = %s
+                            """,
+                            (now, str(request[0]), str(request[1])),
+                        )
+                    elif (
+                        str(observation[0]) == "active"
+                        and current_discovery is not None
+                    ):
+                        successor = connection.execute(
+                            """
+                            SELECT run_id, subtitle_acquisition_lineage_key
+                            FROM runs
+                            WHERE discovery_id = %s
+                            FOR UPDATE
+                            """,
+                            (current_discovery,),
+                        ).fetchone()
+                        if successor is not None:
+                            if successor[1] not in {None, str(request[3])}:
+                                raise ServerError(
+                                    ServerErrorCode.INTERACTION_CONFLICT
+                                )
+                            successor_run = str(successor[0])
+                            connection.execute(
+                                """
+                                UPDATE runs
+                                SET subtitle_acquisition_lineage_key = %s
+                                WHERE run_id = %s
+                                  AND subtitle_acquisition_lineage_key IS NULL
+                                """,
+                                (str(request[3]), successor_run),
+                            )
+                    elif not (
+                        str(observation[0]) == "settling"
+                        and current_discovery is None
+                    ):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    if successor_run is None:
+                        connection.execute(
+                            """
+                            UPDATE subtitle_scan_requests_v2
+                            SET state = 'dispatched', lease_owner = NULL,
+                                lease_expires_at = NULL, updated_at = %s
+                            WHERE request_id = %s
+                            """,
+                            (now, request_id),
+                        )
+                    else:
+                        connection.execute(
+                            """
+                            UPDATE subtitle_scan_requests_v2
+                            SET state = 'completed', lease_owner = NULL,
+                                lease_expires_at = NULL,
+                                successor_discovery_id = %s,
+                                successor_run_id = %s, updated_at = %s
+                            WHERE request_id = %s
+                            """,
+                            (
+                                current_discovery,
+                                successor_run,
+                                now,
+                                request_id,
+                            ),
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit
+                            (event_type, subject_id)
+                        VALUES ('subtitle_scan_dispatched_v2', %s)
+                        """,
+                        (request_id,),
+                    )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
     def claim_job(self, *, boot_id: str) -> ClaimedJob | None:
         try:

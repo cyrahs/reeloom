@@ -44,6 +44,7 @@ from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
 from reeloom.server.subtitle_successor import SubtitleSuccessorWorker
+from reeloom.server.subtitle_scan import SubtitleScanWorker
 
 _LOG = logging.getLogger(__name__)
 _MAX_FOLDER_FAILURE_RETRIES = 3
@@ -74,6 +75,7 @@ class BackgroundServices:
     notifications: ConfiguredNotificationDelivery | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     subtitle_successors: SubtitleSuccessorWorker | None = None
+    subtitle_scans: SubtitleScanWorker | None = None
     forward_execution: ForwardExecutionCoordinator | None = None
     forward_rescans: ForwardRescanWorker | None = None
     watcher: NoFollowWatcher = NoFollowWatcher()
@@ -154,6 +156,11 @@ class BackgroundServices:
                             now=datetime.now(UTC),
                         )
                         is not None
+                    ) or progressed
+                if self.subtitle_scans is not None:
+                    progressed = self.subtitle_scans.process_one(
+                        worker_id=self.boot_id,
+                        now=datetime.now(UTC),
                     ) or progressed
                 if self.forward_execution is not None:
                     progressed = (

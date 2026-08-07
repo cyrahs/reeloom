@@ -103,6 +103,37 @@ const subtitleFailureDiagnosticSchema = z
   })
   .strict();
 
+const subtitlePublicationFailureDiagnosticSchema = z
+  .object({
+    schema_version: z.literal(2),
+    stage: z.literal("publication"),
+    reason: z.enum([
+      "invalid_binding",
+      "no_follow_unavailable",
+      "directory_unreadable",
+      "unexpected_entry",
+      "casefold_collision",
+      "invalid_complete_marker",
+      "member_mismatch",
+      "content_unavailable",
+      "content_mismatch",
+      "member_post_write_mismatch",
+      "marker_post_write_mismatch",
+      "exclusive_name_exists",
+      "unsafe_path",
+      "filesystem_unavailable",
+      "collision",
+      "unsafe",
+      "unavailable",
+    ]),
+  })
+  .strict();
+
+const anySubtitleFailureDiagnosticSchema = z.union([
+  subtitleFailureDiagnosticSchema,
+  subtitlePublicationFailureDiagnosticSchema,
+]);
+
 const forwardExecutionSchema = z
   .object({
     operation_id: z.string(),
@@ -275,11 +306,11 @@ export const runSchema = z
         approval_id: z.string().nullable(),
         transaction_id: z.string().nullable(),
         failure_code: z.string().nullable(),
-        failure_diagnostic: subtitleFailureDiagnosticSchema
+        failure_diagnostic: anySubtitleFailureDiagnosticSchema
           .nullable()
           .default(null),
         successor_status: z
-          .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
+          .enum(["queued", "retry_wait", "leased", "dispatched", "completed", "blocked"])
           .nullable()
           .default(null),
       })
@@ -593,11 +624,11 @@ export const subtitleAcquisitionResultSchema = z
     approval_id: z.string().nullable(),
     transaction_id: z.string().nullable(),
     failure_code: z.string().nullable(),
-    failure_diagnostic: subtitleFailureDiagnosticSchema
+    failure_diagnostic: anySubtitleFailureDiagnosticSchema
       .nullable()
       .default(null),
     successor_status: z
-      .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
+      .enum(["queued", "retry_wait", "leased", "dispatched", "completed", "blocked"])
       .nullable()
       .default(null),
   })

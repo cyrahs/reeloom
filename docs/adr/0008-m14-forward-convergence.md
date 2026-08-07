@@ -162,6 +162,24 @@ marker publisher 和 non-blocking folder housekeeping。
 旧 journal/recovery 行为尚未在本步骤删除。内容寻址缓存、普通 scan request、删除字幕专用
 successor/recovery 以及 production 切换分别留给 M14.3b-M14.3c。
 
+## M14.3b 边界
+
+归档在首次 planning 下载并通过 inspector 后进入媒体根外的 SHA-256 cache；cache entry 以
+完整 size/hash 读取，既有内容不一致时永不覆盖。marker executor 重入时优先使用 plan 中的
+volume hash 从 cache 重建，cache entry 确实不存在时才重新解析同源附件、下载并精确核对
+plan hash。持久的 archive `dev/inode/mtime/ctime` 不参与复用判断。
+
+ACG.RIP production executor 已切换为 journal-free current-state publication。完成后写新的
+semantic settlement 和 durable `subtitle_scan_requests_v2`，由 watcher/scheduler 的普通
+稳定窗口生成 fresh discovery/run；一次性 acquisition lineage 在普通 run registration 时
+传播，防止再次自动获取。marker publication 与 DB settlement 之间即使 watcher 抢先观察，
+scan dispatch 也会对旧 observation、settling observation 或较新的 discovery/run 分别收敛。
+
+新任务不再写 subtitle filesystem journal、staging rename 或 subtitle-specific successor
+outbox；旧表与旧 worker 只为 M14.4 一次性迁移前已经存在的记录保留。由于 unified v2 ledger
+当前仍由 media `plan_lineage + apply` 外键约束，字幕独立 plan family 的 ledger 合并留在
+M14.4 schema migration，不能用伪造 media lineage 提前接入。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

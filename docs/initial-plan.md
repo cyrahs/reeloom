@@ -4,7 +4,7 @@
 
 日期：2026-08-07
 
-当前进度：M0-M13、M14.0-M14.2c、M14.3a 已完成；M14.3b-M14.4 尚未开始。
+当前进度：M0-M13、M14.0-M14.2c、M14.3a-M14.3b 已完成；M14.3c-M14.4 尚未开始。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -691,12 +691,13 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 
 ### M14：基于当前状态的前向收敛执行器
 
-当前状态：M14.0-M14.2c、M14.3a 已完成。除 v2 语义身份、plan、operation ledger、
+当前状态：M14.0-M14.2c、M14.3a-M14.3b 已完成。除 v2 语义身份、plan、operation ledger、
 forward executor 与 server-owned execute/reconcile control plane 外，现已增加 canonical
 字幕 publication manifest、直接写 plan-owned 最终目录的 forward-only marker publisher，
 并让 watcher 只接纳 marker 与全部 member 当前 hash 一致的发布目录。现有 M13 publisher
-在迁移期间也会补写相同 marker，避免生成 watcher 不可见的已完成目录。manual/automatic、
-Movie 与启用 ACG.RIP 的 M13 production 切换仍等待 M14.3b-M14.3c。
+在迁移期间也会补写相同 marker，避免生成 watcher 不可见的已完成目录。ACG.RIP production
+现已切换到内容寻址缓存、journal-free marker executor 和普通 scan request；manual/automatic
+media 与 folder housekeeping 的 v2 production 切换仍等待 M14.3c。
 
 固定决策：
 
@@ -736,8 +737,11 @@ Movie 与启用 ACG.RIP 的 M13 production 切换仍等待 M14.3b-M14.3c。
     O_NOFOLLOW` 的 forward-only marker publisher、完整 marker/member watcher 校验；fsync
     失败只记 warning，partial/corrupt publication 不进入 snapshot。v1 publisher 过渡性补写
     同一 marker，production executor 切换留给 M14.3b。
-  - M14.3b：接入内容寻址归档缓存、marker publisher 与普通 durable scan request，并移除
-    subtitle-specific recovery/successor 写路径。
+  - M14.3b（完成）：首次 planning 后把验证卷保存到媒体根外的 SHA-256 cache；执行优先
+    复用 cache，确实缺失才重新获取。production 已切换到 current-state marker executor，
+    新 settlement 只写语义 publication identity，并经 durable 普通 scan request 回到 watcher；
+    新任务不再创建 subtitle filesystem journal 或 subtitle-specific successor。旧 outbox 仅为
+    M14.4 迁移前已存在记录保留只读/排空能力。
   - M14.3c：接入 non-blocking folder housekeeping、handled inventory，再启用 v2
     manual/automatic production。
 - M14.4：一次性 supersede 未结算 v1 effect、投递 fresh scan、清除旧锁，并在稳定后

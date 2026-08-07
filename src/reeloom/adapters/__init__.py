@@ -21,6 +21,9 @@ from reeloom.adapters.subtitle_archive import (
     FilesystemSubtitleArchiveInspector,
     FixedSevenZipRunner,
 )
+from reeloom.adapters.subtitle_archive_cache import (
+    FilesystemSubtitleArchiveCache,
+)
 from reeloom.adapters.journal import FilesystemJournalStore
 from reeloom.adapters.subtitle_journal import (
     FilesystemSubtitleAcquisitionJournalStore,
@@ -46,6 +49,7 @@ __all__ = [
     "PosixForwardFilesystem",
     "FilesystemSubtitleAcquisitionPlanStore",
     "FilesystemSubtitleArchiveInspector",
+    "FilesystemSubtitleArchiveCache",
     "FixedSevenZipRunner",
     "FilesystemJournalStore",
     "FilesystemSubtitleAcquisitionJournalStore",

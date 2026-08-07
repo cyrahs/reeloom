@@ -11,6 +11,9 @@ import pytest
 from reeloom.adapters.subtitle_plan_store import (
     FilesystemSubtitleAcquisitionPlanStore,
 )
+from reeloom.adapters.subtitle_archive_cache import (
+    FilesystemSubtitleArchiveCache,
+)
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.subtitle_acquisition import (
     CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION,
@@ -178,6 +181,37 @@ def test_planner_fetches_shared_archive_once_and_persists_canonical_plan(
     assert store.load(plan.plan_hash) == plan.canonical_bytes()
 
 
+def test_planner_persists_verified_download_in_content_cache(tmp_path) -> None:
+    source = tmp_path / "media"
+    workspace = tmp_path / "workspace"
+    plan_root = tmp_path / "plans"
+    cache_root = tmp_path / "cache"
+    source.mkdir()
+    (source / "release").mkdir()
+    workspace.mkdir()
+    plan_root.mkdir()
+    cache_root.mkdir()
+    capability = _capability()
+    fetcher = _Fetcher(workspace, capability)
+    cache = FilesystemSubtitleArchiveCache(
+        AuthorizedRoot.create(cache_root)
+    )
+    planner = SubtitleAcquisitionPlanner(
+        fetcher,
+        _Inspector(),
+        FilesystemSubtitleAcquisitionPlanStore(
+            AuthorizedRoot.create(plan_root)
+        ),
+        cache,
+    )
+
+    plan = asyncio.run(planner.build(_request(source, capability)))
+    cached = cache.load(capability, plan.archives[0].volumes)
+
+    assert cached is not None
+    assert cached.volumes[0].path.parent == cache_root
+
+
 def test_planner_rejects_workspace_inside_media_root_before_fetch(tmp_path) -> None:
     source = tmp_path / "media"
     workspace = source / "workspace"
@@ -226,7 +260,7 @@ def test_planner_rejects_provider_or_inspector_version_drift(tmp_path) -> None:
     assert fetcher.calls == 0
 
 
-def test_planner_revalidates_source_folder_identity_before_download(
+def test_planner_uses_current_directory_instead_of_persisted_stat_identity(
     tmp_path,
 ) -> None:
     source = tmp_path / "media"
@@ -252,8 +286,7 @@ def test_planner_revalidates_source_folder_identity_before_download(
         ),
     )
 
-    with pytest.raises(SubtitleArchiveError) as raised:
-        asyncio.run(planner.build(request))
-    assert raised.value.code is SubtitleArchiveErrorCode.CAPABILITY_CHANGED
-    assert fetcher.calls == 0
-    assert tuple(plan_root.iterdir()) == ()
+    plan = asyncio.run(planner.build(request))
+
+    assert plan.source_folder_inode == request.source_folder_inode
+    assert fetcher.calls == 1

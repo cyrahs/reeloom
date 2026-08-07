@@ -20,6 +20,7 @@ from reeloom.kernel.subtitle_acquisition import (
 )
 from reeloom.ports.subtitle_acquisition import (
     SubtitleAcquisitionPlanStore,
+    SubtitleArchiveCache,
     SubtitleArchiveError,
     SubtitleArchiveErrorCode,
     SubtitleArchiveFetcher,
@@ -75,6 +76,7 @@ class SubtitleAcquisitionPlanner:
     fetcher: SubtitleArchiveFetcher
     inspector: SubtitleArchiveInspector
     plans: SubtitleAcquisitionPlanStore
+    cache: SubtitleArchiveCache | None = None
 
     async def build(
         self,
@@ -113,6 +115,12 @@ class SubtitleAcquisitionPlanner:
             downloaded = await self.fetcher.fetch(capability)
             if downloaded.capability != capability:
                 raise _capability_error()
+            if self.cache is not None:
+                self._require_disjoint_workspace(
+                    Path(request.source_root.path.as_posix()),
+                    self.cache.cache_root,
+                )
+                downloaded = self.cache.store(downloaded)
             result = await self.inspector.inspect(
                 downloaded,
                 season_numbers=tuple(sorted(seasons_by_archive[archive_set_id])),
@@ -177,11 +185,7 @@ class SubtitleAcquisitionPlanner:
                 | getattr(os, "O_CLOEXEC", 0),
             )
             root_metadata = os.fstat(root_fd)
-            if (
-                not stat.S_ISDIR(root_metadata.st_mode)
-                or (root_metadata.st_dev, root_metadata.st_ino)
-                != (request.source_root.device, request.source_root.inode)
-            ):
+            if not stat.S_ISDIR(root_metadata.st_mode):
                 raise _capability_error()
             folder_fd = os.open(
                 request.source_folder,
@@ -192,14 +196,7 @@ class SubtitleAcquisitionPlanner:
                 dir_fd=root_fd,
             )
             folder_metadata = os.fstat(folder_fd)
-            if (
-                not stat.S_ISDIR(folder_metadata.st_mode)
-                or (folder_metadata.st_dev, folder_metadata.st_ino)
-                != (
-                    request.source_folder_device,
-                    request.source_folder_inode,
-                )
-            ):
+            if not stat.S_ISDIR(folder_metadata.st_mode):
                 raise _capability_error()
         except SubtitleArchiveError:
             raise

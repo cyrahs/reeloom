@@ -342,6 +342,24 @@ class SubtitleArchiveFetcher(Protocol):
     ) -> DownloadedSubtitleArchiveSet: ...
 
 
+class SubtitleArchiveCache(Protocol):
+    """Content-addressed archive bytes outside every authorized media root."""
+
+    @property
+    def cache_root(self) -> Path: ...
+
+    def store(
+        self,
+        downloaded: DownloadedSubtitleArchiveSet,
+    ) -> DownloadedSubtitleArchiveSet: ...
+
+    def load(
+        self,
+        capability: SubtitleArchiveSetCapability,
+        volumes: tuple[SubtitleArchiveVolume, ...],
+    ) -> DownloadedSubtitleArchiveSet | None: ...
+
+
 class SubtitleArchiveInspector(Protocol):
     """Inspect already-downloaded volumes without choosing output paths."""
 

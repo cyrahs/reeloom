@@ -474,7 +474,10 @@ class PostgresQueries:
                            acquisition.approval_id,
                            acquisition.transaction_id,
                            acquisition.failure_code,
-                           successor.state,
+                           COALESCE(
+                               publication_scan.state,
+                               successor.state
+                           ),
                            s.projection_payload->>'stop_reason',
                            d.folder_generation_id IS NOT NULL,
                            COALESCE(observation.retry_count, 3),
@@ -571,6 +574,12 @@ class PostgresQueries:
                     LEFT JOIN subtitle_successor_outbox AS successor
                       ON successor.lineage_key =
                          acquisition_settlement.lineage_key
+                    LEFT JOIN subtitle_publication_settlements_v2
+                        AS publication_settlement
+                      ON publication_settlement.origin_run_id = r.run_id
+                    LEFT JOIN subtitle_scan_requests_v2 AS publication_scan
+                      ON publication_scan.lineage_key =
+                         publication_settlement.lineage_key
                     LEFT JOIN watch_folder_observations AS observation
                       ON observation.discovery_id = d.discovery_id
                     LEFT JOIN LATERAL (
