@@ -11,7 +11,7 @@ import {
   runStatusForDisplay,
   shouldShowArchiveReport,
 } from "../src/pages/RunPage";
-import { errorMessage } from "../src/components/Status";
+import { PageError, errorMessage } from "../src/components/Status";
 
 test("only the current durable plan can be approved", () => {
   expect(canApproveCurrentPlan("sha256:head", "sha256:head")).toBe(true);
@@ -69,6 +69,25 @@ test("permission failures have actionable text", () => {
 test("interaction budget failures distinguish retryable timeouts", () => {
   expect(errorMessage("interaction_budget_exhausted")).toMatch(
     /单次超时可重试/,
+  );
+});
+
+test("recovery failures show bounded source and destination states", () => {
+  render(
+    createElement(PageError, {
+      code: "recovery_required",
+      context: {
+        candidate_id: "video:1",
+        source_relative_path: "episode.mkv",
+        source_state: "absent",
+        destination_relative_path: "Series/episode.mkv",
+        destination_state: "other",
+      },
+    }),
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "video:1；源 episode.mkv 状态absent；目标 Series/episode.mkv 状态other",
   );
 });
 

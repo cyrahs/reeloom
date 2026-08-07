@@ -35,10 +35,30 @@ export function ShortHash({
   );
 }
 
-export function PageError({ code }: { code: string }) {
+export function PageError({
+  code,
+  context = {},
+}: {
+  code: string;
+  context?: Readonly<Record<string, string>>;
+}) {
+  const candidate = context.candidate_id;
+  const sourcePath = context.source_relative_path;
+  const sourceState = context.source_state;
+  const destinationPath = context.destination_relative_path;
+  const destinationState = context.destination_state;
+  const hasRecoveryContext =
+    candidate && sourcePath && sourceState && destinationPath && destinationState;
   return (
     <div className="notice danger" role="alert">
       {errorMessage(code)} <code>{code}</code>
+      {hasRecoveryContext ? (
+        <p>
+          候选 <code>{candidate}</code>；源 <code>{sourcePath}</code> 状态
+          <code>{sourceState}</code>；目标 <code>{destinationPath}</code> 状态
+          <code>{destinationState}</code>。
+        </p>
+      ) : null}
     </div>
   );
 }

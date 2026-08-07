@@ -441,6 +441,7 @@ class FilesystemExecutor:
                 and summary.failure_code
                 in {None, ExecutorErrorCode.SOURCE_DRIFT}
             )
+            observed_state_drift = False
             for move in reversed(manifest.moves):
                 allow_restored = (
                     self.journals.is_rollback_started(
@@ -452,21 +453,42 @@ class FilesystemExecutor:
                     transaction,
                     move.source_id,
                 )
-                if self._rollback_move(
-                    manifest,
-                    move,
-                    allow_restored=allow_restored,
-                    # A legacy preflight crash can leave a claim and journal
-                    # before any move event. A drifted regular source is safe
-                    # to leave in place only when the whole transaction has
-                    # zero recorded effects and its destination is absent.
-                    allow_drifted_source=allow_root_rebind,
-                    allow_root_rebind=allow_root_rebind,
-                ):
+                try:
+                    rolled_back = self._rollback_move(
+                        manifest,
+                        move,
+                        allow_restored=allow_restored,
+                        # A legacy preflight crash can leave a claim and
+                        # journal before any move event. A drifted regular
+                        # source is safe to leave in place only when the whole
+                        # transaction has zero recorded effects and its
+                        # destination is absent.
+                        allow_drifted_source=allow_root_rebind,
+                        allow_root_rebind=allow_root_rebind,
+                    )
+                except ExecutorError as error:
+                    if not (
+                        allow_root_rebind
+                        and self._is_recovery_state_drift(error)
+                    ):
+                        raise
+                    # No move was ever journaled, and the current paths do not
+                    # contain a safely reversible planned effect. Leave every
+                    # ambiguous entry untouched, retire the stale transaction
+                    # as source drift, and let a fresh scan describe reality.
+                    observed_state_drift = True
+                    continue
+                if rolled_back:
                     self.journals.record_rollback(
                         transaction,
                         move.source_id,
                     )
+            if observed_state_drift:
+                self._record_failure_once(
+                    transaction,
+                    manifest,
+                    ExecutorErrorCode.SOURCE_DRIFT,
+                )
             self.journals.record_rolled_back(transaction)
         except ExecutorError as error:
             raise ExecutorError(
@@ -892,6 +914,20 @@ class FilesystemExecutor:
                 "source_relative_path": source.relative_path.as_posix(),
                 "source_state": source_state,
             },
+        )
+
+    @staticmethod
+    def _is_recovery_state_drift(error: ExecutorError) -> bool:
+        return (
+            error.code is ExecutorErrorCode.RECOVERY_REQUIRED
+            and set(error.context)
+            == {
+                "candidate_id",
+                "destination_relative_path",
+                "destination_state",
+                "source_relative_path",
+                "source_state",
+            }
         )
 
     @classmethod

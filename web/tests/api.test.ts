@@ -27,3 +27,34 @@ test("API client sends authenticated DELETE requests", async () => {
     }),
   );
 });
+
+test("API client preserves bounded executor error context", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        error: {
+          code: "recovery_required",
+          context: {
+            candidate_id: "video:1",
+            source_state: "absent",
+            ignored: 123,
+          },
+        },
+      }),
+      {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      },
+    ),
+  );
+  const api = new ApiClient("admin-token", () => undefined);
+
+  await expect(api.request("/test", z.never())).rejects.toMatchObject({
+    status: 409,
+    code: "recovery_required",
+    context: {
+      candidate_id: "video:1",
+      source_state: "absent",
+    },
+  });
+});
