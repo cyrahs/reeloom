@@ -260,7 +260,7 @@ def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
     assert run["status"] == "needs_attention"
     assert run["available_actions"] == [
         "retry_subtitle_acquisition",
-        "fail_run",
+        "fail_subtitle_acquisition",
     ]
     assert run["subtitle_acquisition"]["failure_diagnostic"] == row[49]
 
@@ -286,7 +286,10 @@ def test_subtitle_recovery_does_not_require_active_watch_observation() -> None:
 
     assert run is not None
     assert run["status"] == "needs_attention"
-    assert run["available_actions"] == ["retry_subtitle_acquisition"]
+    assert run["available_actions"] == [
+        "retry_subtitle_acquisition",
+        "fail_subtitle_acquisition",
+    ]
 
 
 def test_noncollision_subtitle_failure_is_not_retryable() -> None:
@@ -309,7 +312,7 @@ def test_noncollision_subtitle_failure_is_not_retryable() -> None:
     run = queries.get_run("run-1")
 
     assert run is not None
-    assert run["available_actions"] == ["fail_run"]
+    assert run["available_actions"] == ["fail_subtitle_acquisition"]
 
 
 def test_pending_job_hides_manual_subtitle_action() -> None:

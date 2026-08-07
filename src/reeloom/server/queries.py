@@ -616,10 +616,13 @@ class PostgresQueries:
                 }
             ):
                 actions.append("retry_subtitle_acquisition")
+            if acquisition_attention:
+                actions.append("fail_subtitle_acquisition")
             if bool(row[45]) and bool(row[47]) and row[48] == "completed":
-                if not acquisition_attention and int(row[46]) < 3:
-                    actions.append("retry_run")
-                actions.append("fail_run")
+                if not acquisition_attention:
+                    if int(row[46]) < 3:
+                        actions.append("retry_run")
+                    actions.append("fail_run")
         elif (
             not busy
             and attention_state

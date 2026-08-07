@@ -86,6 +86,44 @@ class _RetryPool:
         return self.connection_value
 
 
+class _FailConnection:
+    def __init__(self, row: tuple[object, ...] | None) -> None:
+        self.row = row
+        self.current: tuple[object, ...] | None = None
+        self.queries: list[str] = []
+        self.params: list[tuple[object, ...]] = []
+
+    def __enter__(self) -> _FailConnection:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def transaction(self) -> _FailConnection:
+        return self
+
+    def execute(
+        self,
+        query: str,
+        params: tuple[object, ...],
+    ) -> _FailConnection:
+        self.queries.append(query)
+        self.params.append(params)
+        self.current = self.row if "UPDATE runs AS run" in query else None
+        return self
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return self.current
+
+
+class _FailPool:
+    def __init__(self, row: tuple[object, ...] | None) -> None:
+        self.connection_value = _FailConnection(row)
+
+    def connection(self) -> _FailConnection:
+        return self.connection_value
+
+
 def test_executor_and_transport_close_share_one_event_loop() -> None:
     coordinator = SubtitleAcquisitionCoordinator(
         pool=cast(ConnectionPool, object()),
@@ -187,3 +225,59 @@ def test_retry_rejects_nonmatching_blocked_request() -> None:
         assert error.code is ServerErrorCode.INTERACTION_CONFLICT
     else:
         raise AssertionError("retry unexpectedly reopened a nonmatch")
+
+
+def test_fail_blocked_ends_only_exact_terminal_acquisition() -> None:
+    plan_hash = "sha256:" + "b" * 64
+    pool = _FailPool(
+        (
+            plan_hash,
+            "automatic",
+            "blocked",
+            "approval-subtitle-1",
+            None,
+            "source_drift",
+            None,
+        )
+    )
+    coordinator = SubtitleAcquisitionCoordinator(
+        pool=cast(ConnectionPool, pool),
+        plans=cast(object, object()),  # type: ignore[arg-type]
+        approvals=cast(object, object()),  # type: ignore[arg-type]
+        executor_factory=cast(object, object()),  # type: ignore[arg-type]
+        successors=cast(object, object()),  # type: ignore[arg-type]
+    )
+
+    record = coordinator.fail_blocked(
+        run_id="run-1",
+        plan_hash=plan_hash,
+    )
+
+    assert record.status == "blocked"
+    assert record.failure_code == "source_drift"
+    update = pool.connection_value.queries[0]
+    assert "request.status = 'blocked'" in update
+    assert "run.status = 'running'" in update
+    assert "job.status = 'completed'" in update
+    assert "NOT EXISTS" in update
+    assert "subtitle_acquisition_failed" in pool.connection_value.queries[1]
+
+
+def test_fail_blocked_rejects_nonmatching_request() -> None:
+    coordinator = SubtitleAcquisitionCoordinator(
+        pool=cast(ConnectionPool, _FailPool(None)),
+        plans=cast(object, object()),  # type: ignore[arg-type]
+        approvals=cast(object, object()),  # type: ignore[arg-type]
+        executor_factory=cast(object, object()),  # type: ignore[arg-type]
+        successors=cast(object, object()),  # type: ignore[arg-type]
+    )
+
+    try:
+        coordinator.fail_blocked(
+            run_id="run-1",
+            plan_hash="sha256:" + "b" * 64,
+        )
+    except ServerError as error:
+        assert error.code is ServerErrorCode.INTERACTION_CONFLICT
+    else:
+        raise AssertionError("fail unexpectedly ended a nonmatch")

@@ -338,6 +338,94 @@ class SubtitleAcquisitionCoordinator:
             automatic=(policy is SubtitleAcquisitionPolicy.AUTOMATIC),
         )
 
+    def fail_blocked(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord:
+        """End a run whose exact subtitle acquisition is blocked."""
+
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        UPDATE runs AS run
+                        SET status = 'failed'
+                        FROM subtitle_acquisition_requests AS request,
+                             jobs AS job
+                        WHERE request.run_id = %s
+                          AND request.plan_hash = %s
+                          AND request.status = 'blocked'
+                          AND run.run_id = request.run_id
+                          AND run.status = 'running'
+                          AND job.run_id = run.run_id
+                          AND job.status = 'completed'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM run_operations AS operation
+                              WHERE operation.run_id = run.run_id
+                          )
+                        RETURNING request.plan_hash, request.policy,
+                                  request.status, request.approval_id,
+                                  request.transaction_id,
+                                  request.failure_code,
+                                  request.failure_diagnostic
+                        """,
+                        (run_id, plan_hash),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit
+                            (event_type, subject_id)
+                        VALUES ('subtitle_acquisition_failed', %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (run_id,),
+                    )
+                    return self._record(run_id, row)
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
+    def resolve_failed(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord | None:
+        try:
+            with self._pool.connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT request.plan_hash, request.policy,
+                           request.status, request.approval_id,
+                           request.transaction_id,
+                           request.failure_code,
+                           request.failure_diagnostic
+                    FROM subtitle_acquisition_requests AS request
+                    JOIN runs AS run ON run.run_id = request.run_id
+                    WHERE request.run_id = %s
+                      AND request.plan_hash = %s
+                      AND request.status = 'blocked'
+                      AND run.status = 'failed'
+                    """,
+                    (run_id, plan_hash),
+                ).fetchone()
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+        return None if row is None else self._record(run_id, row)
+
     async def _execute_lease(
         self,
         *,

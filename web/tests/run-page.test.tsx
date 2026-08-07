@@ -233,7 +233,7 @@ test("shows bounded subtitle collision diagnostics", async () => {
         status: "needs_attention",
         phase: "build_subtitle_acquisition_plan",
         plan_hash: null,
-        available_actions: ["fail_run"],
+        available_actions: ["fail_subtitle_acquisition"],
         subtitle_acquisition: {
           plan_hash: `sha256:${"b".repeat(64)}`,
           policy: "automatic",
@@ -293,7 +293,10 @@ test("retries the same blocked subtitle acquisition plan", async () => {
         plan_hash: null,
         available_actions: published
           ? []
-          : ["retry_subtitle_acquisition", "fail_run"],
+          : [
+              "retry_subtitle_acquisition",
+              "fail_subtitle_acquisition",
+            ],
         subtitle_acquisition: {
           plan_hash: subtitlePlanHash,
           policy: "automatic",
@@ -350,6 +353,76 @@ test("retries the same blocked subtitle acquisition plan", async () => {
   expect(
     await screen.findByRole("heading", { name: "字幕获取：published" }),
   ).toBeVisible();
+});
+
+test("ends a terminal blocked subtitle acquisition without folder actions", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  const subtitlePlanHash = `sha256:${"b".repeat(64)}`;
+  let ended = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (path === "/api/v1/session") {
+      return jsonResponse({ api_version: "1.0.0", role: "admin" });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}`) {
+      return jsonResponse({
+        ...runResponse(),
+        status: ended ? "failed" : "needs_attention",
+        phase: "build_subtitle_acquisition_plan",
+        plan_hash: null,
+        available_actions: ended ? [] : ["fail_subtitle_acquisition"],
+        subtitle_acquisition: {
+          plan_hash: subtitlePlanHash,
+          policy: "automatic",
+          status: "blocked",
+          approval_id: "approval-subtitle-1",
+          transaction_id: null,
+          failure_code: "source_drift",
+          failure_diagnostic: null,
+          successor_status: null,
+        },
+      });
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (
+      path === `/api/v1/runs/${encodedRunId}/subtitle-acquisition/fail` &&
+      init?.method === "POST"
+    ) {
+      expect(init.headers).toMatchObject({ "If-Match": subtitlePlanHash });
+      expect(JSON.parse(String(init.body))).toEqual({});
+      ended = true;
+      return jsonResponse({
+        run_id: runId,
+        plan_hash: subtitlePlanHash,
+        status: "failed",
+        failure_code: "source_drift",
+      });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+
+  renderRunPage();
+  await userEvent.click(
+    await screen.findByRole("button", { name: "结束此运行" }),
+  );
+
+  expect(
+    await screen.findByText(
+      "已结束此运行；原字幕获取失败诊断仍保留供审计。",
+    ),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "结束此运行" })).toBeNull();
 });
 
 test("offers event-bound controls for a planless needs-attention run", async () => {
