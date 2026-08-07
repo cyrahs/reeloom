@@ -130,6 +130,7 @@ export const runSchema = z
         "recover_folder_disposition",
         "approve_subtitle_acquisition",
         "retry_subtitle_acquisition",
+        "fail_subtitle_acquisition",
         "retry_run",
         "fail_run",
         "delete_run",
@@ -533,6 +534,18 @@ export const subtitleAcquisitionResultSchema = z
       .default(null),
   })
   .strict();
+
+export const subtitleAcquisitionActionResultSchema = z.union([
+  subtitleAcquisitionResultSchema,
+  z
+    .object({
+      run_id: z.string(),
+      plan_hash: z.string(),
+      status: z.literal("failed"),
+      failure_code: z.string(),
+    })
+    .strict(),
+]);
 
 export const folderDispositionResultSchema = z
   .object({

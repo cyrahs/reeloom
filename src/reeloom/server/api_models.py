@@ -175,6 +175,7 @@ class RunResponse(_StrictModel):
             "recover_folder_disposition",
             "approve_subtitle_acquisition",
             "retry_subtitle_acquisition",
+            "fail_subtitle_acquisition",
             "retry_run",
             "fail_run",
             "delete_run",
@@ -567,6 +568,13 @@ class AttentionFailResponse(_StrictModel):
     run_id: str
     status: Literal["failure_planned"]
     plan_hash: str
+
+
+class SubtitleAcquisitionFailResponse(_StrictModel):
+    run_id: str
+    plan_hash: str
+    status: Literal["failed"]
+    failure_code: str
 
 
 class ReapplyRequest(_StrictModel):

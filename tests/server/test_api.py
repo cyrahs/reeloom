@@ -295,6 +295,7 @@ class _SubtitleAcquisitions:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, bool]] = []
         self.retry_calls: list[tuple[str, str]] = []
+        self.fail_calls: list[tuple[str, str]] = []
 
     def approve_and_execute(
         self,
@@ -330,6 +331,31 @@ class _SubtitleAcquisitions:
         )
 
     def resolve(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord | None:
+        del run_id, plan_hash
+        return None
+
+    def fail_blocked(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord:
+        self.fail_calls.append((run_id, plan_hash))
+        return SubtitleAcquisitionRequestRecord(
+            run_id=run_id,
+            plan_hash=plan_hash,
+            policy=SubtitleAcquisitionPolicy.AUTOMATIC,
+            status="blocked",
+            approval_id="approval-subtitle-1",
+            failure_code="source_drift",
+        )
+
+    def resolve_failed(
         self,
         *,
         run_id: str,
@@ -413,6 +439,39 @@ def test_admin_can_retry_blocked_subtitle_acquisition() -> None:
         "successor_status": None,
     }
     assert acquisitions.retry_calls == [("run-1", plan_hash)]
+
+
+def test_admin_can_end_blocked_subtitle_acquisition() -> None:
+    acquisitions = _SubtitleAcquisitions()
+    plan_hash = "sha256:" + "b" * 64
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(subtitle_acquisitions=acquisitions)
+            ),
+            base_url="http://reeloom.test",
+        ) as client:
+            return await client.post(
+                "/api/v1/runs/run-1/subtitle-acquisition/fail",
+                json={},
+                headers={
+                    "authorization": "Bearer admin-token-strong",
+                    "idempotency-key": "subtitle-fail-1",
+                    "if-match": plan_hash,
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "run-1",
+        "plan_hash": plan_hash,
+        "status": "failed",
+        "failure_code": "source_drift",
+    }
+    assert acquisitions.fail_calls == [("run-1", plan_hash)]
 
 
 def test_admin_can_enqueue_idempotent_telegram_test() -> None:

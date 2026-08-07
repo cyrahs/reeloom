@@ -48,7 +48,7 @@ import {
   reapplyResultSchema,
   recoveryResultSchema,
   runSchema,
-  subtitleAcquisitionResultSchema,
+  subtitleAcquisitionActionResultSchema,
   type Preview,
   type Run,
   type RunEvent,
@@ -95,7 +95,7 @@ type FolderAttempt = {
 type SubtitleAttempt = {
   planHash: string;
   key: string;
-  retry?: boolean;
+  mode?: "approve" | "retry" | "fail";
 };
 type AttentionAttempt = {
   kind: "retry" | "fail";
@@ -480,12 +480,10 @@ export function RunPage({ runId }: { runId: string }) {
   });
 
   const subtitleAcquisition = useMutation({
-    mutationFn: async ({ planHash, key, retry }: SubtitleAttempt) =>
+    mutationFn: async ({ planHash, key, mode }: SubtitleAttempt) =>
       api.request(
-        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/${
-          retry ? "retry" : "approve"
-        }`,
-        subtitleAcquisitionResultSchema,
+        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/${mode ?? "approve"}`,
+        subtitleAcquisitionActionResultSchema,
         {
           method: "POST",
           headers: {
@@ -495,8 +493,11 @@ export function RunPage({ runId }: { runId: string }) {
           body: {},
         },
       ),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setUncertainAttempt(null);
+      if (result.status === "failed") {
+        setActionNotice("已结束此运行；原字幕获取失败诊断仍保留供审计。");
+      }
       await invalidateRun();
     },
     onError: async (error, attempt) => {
@@ -890,13 +891,29 @@ export function RunPage({ runId }: { runId: string }) {
                       subtitleAcquisition.mutate({
                         planHash: run.data.subtitle_acquisition!.plan_hash,
                         key: idempotencyKey(),
-                        retry: true,
+                        mode: "retry",
                       })
                     }
                   >
                     {subtitleAcquisition.isPending
                       ? "正在恢复并发布字幕…"
                       : "重试字幕获取"}
+                  </button>
+                ) : null}
+                {available.has("fail_subtitle_acquisition") &&
+                run.data.subtitle_acquisition ? (
+                  <button
+                    className="danger-button wide"
+                    disabled={blocked || subtitleAcquisition.isPending}
+                    onClick={() =>
+                      subtitleAcquisition.mutate({
+                        planHash: run.data.subtitle_acquisition!.plan_hash,
+                        key: idempotencyKey(),
+                        mode: "fail",
+                      })
+                    }
+                  >
+                    结束此运行
                   </button>
                 ) : null}
                 {available.has("fail_run") ? (

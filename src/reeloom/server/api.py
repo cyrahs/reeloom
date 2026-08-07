@@ -68,6 +68,7 @@ from reeloom.server.api_models import (
     RunsResponse,
     SessionResponse,
     SubtitleAcquisitionApprovalRequest,
+    SubtitleAcquisitionFailResponse,
     SubtitleAcquisitionResponse,
     TelegramTestRequest,
     TelegramTestResponse,
@@ -1708,6 +1709,62 @@ def create_api(
         return await _shield_thread(
             lambda: dependencies.idempotency.run(
                 scope="retry_subtitle_acquisition",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={"plan_hash": plan_hash},
+                execute=execute,
+                resolve=resolve,
+            )
+        )
+
+    @app.post(
+        "/api/v1/runs/{run_id}/subtitle-acquisition/fail",
+        response_model=SubtitleAcquisitionFailResponse,
+    )
+    async def fail_subtitle_acquisition(
+        run_id: str,
+        body: SubtitleAcquisitionApprovalRequest,
+        key: str = Depends(_idempotency_key),
+        plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        del body
+        coordinator = dependencies.subtitle_acquisitions
+        if coordinator is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+
+        def payload(
+            record: SubtitleAcquisitionRequestRecord,
+        ) -> dict[str, object]:
+            if record.failure_code is None:
+                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            return {
+                "run_id": record.run_id,
+                "plan_hash": record.plan_hash,
+                "status": "failed",
+                "failure_code": record.failure_code,
+            }
+
+        def execute() -> dict[str, object]:
+            return payload(
+                coordinator.fail_blocked(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+
+        def resolve() -> dict[str, object] | None:
+            record = coordinator.resolve_failed(
+                run_id=run_id,
+                plan_hash=plan_hash,
+            )
+            return None if record is None else payload(record)
+
+        if dependencies.idempotency is None:
+            return await _shield_thread(execute)
+        return await _shield_thread(
+            lambda: dependencies.idempotency.run(
+                scope="fail_subtitle_acquisition",
                 subject_id=run_id,
                 idempotency_key=key,
                 request={"plan_hash": plan_hash},
