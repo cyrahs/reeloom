@@ -450,15 +450,29 @@ class FilesystemExecutor:
                     manifest,
                     move,
                     allow_restored=allow_restored,
+                    # A legacy preflight crash can leave a claim and journal
+                    # before any move event. A drifted regular source is safe
+                    # to leave in place only when the whole transaction has
+                    # zero recorded effects and its destination is absent.
+                    allow_drifted_source=(
+                        summary.applied_count == 0
+                        and summary.failure_code
+                        in {None, ExecutorErrorCode.SOURCE_DRIFT}
+                    ),
                 ):
                     self.journals.record_rollback(
                         transaction,
                         move.source_id,
                     )
             self.journals.record_rolled_back(transaction)
-        except (ExecutorError, OSError):
+        except ExecutorError as error:
             raise ExecutorError(
-                ExecutorErrorCode.RECOVERY_REQUIRED
+                ExecutorErrorCode.RECOVERY_REQUIRED,
+                context=dict(error.context),
+            ) from None
+        except OSError:
+            raise ExecutorError(
+                ExecutorErrorCode.RECOVERY_REQUIRED,
             ) from None
         return self._terminal_result(
             manifest,
@@ -698,6 +712,7 @@ class FilesystemExecutor:
         move: ExecutionMove,
         *,
         allow_restored: bool,
+        allow_drifted_source: bool = False,
         bound_destination_fd: int | None = None,
     ) -> bool:
         source = cls._source_for(manifest, move)
@@ -727,6 +742,18 @@ class FilesystemExecutor:
                     source,
                     moved=True,
                 )
+            drifted_regular = source_state == "other" and (
+                cls._is_regular_entry(
+                    source_parent_fd,
+                    source.relative_path.name,
+                )
+            )
+            source_can_remain = source_state == "expected" or (
+                allow_drifted_source and drifted_regular
+            )
+            source_detail = (
+                "drifted_regular" if drifted_regular else source_state
+            )
             if bound_destination_fd is not None:
                 destination_parent_fd = (
                     cls._duplicate_bound_destination_parent(
@@ -748,10 +775,13 @@ class FilesystemExecutor:
                         move.destination.parts[:-1],
                     )
                 except FileNotFoundError:
-                    if source_state == "expected":
+                    if source_can_remain:
                         return False
-                    raise ExecutorError(
-                        ExecutorErrorCode.RECOVERY_REQUIRED
+                    raise cls._recovery_state_error(
+                        source,
+                        move,
+                        source_state=source_detail,
+                        destination_state="absent",
                     ) from None
             destination_state = cls._source_state(
                 destination_parent_fd,
@@ -759,11 +789,14 @@ class FilesystemExecutor:
                 source,
                 moved=True,
             )
-            if source_state == "expected" and destination_state == "absent":
+            if source_can_remain and destination_state == "absent":
                 return False
             if source_state != "absent" or destination_state != "expected":
-                raise ExecutorError(
-                    ExecutorErrorCode.RECOVERY_REQUIRED
+                raise cls._recovery_state_error(
+                    source,
+                    move,
+                    source_state=source_detail,
+                    destination_state=destination_state,
                 )
             try:
                 _rename_noreplace(
@@ -808,6 +841,37 @@ class FilesystemExecutor:
             if source.candidate_id == move.source_id:
                 return source
         raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+
+    @staticmethod
+    def _is_regular_entry(parent_fd: int, name: str) -> bool:
+        try:
+            metadata = os.stat(
+                name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError:
+            return False
+        return stat.S_ISREG(metadata.st_mode)
+
+    @staticmethod
+    def _recovery_state_error(
+        source: ExecutionSource,
+        move: ExecutionMove,
+        *,
+        source_state: str,
+        destination_state: str,
+    ) -> ExecutorError:
+        return ExecutorError(
+            ExecutorErrorCode.RECOVERY_REQUIRED,
+            context={
+                "candidate_id": str(source.candidate_id),
+                "destination_relative_path": move.destination.as_posix(),
+                "destination_state": destination_state,
+                "source_relative_path": source.relative_path.as_posix(),
+                "source_state": source_state,
+            },
+        )
 
     @classmethod
     def _open_source_parent(
