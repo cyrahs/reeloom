@@ -86,6 +86,7 @@ class ApplyCoordinator:
             operation_id=operation_id,
             operation_kind="automatic_apply" if automatic else "manual_apply",
             automatic=automatic,
+            recovery=False,
         ):
             with self._global_gate:
                 try:
@@ -141,6 +142,7 @@ class ApplyCoordinator:
             operation_id=operation_id,
             operation_kind="recover",
             automatic=None,
+            recovery=True,
         ):
             with self._global_gate:
                 result = self._executor.recover(
@@ -177,6 +179,7 @@ class ApplyCoordinator:
         operation_id: str,
         operation_kind: str,
         automatic: bool | None,
+        recovery: bool,
     ) -> Iterator[None]:
         reservation = self._reserve(
             run_id=run_id,
@@ -191,6 +194,7 @@ class ApplyCoordinator:
                 run_id=run_id,
                 plan_hash=plan_hash,
                 automatic=automatic,
+                recovery=recovery,
             )
             yield
         except BaseException as error:
@@ -287,6 +291,7 @@ class ApplyCoordinator:
         run_id: str,
         plan_hash: str,
         automatic: bool | None,
+        recovery: bool,
     ) -> None:
         try:
             config = ConfigRevision.from_json(
@@ -317,6 +322,9 @@ class ApplyCoordinator:
                 content,
                 plan_hash=plan_hash,
             )
+            root_matches = (
+                self._same_root_path if recovery else self._same_root
+            )
             if (
                 manifest.run_id != run_id
                 or (
@@ -328,16 +336,16 @@ class ApplyCoordinator:
                         else reservation.work_type
                     )
                 )
-                or not self._same_root(manifest.output_root, output)
+                or not root_matches(manifest.output_root, output)
                 or (
                     reservation.plan_kind == "initial"
-                    and not self._same_root(
+                    and not root_matches(
                         manifest.source_root, source
                     )
                 )
                 or (
                     reservation.plan_kind == "amendment"
-                    and not self._same_root(
+                    and not root_matches(
                         manifest.source_root, output
                     )
                 )
@@ -426,6 +434,12 @@ class ApplyCoordinator:
             == PurePosixPath(root.path.as_posix())
             and getattr(binding, "device", None) == root.device
             and getattr(binding, "inode", None) == root.inode
+        )
+
+    @staticmethod
+    def _same_root_path(binding: object, root: AuthorizedRoot) -> bool:
+        return getattr(binding, "path", None) == PurePosixPath(
+            root.path.as_posix()
         )
 
     def reconcile_active(self) -> int:

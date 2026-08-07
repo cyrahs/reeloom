@@ -23,6 +23,7 @@ from reeloom.executor.preflight import FilesystemPreflightExecutor
 from reeloom.executor.transaction import TransactionRecord
 from reeloom.kernel.approval import ApprovalScope
 from reeloom.kernel.naming import filesystem_name_key
+from reeloom.kernel.rename_plan import RootBinding
 from reeloom.ports.approvals import ApprovalStore
 from reeloom.ports.journals import (
     JournalStore,
@@ -435,6 +436,11 @@ class FilesystemExecutor:
             )
 
         try:
+            allow_root_rebind = (
+                summary.applied_count == 0
+                and summary.failure_code
+                in {None, ExecutorErrorCode.SOURCE_DRIFT}
+            )
             for move in reversed(manifest.moves):
                 allow_restored = (
                     self.journals.is_rollback_started(
@@ -454,11 +460,8 @@ class FilesystemExecutor:
                     # before any move event. A drifted regular source is safe
                     # to leave in place only when the whole transaction has
                     # zero recorded effects and its destination is absent.
-                    allow_drifted_source=(
-                        summary.applied_count == 0
-                        and summary.failure_code
-                        in {None, ExecutorErrorCode.SOURCE_DRIFT}
-                    ),
+                    allow_drifted_source=allow_root_rebind,
+                    allow_root_rebind=allow_root_rebind,
                 ):
                     self.journals.record_rollback(
                         transaction,
@@ -713,13 +716,13 @@ class FilesystemExecutor:
         *,
         allow_restored: bool,
         allow_drifted_source: bool = False,
+        allow_root_rebind: bool = False,
         bound_destination_fd: int | None = None,
     ) -> bool:
         source = cls._source_for(manifest, move)
-        source_root_fd = (
-            FilesystemPreflightExecutor._open_bound_root(
-                manifest.source_root
-            )
+        source_root_fd = cls._open_recovery_root(
+            manifest.source_root,
+            allow_root_rebind=allow_root_rebind,
         )
         output_root_fd: int | None = None
         source_parent_fd: int | None = None
@@ -764,10 +767,9 @@ class FilesystemExecutor:
                     )
                 )
             else:
-                output_root_fd = (
-                    FilesystemPreflightExecutor._open_bound_root(
-                        manifest.output_root
-                    )
+                output_root_fd = cls._open_recovery_root(
+                    manifest.output_root,
+                    allow_root_rebind=allow_root_rebind,
                 )
                 try:
                     destination_parent_fd = cls._open_existing_parent(
@@ -831,6 +833,25 @@ class FilesystemExecutor:
             ):
                 if file_descriptor is not None:
                     os.close(file_descriptor)
+
+    @staticmethod
+    def _open_recovery_root(
+        binding: RootBinding,
+        *,
+        allow_root_rebind: bool,
+    ) -> int:
+        try:
+            return FilesystemPreflightExecutor._open_bound_root(binding)
+        except ExecutorError as error:
+            if (
+                not allow_root_rebind
+                or error.code is not ExecutorErrorCode.ROOT_DRIFT
+            ):
+                raise
+        # The immutable plan still supplies the path.  Rebinding only drops
+        # the stale root inode check after a zero-effect journal gate; the
+        # reopened root remains no-follow and all member paths remain fixed.
+        return FilesystemPreflightExecutor._open_rebound_root(binding)
 
     @staticmethod
     def _source_for(

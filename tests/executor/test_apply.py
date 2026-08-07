@@ -960,6 +960,36 @@ def test_legacy_claimed_source_drift_with_absent_destination_settles(
     assert not _destination(environment, 0).exists()
 
 
+def test_legacy_claimed_recovery_rebinds_drifted_roots_without_effects(
+    tmp_path: Path,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    transaction = _begin_legacy_claimed_transaction(environment)
+    detached_source = tmp_path / "detached-incoming"
+    detached_output = tmp_path / "detached-anime"
+    environment.source.rename(detached_source)
+    environment.output.rename(detached_output)
+    environment.source.mkdir()
+    environment.output.mkdir()
+    replacement = environment.source / "episode-1.mkv"
+    replacement.write_bytes(b"replacement")
+
+    recovered = environment.executor().recover(
+        plan_hash=environment.plan.plan_hash,
+        approval_id=environment.approval.approval_id,
+    )
+
+    assert recovered.status is ApplyStatus.ROLLED_BACK
+    assert recovered.failure_code is None
+    assert recovered.applied_count == 0
+    assert recovered.rolled_back_count == 0
+    assert environment.journals.is_rolled_back(transaction)
+    assert replacement.read_bytes() == b"replacement"
+    assert (detached_source / "episode-1.mkv").read_bytes() == b"video-1"
+    assert not _destination(environment, 0).exists()
+    assert not any(detached_output.iterdir())
+
+
 def test_legacy_claimed_recovery_rejects_missing_source_and_destination(
     tmp_path: Path,
 ) -> None:
@@ -1041,3 +1071,47 @@ def test_recovery_does_not_settle_drift_after_recorded_move_disappears(
     assert raised.value.context["destination_state"] == "absent"
     assert source.read_bytes() == b"replacement"
     assert not destination.exists()
+
+
+def test_recovery_does_not_rebind_roots_after_a_recorded_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+
+    def crash_before_completed_event(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        FilesystemJournalStore,
+        "record_completed",
+        crash_before_completed_event,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        _apply(environment)
+    monkeypatch.undo()
+    detached_source = tmp_path / "detached-incoming"
+    detached_output = tmp_path / "detached-anime"
+    environment.source.rename(detached_source)
+    environment.output.rename(detached_output)
+    environment.source.mkdir()
+    environment.output.mkdir()
+    replacement = environment.source / "episode-1.mkv"
+    replacement.write_bytes(b"replacement")
+
+    with pytest.raises(ExecutorError) as raised:
+        environment.executor().recover(
+            plan_hash=environment.plan.plan_hash,
+            approval_id=environment.approval.approval_id,
+        )
+
+    assert raised.value.code is ExecutorErrorCode.RECOVERY_REQUIRED
+    assert replacement.read_bytes() == b"replacement"
+    assert not (detached_source / "episode-1.mkv").exists()
+    assert (detached_source / "unmapped.mkv").read_bytes() == b"unmapped"
+    detached_destination = detached_output / Path(
+        environment.plan.draft.moves[0].destination
+    )
+    assert detached_destination.read_bytes() == b"video-1"
+    assert not any(environment.output.iterdir())
