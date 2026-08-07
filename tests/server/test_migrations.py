@@ -22,17 +22,19 @@ def test_foundation_migration_is_versioned_and_immutable() -> None:
     assert all(len(item.checksum) == 64 for item in migrations)
     assert "service_boots" in migrations[0].sql
     assert "schema_migrations" in migrations[0].sql
-    assert "subtitle_successor_outbox" in migrations[-7].sql
-    assert "subtitle_acquisition_lineages" in migrations[-7].sql
-    assert "superseded" in migrations[-7].sql
-    assert "subtitle_acquisition_requests" in migrations[-6].sql
-    assert "subtitle_acquire" in migrations[-6].sql
-    assert "expected_event_sequence" in migrations[-5].sql
-    assert "failure_diagnostic" in migrations[-4].sql
-    assert "stabilizing_inventory_id" in migrations[-3].sql
-    assert "semantic_v2" in migrations[-2].sql
-    assert "execution_operations_v2" in migrations[-1].sql
-    assert "lease_expires_at" in migrations[-1].sql
+    assert "subtitle_successor_outbox" in migrations[-8].sql
+    assert "subtitle_acquisition_lineages" in migrations[-8].sql
+    assert "superseded" in migrations[-8].sql
+    assert "subtitle_acquisition_requests" in migrations[-7].sql
+    assert "subtitle_acquire" in migrations[-7].sql
+    assert "expected_event_sequence" in migrations[-6].sql
+    assert "failure_diagnostic" in migrations[-5].sql
+    assert "stabilizing_inventory_id" in migrations[-4].sql
+    assert "semantic_v2" in migrations[-3].sql
+    assert "execution_operations_v2" in migrations[-2].sql
+    assert "lease_expires_at" in migrations[-2].sql
+    assert "execution_operation_results_v2" in migrations[-1].sql
+    assert "execution_rescan_outbox_v2" in migrations[-1].sql
 
 
 def test_checksum_drift_fails_closed() -> None:

@@ -11,6 +11,114 @@ const runId = "run-0dae51fc45a8db238e0b901e8f420272";
 const encodedRunId = encodeURIComponent(runId);
 const planHash = `sha256:${"a".repeat(64)}`;
 
+test("executes a v2 plan without browser policy or recovery controls", async () => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  let executed = false;
+  const execution = {
+    operation_id: "operation:m14",
+    plan_hash: planHash,
+    status: "partial",
+    attempt_count: 1,
+    counts: {
+      satisfied: 1,
+      stale: 0,
+      collision: 1,
+      unsafe: 0,
+      unavailable: 0,
+    },
+    items: [
+      {
+        source_id: "video:1",
+        outcome: "satisfied",
+        diagnostic: "checked_rename",
+      },
+      {
+        source_id: "video:2",
+        outcome: "collision",
+        diagnostic: null,
+      },
+    ],
+    warnings: ["directory_fsync_unsupported"],
+    fresh_scan_required: true,
+    rescan_state: "queued",
+    successor_run_id: null,
+  };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (path === "/api/v1/session") {
+      return jsonResponse({ api_version: "1.0.0", role: "admin" });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}`) {
+      return jsonResponse({
+        ...runResponse(),
+        available_actions: executed ? [] : ["execute"],
+        recovery_approval_id: null,
+        execution: executed ? execution : null,
+      });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/plans?limit=100`) {
+      return jsonResponse({
+        items: [
+          {
+            run_id: runId,
+            version: 1,
+            plan_hash: planHash,
+            parent_plan_hash: null,
+            plan_kind: "initial",
+            created_at: "2026-08-07T00:00:00Z",
+          },
+        ],
+      });
+    }
+    if (
+      path ===
+      `/api/v1/runs/${encodedRunId}/plans/1/preview?after=0&limit=100`
+    ) {
+      return jsonResponse(previewResponse());
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (
+      path === `/api/v1/runs/${encodedRunId}/execute` &&
+      init?.method === "POST"
+    ) {
+      expect(init.headers).toMatchObject({ "If-Match": planHash });
+      expect(JSON.parse(String(init.body))).toEqual({});
+      executed = true;
+      return jsonResponse({ ...execution, run_id: runId });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+
+  renderRunPage();
+  const user = userEvent.setup();
+  await user.click(
+    await screen.findByRole("button", { name: "审批并执行此计划" }),
+  );
+  const dialog = screen.getByRole("dialog", { name: "确认文件移动" });
+  expect(
+    within(dialog).getByText(/部分成功会保留且不会自动回滚/),
+  ).toBeVisible();
+  await user.click(within(dialog).getByRole("checkbox"));
+  await user.click(within(dialog).getByRole("button", { name: "批准并执行" }));
+
+  expect(
+    await screen.findByRole("heading", { name: "前向执行：部分完成" }),
+  ).toBeVisible();
+  expect(screen.queryByText("执行定向恢复")).toBeNull();
+  expect(screen.getByText("directory_fsync_unsupported")).toBeVisible();
+});
+
 test("hides empty history, then shows the durable reply before plan review", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
   const reply = `<script>alert("plain text only")</script>`;

@@ -1264,6 +1264,304 @@
         "title": "FolderObservationsResponse",
         "type": "object"
       },
+      "ForwardExecuteRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "ForwardExecuteRequest",
+        "type": "object"
+      },
+      "ForwardExecuteResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_count": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ForwardExecutionCounts"
+          },
+          "fresh_scan_required": {
+            "title": "Fresh Scan Required",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ForwardExecutionItemView"
+            },
+            "maxItems": 10000,
+            "title": "Items",
+            "type": "array"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "rescan_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "leased",
+                  "retry_wait",
+                  "completed",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rescan State"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "authorized",
+              "running",
+              "completed",
+              "partial",
+              "stale",
+              "collision",
+              "unsafe",
+              "unavailable",
+              "superseded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "successor_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Run Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation_id",
+          "plan_hash",
+          "status",
+          "attempt_count",
+          "counts",
+          "items",
+          "warnings",
+          "fresh_scan_required",
+          "rescan_state",
+          "successor_run_id",
+          "run_id"
+        ],
+        "title": "ForwardExecuteResponse",
+        "type": "object"
+      },
+      "ForwardExecutionCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "collision": {
+            "minimum": 0.0,
+            "title": "Collision",
+            "type": "integer"
+          },
+          "satisfied": {
+            "minimum": 0.0,
+            "title": "Satisfied",
+            "type": "integer"
+          },
+          "stale": {
+            "minimum": 0.0,
+            "title": "Stale",
+            "type": "integer"
+          },
+          "unavailable": {
+            "minimum": 0.0,
+            "title": "Unavailable",
+            "type": "integer"
+          },
+          "unsafe": {
+            "minimum": 0.0,
+            "title": "Unsafe",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "satisfied",
+          "stale",
+          "collision",
+          "unsafe",
+          "unavailable"
+        ],
+        "title": "ForwardExecutionCounts",
+        "type": "object"
+      },
+      "ForwardExecutionItemView": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnostic": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "checked_rename",
+                  "collision",
+                  "cross_filesystem",
+                  "permission_denied",
+                  "transient_io",
+                  "unsafe",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnostic"
+          },
+          "outcome": {
+            "enum": [
+              "satisfied",
+              "stale",
+              "collision",
+              "unsafe",
+              "unavailable"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "outcome",
+          "diagnostic"
+        ],
+        "title": "ForwardExecutionItemView",
+        "type": "object"
+      },
+      "ForwardExecutionView": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_count": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ForwardExecutionCounts"
+          },
+          "fresh_scan_required": {
+            "title": "Fresh Scan Required",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ForwardExecutionItemView"
+            },
+            "maxItems": 10000,
+            "title": "Items",
+            "type": "array"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "rescan_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "leased",
+                  "retry_wait",
+                  "completed",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rescan State"
+          },
+          "status": {
+            "enum": [
+              "authorized",
+              "running",
+              "completed",
+              "partial",
+              "stale",
+              "collision",
+              "unsafe",
+              "unavailable",
+              "superseded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "successor_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Run Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation_id",
+          "plan_hash",
+          "status",
+          "attempt_count",
+          "counts",
+          "items",
+          "warnings",
+          "fresh_scan_required",
+          "rescan_state",
+          "successor_run_id"
+        ],
+        "title": "ForwardExecutionView",
+        "type": "object"
+      },
       "HealthResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2192,6 +2490,7 @@
                 "question",
                 "revision",
                 "approve_apply",
+                "execute",
                 "reapply",
                 "recover",
                 "settle_folder",
@@ -2213,6 +2512,16 @@
             "minimum": 0.0,
             "title": "Event Sequence",
             "type": "integer"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForwardExecutionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "failures": {
             "minimum": 0.0,
@@ -2680,8 +2989,8 @@
               {
                 "enum": [
                   "queued",
-                  "retry_wait",
                   "leased",
+                  "retry_wait",
                   "completed",
                   "blocked"
                 ],
@@ -2780,8 +3089,8 @@
               {
                 "enum": [
                   "queued",
-                  "retry_wait",
                   "leased",
+                  "retry_wait",
                   "completed",
                   "blocked"
                 ],
@@ -4934,6 +5243,129 @@
           }
         ],
         "summary": "Event Stream"
+      }
+    },
+    "/api/v1/runs/{run_id}/execute": {
+      "post": {
+        "description": "Start or reconcile one v2 operation; browser selects no policy.",
+        "operationId": "execute_forward_plan_api_v1_runs__run_id__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact immutable plan hash",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact immutable plan hash",
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForwardExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForwardExecuteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Safe error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Execute Forward Plan"
       }
     },
     "/api/v1/runs/{run_id}/fail": {

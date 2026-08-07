@@ -103,6 +103,68 @@ const subtitleFailureDiagnosticSchema = z
   })
   .strict();
 
+const forwardExecutionSchema = z
+  .object({
+    operation_id: z.string(),
+    plan_hash: z.string(),
+    status: z.enum([
+      "authorized",
+      "running",
+      "completed",
+      "partial",
+      "stale",
+      "collision",
+      "unsafe",
+      "unavailable",
+      "superseded",
+    ]),
+    attempt_count: z.number().int().min(0).max(100),
+    counts: z
+      .object({
+        satisfied: z.number().int().nonnegative(),
+        stale: z.number().int().nonnegative(),
+        collision: z.number().int().nonnegative(),
+        unsafe: z.number().int().nonnegative(),
+        unavailable: z.number().int().nonnegative(),
+      })
+      .strict(),
+    items: z
+      .array(
+        z
+          .object({
+            source_id: z.string(),
+            outcome: z.enum([
+              "satisfied",
+              "stale",
+              "collision",
+              "unsafe",
+              "unavailable",
+            ]),
+            diagnostic: z
+              .enum([
+                "native",
+                "checked_rename",
+                "collision",
+                "cross_filesystem",
+                "permission_denied",
+                "transient_io",
+                "unsafe",
+                "unknown",
+              ])
+              .nullable(),
+          })
+          .strict(),
+      )
+      .max(10_000),
+    warnings: z.array(z.string()).max(1_000),
+    fresh_scan_required: z.boolean(),
+    rescan_state: z
+      .enum(["queued", "leased", "retry_wait", "completed", "blocked"])
+      .nullable(),
+    successor_run_id: z.string().nullable(),
+  })
+  .strict();
+
 export const runSchema = z
   .object({
     run_id: z.string(),
@@ -123,6 +185,7 @@ export const runSchema = z
         "question",
         "revision",
         "approve_apply",
+        "execute",
         "reapply",
         "recover",
         "settle_folder",
@@ -149,6 +212,7 @@ export const runSchema = z
       })
       .strict()
       .nullable(),
+    execution: forwardExecutionSchema.nullable().default(null),
     source_folder: z.string().nullable(),
     folder_disposition: z
       .object({
@@ -515,6 +579,10 @@ export const applyResultSchema = z
       .nullable(),
   })
   .strict();
+
+export const forwardExecutionResultSchema = forwardExecutionSchema.extend({
+  run_id: z.string(),
+});
 
 export const subtitleAcquisitionResultSchema = z
   .object({

@@ -48,6 +48,8 @@ from reeloom.server.api_models import (
     FolderDispositionRecoveryRequest,
     FolderDispositionRequest,
     FolderDispositionResultResponse,
+    ForwardExecuteRequest,
+    ForwardExecuteResponse,
     HealthResponse,
     InteractionHistoryResponse,
     InteractionRequest,
@@ -75,6 +77,15 @@ from reeloom.server.api_models import (
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
+from reeloom.server.forward_execution_service import (
+    ForwardExecutionCoordinator,
+    ForwardExecutionServiceError,
+)
+from reeloom.server.forward_operation_repository import (
+    ForwardOperationError,
+    ForwardOperationErrorCode,
+    ForwardOperationView,
+)
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
     SubtitleAcquisitionRequestRecord,
@@ -217,6 +228,7 @@ class ApiDependencies:
     queries: ApiQueries
     interactions: InteractionService | None = None
     apply: ApplyCoordinator | None = None
+    forward_execution: ForwardExecutionCoordinator | None = None
     folder_dispositions: FolderDispositionCoordinator | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     health: Callable[[], object] | None = None
@@ -262,6 +274,33 @@ def _duplicate_rejecting_object(
             raise ValueError("duplicate key")
         result[key] = value
     return result
+
+
+def _forward_execution_payload(
+    view: ForwardOperationView,
+) -> dict[str, object]:
+    counts = {
+        "satisfied": 0,
+        "stale": 0,
+        "collision": 0,
+        "unsafe": 0,
+        "unavailable": 0,
+    }
+    for outcome in view.operation.outcomes:
+        counts[outcome.value] += 1
+    return {
+        "operation_id": view.operation.operation_id,
+        "run_id": view.operation.run_id,
+        "plan_hash": view.operation.plan_hash,
+        "status": view.operation.status.value,
+        "attempt_count": view.operation.attempt_count,
+        "counts": counts,
+        "items": list(view.items),
+        "warnings": list(view.warnings),
+        "fresh_scan_required": view.fresh_scan_required,
+        "rescan_state": view.rescan_state,
+        "successor_run_id": view.successor_run_id,
+    }
 
 
 def _host_name(value: str) -> str | None:
@@ -1508,6 +1547,51 @@ def create_api(
             "plan_hash": result.plan_hash,
             "no_op": result.plan_hash is None,
         }
+
+    @app.post(
+        "/api/v1/runs/{run_id}/execute",
+        response_model=ForwardExecuteResponse,
+    )
+    async def execute_forward_plan(
+        run_id: str,
+        body: ForwardExecuteRequest,
+        plan_hash: str = Depends(_plan_hash),
+        _: None = Depends(require_visible_run),
+    ) -> dict[str, object]:
+        """Start or reconcile one v2 operation; browser selects no policy."""
+
+        del body
+        coordinator = dependencies.forward_execution
+        if coordinator is None:
+            raise HTTPException(503, detail={"code": "unavailable"})
+        try:
+            await _shield_thread(
+                lambda: coordinator.execute_manual(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+            view = await _shield_thread(
+                lambda: coordinator.view(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+        except ForwardExecutionServiceError as error:
+            raise HTTPException(
+                409, detail={"code": str(error)}
+            ) from None
+        except ForwardOperationError as error:
+            status = (
+                404
+                if error.code
+                is ForwardOperationErrorCode.OPERATION_NOT_FOUND
+                else 409
+            )
+            raise HTTPException(
+                status, detail={"code": error.code.value}
+            ) from None
+        return _forward_execution_payload(view)
 
     @app.post(
         "/api/v1/runs/{run_id}/approve-and-apply",

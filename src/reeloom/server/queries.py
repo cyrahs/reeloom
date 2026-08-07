@@ -12,6 +12,7 @@ from reeloom.kernel.movie_amendment import (
     verify_movie_amendment_bytes,
 )
 from reeloom.kernel.candidates import CandidateId
+from reeloom.kernel.forward_execution import ExecutionOperationStatus
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.plan_review import (
     PLAN_REVIEW_SCHEMA,
@@ -22,8 +23,9 @@ from reeloom.kernel.plan_review import (
     merge_plan_reviews,
 )
 from reeloom.server.archive_report import archive_report_from_projection
-from reeloom.server.config import ConfigRevision
+from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.forward_actions import forward_available_actions
 from reeloom.server.run_deletion_policy import RUN_DELETION_READY_SQL
 
 
@@ -478,7 +480,18 @@ class PostgresQueries:
                            COALESCE(observation.retry_count, 3),
                            COALESCE(observation.status = 'active', false),
                            job.status,
-                           acquisition.failure_diagnostic
+                           acquisition.failure_diagnostic,
+                           forward.operation_id,
+                           forward.plan_hash,
+                           forward.status,
+                           forward.attempt_count,
+                           forward.outcomes,
+                           forward.items,
+                           forward.warnings,
+                           forward.fresh_scan_required,
+                           forward.rescan_state,
+                           forward.successor_run_id,
+                           d.snapshot_id LIKE 'candidate-snapshot-v2:%%'
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -560,6 +573,41 @@ class PostgresQueries:
                          acquisition_settlement.lineage_key
                     LEFT JOIN watch_folder_observations AS observation
                       ON observation.discovery_id = d.discovery_id
+                    LEFT JOIN LATERAL (
+                        SELECT o.operation_id, o.plan_hash, o.status,
+                               o.attempt_count, o.outcomes,
+                               result.items, result.warnings,
+                               result.fresh_scan_required,
+                               rescan.state AS rescan_state,
+                               COALESCE(
+                                   rescan.successor_run_id,
+                                   (
+                                       SELECT successor_run.run_id
+                                       FROM discoveries AS successor_discovery
+                                       JOIN runs AS successor_run
+                                         ON successor_run.discovery_id =
+                                            successor_discovery.discovery_id
+                                       WHERE successor_discovery.watch_id =
+                                             d.watch_id
+                                         AND successor_discovery.source_folder =
+                                             d.source_folder
+                                         AND successor_discovery.discovered_at >
+                                             d.discovered_at
+                                       ORDER BY
+                                           successor_discovery.discovered_at,
+                                           successor_discovery.discovery_id
+                                       LIMIT 1
+                                   )
+                               ) AS successor_run_id
+                        FROM execution_operations_v2 AS o
+                        LEFT JOIN execution_operation_results_v2 AS result
+                          ON result.operation_id = o.operation_id
+                        LEFT JOIN execution_rescan_outbox_v2 AS rescan
+                          ON rescan.operation_id = o.operation_id
+                        WHERE o.run_id = r.run_id
+                          AND o.plan_hash = s.plan_hash
+                        LIMIT 1
+                    ) AS forward ON true
                     WHERE r.run_id = %s
                       AND NOT EXISTS (
                           SELECT 1 FROM run_deletions AS deleted
@@ -587,6 +635,13 @@ class PostgresQueries:
         acquisition_plan_hash = row[37]
         acquisition_policy = None if row[38] is None else str(row[38])
         acquisition_status = None if row[39] is None else str(row[39])
+        forward_status = (
+            None
+            if row[52] is None
+            else ExecutionOperationStatus(str(row[52]))
+        )
+        semantic_v2 = bool(row[60])
+        busy = busy or forward_status is ExecutionOperationStatus.RUNNING
         attention_state = (
             stored_status in {"running", "failed"}
             and row[4] == "stopped"
@@ -632,7 +687,15 @@ class PostgresQueries:
             and row[23] is None
         ):
             actions.append("fail_run")
-        if not busy and plan_hash is not None:
+        if not busy and plan_hash is not None and semantic_v2:
+            actions.extend(
+                item.value
+                for item in forward_available_actions(
+                    policy=ApplyPolicy(apply_policy),
+                    operation_status=forward_status,
+                )
+            )
+        if not busy and plan_hash is not None and not semantic_v2:
             if interaction_budget_available and status in {
                 "awaiting_approval",
                 "completed",
@@ -657,7 +720,8 @@ class PostgresQueries:
             if recovery_approval_id is not None:
                 actions.append("recover")
         if (
-            not busy
+            not semantic_v2
+            and not busy
             and row[23] is not None
             and folder_status == "planned"
             and apply_policy != "plan_only"
@@ -672,7 +736,8 @@ class PostgresQueries:
                 else "settle_folder"
             )
         if (
-            folder_status
+            not semantic_v2
+            and folder_status
             in {"prepared", "renamed", "recovery_required"}
             and row[29] is not None
         ):
@@ -700,7 +765,9 @@ class PostgresQueries:
             "tool_calls": 0 if row[8] is None else int(row[8]),
             "failures": 0 if row[9] is None else int(row[9]),
             "plan_hash": plan_hash,
-            "recovery_approval_id": recovery_approval_id,
+            "recovery_approval_id": (
+                None if semantic_v2 else recovery_approval_id
+            ),
             "apply_policy": apply_policy,
             "available_actions": actions,
             "settlement": (
@@ -718,6 +785,11 @@ class PostgresQueries:
                     ),
                     "settled_at": row[21].isoformat(),
                 }
+            ),
+            "execution": (
+                None
+                if row[50] is None
+                else self._forward_execution_view(row)
             ),
             "source_folder": (
                 None if row[22] is None else str(row[22])
@@ -771,6 +843,36 @@ class PostgresQueries:
                         None if row[43] is None else str(row[43])
                     ),
                 }
+            ),
+        }
+
+    @staticmethod
+    def _forward_execution_view(
+        row: tuple[object, ...],
+    ) -> dict[str, object]:
+        outcomes = tuple(str(item) for item in (row[54] or ()))
+        counts = {
+            name: outcomes.count(name)
+            for name in (
+                "satisfied",
+                "stale",
+                "collision",
+                "unsafe",
+                "unavailable",
+            )
+        }
+        return {
+            "operation_id": str(row[50]),
+            "plan_hash": str(row[51]),
+            "status": str(row[52]),
+            "attempt_count": int(row[53]),
+            "counts": counts,
+            "items": list(row[55] or ()),
+            "warnings": list(row[56] or ()),
+            "fresh_scan_required": bool(row[57]),
+            "rescan_state": None if row[58] is None else str(row[58]),
+            "successor_run_id": (
+                None if row[59] is None else str(row[59])
             ),
         }
 

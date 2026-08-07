@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from fastapi import FastAPI
 
 from reeloom.adapters.journal import FilesystemJournalStore
+from reeloom.adapters.forward_filesystem import PosixForwardFilesystem
 from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.adapters.telegram import TelegramHttpAdapter
@@ -31,6 +32,7 @@ from reeloom.adapters.subtitle_plan_store import (
     FilesystemSubtitleAcquisitionPlanStore,
 )
 from reeloom.executor.apply import FilesystemExecutor
+from reeloom.executor.forward import ForwardExecutor
 from reeloom.executor.folder_disposition import FolderDispositionExecutor
 from reeloom.executor.subtitle_acquisition import (
     SubtitleAcquisitionExecutor,
@@ -72,6 +74,13 @@ from reeloom.server.folder_disposition import (
     FolderDispositionPlanner,
     PostgresFolderDispositionRepository,
 )
+from reeloom.server.forward_execution_service import (
+    ForwardExecutionCoordinator,
+)
+from reeloom.server.forward_operation_repository import (
+    PostgresForwardOperationRepository,
+)
+from reeloom.server.forward_rescan import ForwardRescanWorker
 from reeloom.server.database import PostgresControlPlane
 from reeloom.server.directory_browser import PodDirectoryBrowser
 from reeloom.server.instance_lock import ProcessLock
@@ -396,6 +405,7 @@ def build_application(
         plans = FilesystemPlanStore(plan_root)
         journals = FilesystemJournalStore(journal_root)
         approvals = PostgresApprovalStore(database.pool)
+        forward_operations = PostgresForwardOperationRepository(database.pool)
         notification_outbox = PostgresNotificationOutbox(database.pool)
         notification_projector = PostgresNotificationProjector(
             plans=plans,
@@ -415,6 +425,14 @@ def build_application(
             approvals=approvals,
             executor=executor,
             completed_layouts=layouts,
+        )
+        forward_execution = ForwardExecutionCoordinator(
+            configs=PostgresConfigRepository(database.pool),
+            plans=plans,
+            approvals=approvals,
+            operations=forward_operations,
+            executor=ForwardExecutor(PosixForwardFilesystem()),
+            worker_id=boot_id,
         )
         folder_repository = PostgresFolderDispositionRepository(
             database.pool,
@@ -738,6 +756,11 @@ def build_application(
             ),
             subtitle_acquisitions=subtitle_acquisitions,
             subtitle_successors=subtitle_successor_worker,
+            forward_execution=forward_execution,
+            forward_rescans=ForwardRescanWorker(
+                operations=forward_operations,
+                scheduler=scheduler,
+            ),
         )
 
         def health() -> object:
@@ -802,6 +825,7 @@ def build_application(
                 queries=PostgresQueries(database.pool, plans=plans),
                 interactions=interactions,
                 apply=apply,
+                forward_execution=forward_execution,
                 folder_dispositions=folder_dispositions,
                 subtitle_acquisitions=subtitle_acquisitions,
                 health=health,

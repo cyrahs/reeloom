@@ -29,6 +29,10 @@ from reeloom.server.config import (
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
+from reeloom.server.forward_execution_service import (
+    ForwardExecutionCoordinator,
+)
+from reeloom.server.forward_rescan import ForwardRescanWorker
 from reeloom.server.notification_delivery import (
     ConfiguredNotificationDelivery,
 )
@@ -70,6 +74,8 @@ class BackgroundServices:
     notifications: ConfiguredNotificationDelivery | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     subtitle_successors: SubtitleSuccessorWorker | None = None
+    forward_execution: ForwardExecutionCoordinator | None = None
+    forward_rescans: ForwardRescanWorker | None = None
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -148,6 +154,15 @@ class BackgroundServices:
                             now=datetime.now(UTC),
                         )
                         is not None
+                    ) or progressed
+                if self.forward_execution is not None:
+                    progressed = (
+                        self.forward_execution.reconcile_one() is not None
+                    ) or progressed
+                if self.forward_rescans is not None:
+                    progressed = self.forward_rescans.process_one(
+                        worker_id=self.boot_id,
+                        now=datetime.now(UTC),
                     ) or progressed
             except Exception as error:
                 _LOG.error(

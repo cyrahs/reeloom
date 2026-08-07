@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
@@ -16,6 +17,7 @@ from reeloom.kernel.forward_execution import (
     ExecutionOperationLease,
     ExecutionOperationStatus,
 )
+from reeloom.executor.forward import ForwardExecutionResult
 from reeloom.server.errors import ServerError, ServerErrorCode
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -34,6 +36,25 @@ class ForwardOperationError(RuntimeError):
     def __init__(self, code: ForwardOperationErrorCode) -> None:
         self.code = code
         super().__init__(code.value)
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRescanClaim:
+    operation_id: str
+    run_id: str
+    worker_id: str
+    attempt_count: int
+    lease_expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardOperationView:
+    operation: ExecutionOperation
+    items: tuple[dict[str, str | None], ...] = ()
+    warnings: tuple[str, ...] = ()
+    fresh_scan_required: bool = False
+    rescan_state: str | None = None
+    successor_run_id: str | None = None
 
 
 def execution_operation_id(*, run_id: str, plan_hash: str) -> str:
@@ -374,6 +395,351 @@ class PostgresForwardOperationRepository:
                             ForwardOperationErrorCode.LEASE_CONFLICT
                         )
                     return _operation_from_row(row)
+        except ForwardOperationError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+
+    def settle_result(
+        self,
+        lease: ExecutionOperationLease,
+        result: ForwardExecutionResult,
+        *,
+        now: datetime,
+    ) -> ExecutionOperation:
+        """Atomically persist terminal truth and its durable rescan intent."""
+
+        _validate_time(now)
+        if (
+            not isinstance(lease, ExecutionOperationLease)
+            or not isinstance(result, ForwardExecutionResult)
+            or result.operation.operation_id
+            != lease.operation.operation_id
+            or result.operation.attempt_count
+            != lease.operation.attempt_count
+        ):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        try:
+            settled = lease.settle(result.operation.outcomes, now=now)
+        except DomainError:
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.LEASE_CONFLICT
+            ) from None
+        if settled != result.operation:
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        items = [
+            {
+                "diagnostic": (
+                    None
+                    if item.diagnostic is None
+                    else item.diagnostic.value
+                ),
+                "outcome": item.outcome.value,
+                "source_id": str(item.source_id),
+            }
+            for item in result.items
+        ]
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        UPDATE execution_operations_v2
+                        SET status = %s, outcomes = %s::jsonb,
+                            lease_owner = NULL, lease_expires_at = NULL,
+                            updated_at = %s
+                        WHERE operation_id = %s
+                          AND status = 'running'
+                          AND attempt_count = %s
+                          AND lease_owner = %s
+                          AND lease_expires_at = %s
+                          AND lease_expires_at > %s
+                        RETURNING schema_version, operation_id, run_id,
+                                  plan_hash, status, attempt_count, outcomes
+                        """,
+                        (
+                            settled.status.value,
+                            json.dumps(
+                                [item.value for item in settled.outcomes],
+                                separators=(",", ":"),
+                            ),
+                            now,
+                            settled.operation_id,
+                            settled.attempt_count,
+                            lease.worker_id,
+                            lease.expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.LEASE_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO execution_operation_results_v2
+                            (operation_id, items, warnings,
+                             fresh_scan_required, settled_at)
+                        VALUES (%s, %s::jsonb, %s::jsonb, %s, %s)
+                        """,
+                        (
+                            settled.operation_id,
+                            json.dumps(items, separators=(",", ":")),
+                            json.dumps(
+                                list(result.warnings),
+                                separators=(",", ":"),
+                            ),
+                            result.fresh_scan_required,
+                            now,
+                        ),
+                    )
+                    if result.fresh_scan_required:
+                        connection.execute(
+                            """
+                            INSERT INTO execution_rescan_outbox_v2
+                                (operation_id, run_id)
+                            VALUES (%s, %s)
+                            """,
+                            (settled.operation_id, settled.run_id),
+                        )
+                    connection.execute(
+                        """
+                        UPDATE runs
+                        SET status = CASE
+                            WHEN %s = 'completed' THEN 'completed'
+                            ELSE 'failed'
+                        END
+                        WHERE run_id = %s
+                          AND status NOT IN ('superseded', 'completed')
+                        """,
+                        (settled.status.value, settled.run_id),
+                    )
+                    return _operation_from_row(row)
+        except ForwardOperationError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+
+    def get_view(self, operation_id: str) -> ForwardOperationView:
+        try:
+            with self._pool.connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT o.schema_version, o.operation_id, o.run_id,
+                           o.plan_hash, o.status, o.attempt_count, o.outcomes,
+                           r.items, r.warnings, r.fresh_scan_required,
+                           q.state, q.successor_run_id
+                    FROM execution_operations_v2 AS o
+                    LEFT JOIN execution_operation_results_v2 AS r
+                      ON r.operation_id = o.operation_id
+                    LEFT JOIN execution_rescan_outbox_v2 AS q
+                      ON q.operation_id = o.operation_id
+                    WHERE o.operation_id = %s
+                    """,
+                    (operation_id,),
+                ).fetchone()
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+        if row is None:
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.OPERATION_NOT_FOUND
+            )
+        operation = _operation_from_row(row)
+        try:
+            raw_items = () if row[7] is None else tuple(row[7])
+            items = tuple(
+                {
+                    "source_id": str(item["source_id"]),
+                    "outcome": str(item["outcome"]),
+                    "diagnostic": (
+                        None
+                        if item.get("diagnostic") is None
+                        else str(item["diagnostic"])
+                    ),
+                }
+                for item in raw_items
+            )
+            warnings = (
+                () if row[8] is None else tuple(str(item) for item in row[8])
+            )
+            return ForwardOperationView(
+                operation=operation,
+                items=items,
+                warnings=warnings,
+                fresh_scan_required=(False if row[9] is None else bool(row[9])),
+                rescan_state=None if row[10] is None else str(row[10]),
+                successor_run_id=None if row[11] is None else str(row[11]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            ) from None
+
+    def claim_rescan(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_for: timedelta,
+    ) -> ForwardRescanClaim | None:
+        _validate_time(now)
+        if (
+            not isinstance(worker_id, str)
+            or not worker_id
+            or len(worker_id.encode("utf-8")) > 128
+            or not isinstance(lease_for, timedelta)
+            or not timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
+        ):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE execution_rescan_outbox_v2
+                        SET state = 'blocked', lease_owner = NULL,
+                            lease_expires_at = NULL, dispatched_at = %s,
+                            last_error = 'retry_exhausted', updated_at = %s
+                        WHERE state IN ('queued', 'retry_wait', 'leased')
+                          AND attempt_count >= 100
+                          AND (state <> 'leased' OR lease_expires_at <= %s)
+                        """,
+                        (now, now, now),
+                    )
+                    row = connection.execute(
+                        """
+                        SELECT operation_id, run_id, attempt_count
+                        FROM execution_rescan_outbox_v2
+                        WHERE available_at <= %s
+                          AND (
+                              state IN ('queued', 'retry_wait')
+                              OR (state = 'leased' AND lease_expires_at <= %s)
+                          )
+                          AND attempt_count < 100
+                        ORDER BY available_at, created_at, operation_id
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                        """,
+                        (now, now),
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    expires = now + lease_for
+                    attempt = int(row[2]) + 1
+                    connection.execute(
+                        """
+                        UPDATE execution_rescan_outbox_v2
+                        SET state = 'leased', attempt_count = %s,
+                            lease_owner = %s, lease_expires_at = %s,
+                            last_error = NULL, updated_at = %s
+                        WHERE operation_id = %s
+                        """,
+                        (attempt, worker_id, expires, now, str(row[0])),
+                    )
+                    return ForwardRescanClaim(
+                        operation_id=str(row[0]),
+                        run_id=str(row[1]),
+                        worker_id=worker_id,
+                        attempt_count=attempt,
+                        lease_expires_at=expires,
+                    )
+        except ForwardOperationError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+
+    def complete_rescan(
+        self,
+        claim: ForwardRescanClaim,
+        *,
+        now: datetime,
+    ) -> None:
+        self._finish_rescan(claim, now=now, state="completed")
+
+    def retry_rescan(
+        self,
+        claim: ForwardRescanClaim,
+        *,
+        now: datetime,
+        delay: timedelta,
+        error: str,
+    ) -> None:
+        if (
+            not isinstance(delay, timedelta)
+            or not timedelta(seconds=1) <= delay <= timedelta(hours=1)
+            or not isinstance(error, str)
+            or not error
+            or len(error.encode("utf-8")) > 128
+        ):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        self._finish_rescan(
+            claim,
+            now=now,
+            state="retry_wait",
+            available_at=now + delay,
+            error=error,
+        )
+
+    def _finish_rescan(
+        self,
+        claim: ForwardRescanClaim,
+        *,
+        now: datetime,
+        state: str,
+        available_at: datetime | None = None,
+        error: str | None = None,
+    ) -> None:
+        _validate_time(now)
+        if not isinstance(claim, ForwardRescanClaim):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        UPDATE execution_rescan_outbox_v2
+                        SET state = %s, lease_owner = NULL,
+                            lease_expires_at = NULL,
+                            available_at = COALESCE(%s, available_at),
+                            dispatched_at = CASE
+                                WHEN %s = 'completed' THEN %s
+                                ELSE dispatched_at
+                            END,
+                            last_error = %s, updated_at = %s
+                        WHERE operation_id = %s AND state = 'leased'
+                          AND lease_owner = %s AND attempt_count = %s
+                          AND lease_expires_at = %s
+                          AND lease_expires_at > %s
+                        RETURNING operation_id
+                        """,
+                        (
+                            state,
+                            available_at,
+                            state,
+                            now,
+                            error,
+                            now,
+                            claim.operation_id,
+                            claim.worker_id,
+                            claim.attempt_count,
+                            claim.lease_expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.LEASE_CONFLICT
+                        )
         except ForwardOperationError:
             raise
         except Exception:

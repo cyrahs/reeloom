@@ -135,6 +135,21 @@ checked rename；rename 返回值只是诊断，最终以有界重观察为准�
 warning。该层返回 durable fresh-scan intent，但在 M14.2c 前尚不注册 operation coordinator、
 HTTP API 或 successor run。
 
+## M14.2c 边界
+
+`ForwardExecutionCoordinator` 只从持久配置决定 manual/automatic，首次执行把 exact
+approval 直接绑定到 operation；后台 reconcile 重领同一 lease，不读取浏览器
+`automatic` 或 approval ID。operation 终态、逐项 outcome/diagnostic、warning 和
+fresh-scan intent 在同一 PostgreSQL transaction 中写入；独立 outbox worker 用 scheduler
+audit key 幂等退休旧 folder generation，进程在 dispatch 与 outbox ack 之间崩溃也不会
+重复产生 effect。
+
+Run API 对 v2 返回 operation 状态、计数、warning、rescan 状态与可发现的 successor run，
+并隐藏 legacy recovery approval。新的 strict `/execute` 接受空对象和 `If-Match` plan
+hash；Web 使用同一 operation 安全重读，不再生成新的恢复请求。M14.2c 仍不把
+manual/automatic 与 ACG.RIP production plan 切换到 v2；该开关等待 M14.3 完成 subtitle
+marker publisher 和 non-blocking folder housekeeping。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

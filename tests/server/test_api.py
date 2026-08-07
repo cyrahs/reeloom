@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.kernel.forward_execution import ExecutionOperation
 from reeloom.server.api import (
     ApiDependencies,
     _SecurityBoundary,
@@ -18,6 +19,7 @@ from reeloom.server.api import (
 )
 from reeloom.server.auth import AuthSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.forward_operation_repository import ForwardOperationView
 from reeloom.server.interactions import InteractionKind, InteractionResult
 from reeloom.server.queries import _safe_event
 from reeloom.server.config import SubtitleAcquisitionPolicy
@@ -277,6 +279,7 @@ def _app(
     interactions: object | None = None,
     attention_retry: Callable[[str, int], dict[str, object]] | None = None,
     attention_fail: Callable[[str, int], dict[str, object]] | None = None,
+    forward_execution: object | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
@@ -289,6 +292,7 @@ def _app(
             interactions=interactions,  # type: ignore[arg-type]
             attention_retry=attention_retry,
             attention_fail=attention_fail,
+            forward_execution=forward_execution,  # type: ignore[arg-type]
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -298,6 +302,102 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+class _ForwardExecution:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def execute_manual(self, *, run_id: str, plan_hash: str) -> None:
+        self.calls.append((run_id, plan_hash))
+
+    def view(self, *, run_id: str, plan_hash: str) -> ForwardOperationView:
+        return ForwardOperationView(
+            operation=ExecutionOperation.restore(
+                schema_version="2",
+                operation_id="operation:m14",
+                run_id=run_id,
+                plan_hash=plan_hash,
+                status="partial",
+                attempt_count=1,
+                outcomes=("satisfied", "collision"),
+            ),
+            items=(
+                {
+                    "source_id": "video:1",
+                    "outcome": "satisfied",
+                    "diagnostic": "checked_rename",
+                },
+                {
+                    "source_id": "video:2",
+                    "outcome": "collision",
+                    "diagnostic": None,
+                },
+            ),
+            warnings=("directory_fsync_unsupported",),
+            fresh_scan_required=True,
+            rescan_state="queued",
+        )
+
+
+def test_forward_execute_has_no_browser_controlled_automatic_flag() -> None:
+    coordinator = _ForwardExecution()
+    app = _app(forward_execution=coordinator)
+    plan_hash = "sha256:" + "a" * 64
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "if-match": plan_hash,
+            },
+        ) as client:
+            accepted = await client.post(
+                "/api/v1/runs/run-1/execute", json={}
+            )
+            rejected = await client.post(
+                "/api/v1/runs/run-1/execute",
+                json={"automatic": True},
+            )
+            return accepted, rejected
+
+    accepted, rejected = asyncio.run(scenario())
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {
+        "operation_id": "operation:m14",
+        "run_id": "run-1",
+        "plan_hash": plan_hash,
+        "status": "partial",
+        "attempt_count": 1,
+        "counts": {
+            "satisfied": 1,
+            "stale": 0,
+            "collision": 1,
+            "unsafe": 0,
+            "unavailable": 0,
+        },
+        "items": [
+            {
+                "source_id": "video:1",
+                "outcome": "satisfied",
+                "diagnostic": "checked_rename",
+            },
+            {
+                "source_id": "video:2",
+                "outcome": "collision",
+                "diagnostic": None,
+            },
+        ],
+        "warnings": ["directory_fsync_unsupported"],
+        "fresh_scan_required": True,
+        "rescan_state": "queued",
+        "successor_run_id": None,
+    }
+    assert rejected.status_code == 422
+    assert coordinator.calls == [("run-1", plan_hash)]
 
 
 class _Interactions:

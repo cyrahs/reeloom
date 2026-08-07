@@ -6,6 +6,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from reeloom.executor.forward import (
+    ForwardExecutionItemResult,
+    ForwardExecutionResult,
+)
+from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
 from reeloom.kernel.forward_execution import (
     ExecutionItemOutcome,
@@ -173,17 +178,56 @@ def test_postgres_operation_ledger_authorizes_leases_and_settles() -> None:
             lease_for=timedelta(seconds=30),
         )
         assert lease is not None
-        settled = repository.settle(
-            lease,
+        terminal = lease.settle(
             (
                 ExecutionItemOutcome.SATISFIED,
                 ExecutionItemOutcome.COLLISION,
             ),
             now=now + timedelta(seconds=1),
         )
+        result = ForwardExecutionResult(
+            operation=terminal,
+            items=(
+                ForwardExecutionItemResult(
+                    CandidateId(CandidateKind.VIDEO, 1),
+                    ExecutionItemOutcome.SATISFIED,
+                ),
+                ForwardExecutionItemResult(
+                    CandidateId(CandidateKind.VIDEO, 2),
+                    ExecutionItemOutcome.COLLISION,
+                ),
+            ),
+            warnings=("directory_fsync_unsupported",),
+            fresh_scan_required=True,
+        )
+        settled = repository.settle_result(
+            lease, result, now=now + timedelta(seconds=1)
+        )
 
         assert settled.status is ExecutionOperationStatus.PARTIAL
         assert repository.get(operation.operation_id) == settled
+        view = repository.get_view(operation.operation_id)
+        assert view.operation == settled
+        assert tuple(item["outcome"] for item in view.items) == (
+            "satisfied",
+            "collision",
+        )
+        assert view.warnings == ("directory_fsync_unsupported",)
+        assert view.fresh_scan_required
+        assert view.rescan_state == "queued"
+        rescan = repository.claim_rescan(
+            worker_id=f"worker-{suffix}",
+            now=now + timedelta(seconds=2),
+            lease_for=timedelta(seconds=30),
+        )
+        assert rescan is not None
+        assert rescan.run_id == run_id
+        repository.complete_rescan(
+            rescan, now=now + timedelta(seconds=3)
+        )
+        assert repository.get_view(operation.operation_id).rescan_state == (
+            "completed"
+        )
         assert repository.claim(
             operation.operation_id,
             worker_id=f"worker-{suffix}",

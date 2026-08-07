@@ -729,7 +729,10 @@ no-follow 重扫并核对语义身份。manual/automatic、Movie 与启用 ACG.R
   - M14.2b（完成）：实现 current-state filesystem adapter、forward executor、固定有界
     重观察与 fresh-scan intent；覆盖 checked rename、延迟可见、rename 报错但已完成、
     stat identity 不稳定和 fsync 不支持。durable rescan 投递随 M14.2c coordinator 接入。
-  - M14.2c：接入 execute/reconcile service、read model、API 与 Web UI。
+  - M14.2c（完成）：接入 server-owned execute/reconcile coordinator、原子终态结果与
+    fresh-scan outbox、后台 lease worker、v2 Run read model、strict `/execute` API 和
+    Web UI。浏览器不提交 automatic 或 approval ID，v2 UI 不显示定向 recovery；
+    manual/automatic production 切换仍等待 M14.3 housekeeping/marker 发布完成。
 - M14.3：字幕 marker 发布、普通 durable scan request 和非阻塞 folder housekeeping；
   移除三套面向用户的 recovery 入口。
 - M14.4：一次性 supersede 未结算 v1 effect、投递 fresh scan、清除旧锁，并在稳定后

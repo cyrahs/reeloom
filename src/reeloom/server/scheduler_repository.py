@@ -1727,6 +1727,16 @@ class PostgresSchedulerRepository:
                         "SELECT pg_advisory_xact_lock(%s)",
                         (CONFIG_LOCK_ID,),
                     )
+                    if audit_event is not None:
+                        already_dispatched = connection.execute(
+                            """
+                            SELECT 1 FROM scheduler_audit
+                            WHERE event_type = %s AND subject_id = %s
+                            """,
+                            (audit_event, run_id),
+                        ).fetchone()
+                        if already_dispatched is not None:
+                            return
                     row = connection.execute(
                         """
                         SELECT d.discovery_id, d.watch_id, d.source_folder
