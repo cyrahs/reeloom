@@ -21,6 +21,11 @@ from reeloom.kernel.semantic_identity import (
     SemanticCandidateSnapshot,
     SemanticSourceIdentity,
 )
+from reeloom.kernel.subtitle_publication import (
+    MAX_SUBTITLE_PUBLICATION_MARKER_BYTES,
+    SUBTITLE_PUBLICATION_MARKER,
+    SubtitlePublicationManifest,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.policy.path_policy import is_forbidden_env_name
 
@@ -30,6 +35,9 @@ _SEMANTIC_INVENTORY_SCHEMA = "folder-inventory-v2"
 _MAX_FOLDERS = 1_000
 _ACQUISITION_STAGING = re.compile(
     r"^\.reeloom-acquiring-[0-9a-f]{64}$"
+)
+_ACQUISITION_PUBLICATION = re.compile(
+    r"^reeloom-acquired-[0-9a-f]{64}$"
 )
 
 
@@ -484,6 +492,17 @@ class NoFollowWatcher:
             except OSError:
                 raise _Blocked("scan_failed") from None
             kind = self._entry_kind(metadata)
+            if (
+                kind is FolderEntryKind.DIRECTORY
+                and _ACQUISITION_PUBLICATION.fullmatch(name) is not None
+                and not self._valid_subtitle_publication(
+                    directory_fd=directory_fd,
+                    name=name,
+                )
+            ):
+                # A plan-owned directory is invisible until its immutable
+                # marker and every declared member agree with current bytes.
+                continue
             entries.append(
                 FolderEntry(
                     relative_path=relative,
@@ -543,6 +562,97 @@ class NoFollowWatcher:
                     sha256=None,
                 )
             )
+
+    @classmethod
+    def _valid_subtitle_publication(
+        cls,
+        *,
+        directory_fd: int,
+        name: str,
+    ) -> bool:
+        publication_fd: int | None = None
+        marker_fd: int | None = None
+        try:
+            publication_fd = FilesystemScanner._open_directory(
+                name,
+                parent_fd=directory_fd,
+            )
+            marker_metadata = os.stat(
+                SUBTITLE_PUBLICATION_MARKER,
+                dir_fd=publication_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(marker_metadata.st_mode)
+                or not 0
+                < marker_metadata.st_size
+                <= MAX_SUBTITLE_PUBLICATION_MARKER_BYTES
+            ):
+                return False
+            no_follow = getattr(os, "O_NOFOLLOW", None)
+            if no_follow is None:
+                return False
+            marker_fd = os.open(
+                SUBTITLE_PUBLICATION_MARKER,
+                os.O_RDONLY
+                | no_follow
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=publication_fd,
+            )
+            before = os.fstat(marker_fd)
+            if not FilesystemScanner._same_identity(before, marker_metadata):
+                return False
+            marker = bytearray()
+            while len(marker) <= MAX_SUBTITLE_PUBLICATION_MARKER_BYTES:
+                chunk = os.read(marker_fd, 64 * 1024)
+                if not chunk:
+                    break
+                marker.extend(chunk)
+            if (
+                len(marker) > MAX_SUBTITLE_PUBLICATION_MARKER_BYTES
+                or not FilesystemScanner._same_identity(
+                    os.fstat(marker_fd),
+                    marker_metadata,
+                )
+            ):
+                return False
+            manifest = SubtitlePublicationManifest.from_canonical_bytes(
+                bytes(marker)
+            )
+            if manifest.publication_directory != name:
+                return False
+            expected_names = {item.name for item in manifest.members} | {
+                SUBTITLE_PUBLICATION_MARKER
+            }
+            actual_names = set(os.listdir(publication_fd))
+            if actual_names != expected_names:
+                return False
+            for member in manifest.members:
+                metadata = os.stat(
+                    member.name,
+                    dir_fd=publication_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_size != member.size_bytes
+                    or cls._subtitle_digests(
+                        directory_fd=publication_fd,
+                        name=member.name,
+                        expected=metadata,
+                    )[1]
+                    != member.sha256
+                ):
+                    return False
+            return True
+        except Exception:
+            return False
+        finally:
+            if marker_fd is not None:
+                os.close(marker_fd)
+            if publication_fd is not None:
+                os.close(publication_fd)
 
     @staticmethod
     def _sample_subtitles(

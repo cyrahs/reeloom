@@ -1,17 +1,23 @@
 from __future__ import annotations
 
-import os
+import hashlib
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.adapters.filesystem import FilesystemScanner
-from reeloom.server.config import ServerWorkType
+from reeloom.kernel.subtitle_publication import (
+    SUBTITLE_PUBLICATION_MARKER,
+    SubtitlePublicationManifest,
+    SubtitlePublicationMember,
+)
+from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.agent_worker import InitialAgentWorker
+from reeloom.server.config import ServerWorkType
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.scheduler import (
     AgentJobContext,
@@ -272,7 +278,7 @@ def test_folder_watcher_tracks_nested_symlink_without_following(
     ) == ("Work/episode.mkv",)
 
 
-def test_folder_watcher_ignores_acquisition_staging_but_reads_published_subtitles(
+def test_folder_watcher_requires_valid_marker_for_published_subtitles(
     tmp_path: Path,
 ) -> None:
     work = tmp_path / "Work"
@@ -284,6 +290,27 @@ def test_folder_watcher_ignores_acquisition_staging_but_reads_published_subtitle
     (staging / "partial.ass").write_bytes(b"partial")
     (published / "episode.ass").write_bytes(b"subtitle")
 
+    partial = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    assert tuple(
+        item.relative_path.as_posix()
+        for item in partial.folders[0].candidates.files
+    ) == ("Work/episode.mkv",)
+
+    manifest = SubtitlePublicationManifest.create(
+        plan_hash="sha256:" + "b" * 64,
+        publication_directory=published.name,
+        members=(
+            SubtitlePublicationMember(
+                name="episode.ass",
+                size_bytes=len(b"subtitle"),
+                sha256=hashlib.sha256(b"subtitle").hexdigest(),
+            ),
+        ),
+    )
+    (published / SUBTITLE_PUBLICATION_MARKER).write_bytes(
+        manifest.canonical_bytes()
+    )
     scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
 
     assert len(scan.folders) == 1
@@ -296,6 +323,43 @@ def test_folder_watcher_ignores_acquisition_staging_but_reads_published_subtitle
     )
     assert all(
         not item.relative_path.as_posix().startswith(".reeloom-acquiring-")
+        for item in scan.folders[0].entries
+    )
+
+
+def test_folder_watcher_ignores_corrupt_marked_publication(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "Work"
+    published = work / ("reeloom-acquired-" + "c" * 64)
+    published.mkdir(parents=True)
+    (work / "episode.mkv").write_bytes(b"video")
+    (published / "episode.ass").write_bytes(b"corrupt")
+    manifest = SubtitlePublicationManifest.create(
+        plan_hash="sha256:" + "c" * 64,
+        publication_directory=published.name,
+        members=(
+            SubtitlePublicationMember(
+                name="episode.ass",
+                size_bytes=len(b"subtitle"),
+                sha256=hashlib.sha256(b"subtitle").hexdigest(),
+            ),
+        ),
+    )
+    (published / SUBTITLE_PUBLICATION_MARKER).write_bytes(
+        manifest.canonical_bytes()
+    )
+
+    scan = NoFollowWatcher().scan_folders(AuthorizedRoot.create(tmp_path))
+
+    assert tuple(
+        item.relative_path.as_posix()
+        for item in scan.folders[0].candidates.files
+    ) == ("Work/episode.mkv",)
+    assert all(
+        not item.relative_path.as_posix().startswith(
+            "reeloom-acquired-"
+        )
         for item in scan.folders[0].entries
     )
 

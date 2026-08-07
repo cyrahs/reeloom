@@ -4,7 +4,7 @@
 
 日期：2026-08-07
 
-当前进度：M0-M13、M14.0-M14.2b 已完成；M14.2c-M14.4 尚未开始。
+当前进度：M0-M13、M14.0-M14.2c、M14.3a 已完成；M14.3b-M14.4 尚未开始。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -691,15 +691,12 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 
 ### M14：基于当前状态的前向收敛执行器
 
-当前状态：M14.0-M14.1b 已完成。已增加不含持久 stat identity 的 strict frozen v2 语义身份、
-canonical `RenamePlan v2`、纯 `ExecutionOperation v2` 状态机和完整 source/destination
-真值表。Watcher 现在单次 poll 只生成一个 namespace snapshot，同时计算保留兼容性的
-v1 identity 与 `path + kind + size` v2 inventory；视频 v2 identity 不读取内容，字幕使用
-完整文件 SHA-256。离线 scheduler contract 已可按 v2 identity 跨 poll 判断稳定，因此
-metadata-only 变化与同路径同大小的视频替换不会重启 generation。PostgreSQL discovery
-与 episode production plan-only 已切换到语义 snapshot/plan v2；Agent 在规划前按当前路径
-no-follow 重扫并核对语义身份。manual/automatic、Movie 与启用 ACG.RIP 的 M13 流程继续
-使用 v1，直至 M14.2/M14.3 分别接管；本增量不开放新的文件副作用。
+当前状态：M14.0-M14.2c、M14.3a 已完成。除 v2 语义身份、plan、operation ledger、
+forward executor 与 server-owned execute/reconcile control plane 外，现已增加 canonical
+字幕 publication manifest、直接写 plan-owned 最终目录的 forward-only marker publisher，
+并让 watcher 只接纳 marker 与全部 member 当前 hash 一致的发布目录。现有 M13 publisher
+在迁移期间也会补写相同 marker，避免生成 watcher 不可见的已完成目录。manual/automatic、
+Movie 与启用 ACG.RIP 的 M13 production 切换仍等待 M14.3b-M14.3c。
 
 固定决策：
 
@@ -735,6 +732,14 @@ no-follow 重扫并核对语义身份。manual/automatic、Movie 与启用 ACG.R
     manual/automatic production 切换仍等待 M14.3 housekeeping/marker 发布完成。
 - M14.3：字幕 marker 发布、普通 durable scan request 和非阻塞 folder housekeeping；
   移除三套面向用户的 recovery 入口。
+  - M14.3a（完成）：增加 strict canonical publication manifest、逐 member `O_EXCL |
+    O_NOFOLLOW` 的 forward-only marker publisher、完整 marker/member watcher 校验；fsync
+    失败只记 warning，partial/corrupt publication 不进入 snapshot。v1 publisher 过渡性补写
+    同一 marker，production executor 切换留给 M14.3b。
+  - M14.3b：接入内容寻址归档缓存、marker publisher 与普通 durable scan request，并移除
+    subtitle-specific recovery/successor 写路径。
+  - M14.3c：接入 non-blocking folder housekeeping、handled inventory，再启用 v2
+    manual/automatic production。
 - M14.4：一次性 supersede 未结算 v1 effect、投递 fresh scan、清除旧锁，并在稳定后
   删除 legacy recovery 与 v1 executor 写路径。
 

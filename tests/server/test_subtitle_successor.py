@@ -23,6 +23,10 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveVolume,
     SubtitleReleaseId,
 )
+from reeloom.kernel.subtitle_publication import (
+    SUBTITLE_PUBLICATION_MARKER,
+    SubtitlePublicationManifest,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.scheduler import JobStatus
 from reeloom.server.subtitle_successor import (
@@ -117,6 +121,9 @@ def _case(
     destination = source / transaction.destination_name
     destination.mkdir()
     (destination / plan.members[0].destination_name).write_bytes(_SUBTITLE)
+    (destination / SUBTITLE_PUBLICATION_MARKER).write_bytes(
+        SubtitlePublicationManifest.from_plan(plan).canonical_bytes()
+    )
     destination_stat = destination.stat()
     result = SubtitleAcquisitionResult(
         run_id=plan.run_id,

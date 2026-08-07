@@ -150,6 +150,18 @@ hash；Web 使用同一 operation 安全重读，不再生成新的恢复请求�
 manual/automatic 与 ACG.RIP production plan 切换到 v2；该开关等待 M14.3 完成 subtitle
 marker publisher 和 non-blocking folder housekeeping。
 
+## M14.3a 边界
+
+字幕 publication manifest 以 canonical marker 绑定 exact plan hash、plan-owned 最终目录和
+每个 member 的 basename、size 与完整 SHA-256。独立 forward publisher 直接在最终目录中
+以 `O_EXCL | O_NOFOLLOW` 写 member，只有 exact hash 才复用既有文件，最后排他写 marker；
+文件或目录 fsync 不支持仅产生 warning。没有有效 marker、marker 损坏、member 缺失或 hash
+不符的 reserved publication directory 对 watcher 完全不可见。
+
+为保证增量提交可运行，M13 v1 staging publisher 在迁移窗口也补写完全相同的 marker；它的
+旧 journal/recovery 行为尚未在本步骤删除。内容寻址缓存、普通 scan request、删除字幕专用
+successor/recovery 以及 production 切换分别留给 M14.3b-M14.3c。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。
