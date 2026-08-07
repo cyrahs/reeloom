@@ -6,6 +6,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    readonly context: Readonly<Record<string, string>> = {},
   ) {
     super(code);
     this.name = "ApiError";
@@ -54,8 +55,8 @@ export class ApiClient {
       this.onUnauthorized();
     }
     if (!response.ok) {
-      const code = await safeErrorCode(response);
-      throw new ApiError(response.status, code);
+      const error = await safeError(response);
+      throw new ApiError(response.status, error.code, error.context);
     }
     let value: unknown;
     try {
@@ -71,7 +72,9 @@ export class ApiClient {
   }
 }
 
-async function safeErrorCode(response: Response): Promise<string> {
+async function safeError(
+  response: Response,
+): Promise<{ code: string; context: Readonly<Record<string, string>> }> {
   try {
     const value: unknown = await response.json();
     if (
@@ -83,12 +86,24 @@ async function safeErrorCode(response: Response): Promise<string> {
       "code" in value.error &&
       typeof value.error.code === "string"
     ) {
-      return value.error.code;
+      const context: Record<string, string> = {};
+      if (
+        "context" in value.error &&
+        typeof value.error.context === "object" &&
+        value.error.context !== null
+      ) {
+        for (const [key, item] of Object.entries(value.error.context)) {
+          if (typeof item === "string") {
+            context[key] = item;
+          }
+        }
+      }
+      return { code: value.error.code, context };
     }
   } catch {
     // A server error body is untrusted and optional.
   }
-  return `http_${response.status}`;
+  return { code: `http_${response.status}`, context: {} };
 }
 
 export function idempotencyKey(): string {

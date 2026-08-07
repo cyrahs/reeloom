@@ -92,6 +92,15 @@ _BODY_TIMEOUT_SECONDS = 5.0
 _EMPTY_SSE_POLLS = 2
 _SSE_POLL_SECONDS = 0.25
 _SSE_CONNECTION_LIMIT = 16
+_EXECUTOR_ERROR_CONTEXT_FIELDS = frozenset(
+    {
+        "candidate_id",
+        "destination_relative_path",
+        "destination_state",
+        "source_relative_path",
+        "source_state",
+    }
+)
 _SINGLETON_HEADERS = frozenset(
     {
         "authorization",
@@ -104,6 +113,21 @@ _SINGLETON_HEADERS = frozenset(
         "origin",
     }
 )
+
+
+def _safe_executor_error_context(
+    error: ExecutorError,
+) -> dict[str, str]:
+    context: dict[str, str] = {}
+    for key in sorted(_EXECUTOR_ERROR_CONTEXT_FIELDS):
+        value = error.context.get(key)
+        if (
+            isinstance(value, str)
+            and value
+            and len(value.encode("utf-8")) <= 4_096
+        ):
+            context[key] = value
+    return context
 
 
 def _folder_disposition_payload(
@@ -888,7 +912,16 @@ def create_api(
                 {"error": {"code": error.code.value}},
                 status_code=statuses.get(error.code, 400),
             )
-        if isinstance(error, (ApprovalError, ExecutorError)):
+        if isinstance(error, ExecutorError):
+            context = _safe_executor_error_context(error)
+            payload: dict[str, object] = {"code": error.code.value}
+            if context:
+                payload["context"] = context
+            return JSONResponse(
+                {"error": payload},
+                status_code=409,
+            )
+        if isinstance(error, ApprovalError):
             return JSONResponse(
                 {"error": {"code": error.code.value}},
                 status_code=409,

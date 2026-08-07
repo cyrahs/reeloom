@@ -1044,7 +1044,10 @@ export function RunPage({ runId }: { runId: string }) {
               <PageError code={apply.error.code} />
             ) : null}
             {recover.error instanceof ApiError ? (
-              <PageError code={recover.error.code} />
+              <PageError
+                code={recover.error.code}
+                context={recover.error.context}
+              />
             ) : null}
             {folderDisposition.error instanceof ApiError ? (
               <PageError code={folderDisposition.error.code} />

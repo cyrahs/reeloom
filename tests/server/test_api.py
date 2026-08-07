@@ -9,9 +9,11 @@ from pathlib import Path
 import httpx
 import pytest
 
+from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.server.api import (
     ApiDependencies,
     _SecurityBoundary,
+    _safe_executor_error_context,
     create_api,
 )
 from reeloom.server.auth import AuthSettings
@@ -22,6 +24,31 @@ from reeloom.server.config import SubtitleAcquisitionPolicy
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionRequestRecord,
 )
+
+
+def test_executor_error_context_is_bounded_and_allowlisted() -> None:
+    context = _safe_executor_error_context(
+        ExecutorError(
+            ExecutorErrorCode.RECOVERY_REQUIRED,
+            context={
+                "candidate_id": "video:1",
+                "source_relative_path": "episode.mkv",
+                "source_state": "absent",
+                "destination_relative_path": "Series/episode.mkv",
+                "destination_state": "absent",
+                "secret": "not-returned",
+                "oversized": "x" * 5_000,
+            },
+        )
+    )
+
+    assert context == {
+        "candidate_id": "video:1",
+        "destination_relative_path": "Series/episode.mkv",
+        "destination_state": "absent",
+        "source_relative_path": "episode.mkv",
+        "source_state": "absent",
+    }
 
 
 @dataclass
