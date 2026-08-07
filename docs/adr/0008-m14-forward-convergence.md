@@ -180,6 +180,20 @@ outbox；旧表与旧 worker 只为 M14.4 一次性迁移前已经存在的记�
 当前仍由 media `plan_lineage + apply` 外键约束，字幕独立 plan family 的 ledger 合并留在
 M14.4 schema migration，不能用伪造 media lineage 提前接入。
 
+## M14.3c 边界
+
+episode watch 不再按 apply policy 或 ACG.RIP 开关区分 identity：plan-only、manual 与
+automatic 均生成 `RenamePlan v2`，Movie 仍留在 v1。media operation 结算时原子记录
+handled semantic inventory；成功仅投递 archive housekeeping，partial/stale/collision
+不归档并投递普通 fresh-scan intent。Watcher 对相同 handled inventory 保持静默，只有
+当前 `path + kind + size` inventory 改变后才建立新 generation，避免来源残留循环。
+
+archive/fail housekeeping 只有 `queued/leased/retry_wait/completed/warning`，没有 plan、
+approval、filesystem journal 或 recovery。它使用确定性的 run-owned 目标名、no-follow
+目录打开、全局 effect mutex、native no-replace 或 checked rename，并在远程文件系统可能
+返回错误后按当前 source/destination 路径重新判断。collision、权限、fsync 与收尾失败只
+形成 warning，不改变已终结的 media operation。Agent 终态失败使用相同的 fail queue。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

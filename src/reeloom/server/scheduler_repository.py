@@ -948,6 +948,17 @@ class PostgresSchedulerRepository:
                                 )
                                 if unchanged:
                                     if (
+                                        semantic_v2
+                                        and str(run[1])
+                                        in {"completed", "failed", "superseded"}
+                                    ):
+                                        # A terminal v2 run owns this exact
+                                        # semantic inventory. Residual source
+                                        # content is current truth, not a new
+                                        # generation until its inventory
+                                        # changes.
+                                        continue
+                                    if (
                                         str(row[9]) == "active"
                                         and (
                                             bool(run[4])
@@ -983,6 +994,51 @@ class PostgresSchedulerRepository:
                                         )
                                         disposition_runs.append(str(run[0]))
                                         mutated = True
+                                    continue
+                                if (
+                                    semantic_v2
+                                    and str(run[1])
+                                    in {"completed", "failed", "superseded"}
+                                ):
+                                    connection.execute(
+                                        """
+                                        UPDATE watch_folder_observations
+                                        SET discovery_id = NULL,
+                                            config_revision = %s,
+                                            folder_device = NULL,
+                                            folder_inode = NULL,
+                                            inventory_id = %s,
+                                            inventory_payload = %s::jsonb,
+                                            snapshot_id = %s,
+                                            snapshot_payload = %s::jsonb,
+                                            first_observed_at = %s,
+                                            stable_at = NULL,
+                                            status = 'settling',
+                                            blocked_reason = NULL,
+                                            retry_count = 0
+                                        WHERE watch_id = %s
+                                          AND folder_name = %s
+                                          AND discovery_id = %s
+                                        """,
+                                        (
+                                            config_revision,
+                                            inventory_id,
+                                            _inventory_json(
+                                                folder, semantic_v2=True
+                                            ),
+                                            snapshot_id,
+                                            _snapshot_json(
+                                                folder.candidates,
+                                                semantic_v2=True,
+                                            ),
+                                            observed_at,
+                                            watch_id,
+                                            folder.name,
+                                            str(row[8]),
+                                        ),
+                                    )
+                                    row = None
+                                    mutated = True
                                     continue
                                 if (
                                     str(run[1]) == "completed"
@@ -1985,6 +2041,45 @@ class PostgresSchedulerRepository:
                             """,
                             (audit_event, run_id),
                         )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
+    def acknowledge_forward_rescan(
+        self, *, run_id: str, audit_event: str
+    ) -> None:
+        """Durably request a poll without invalidating handled v2 state."""
+
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        SELECT 1
+                        FROM runs AS r
+                        JOIN discoveries AS d USING (discovery_id)
+                        JOIN watch_states AS w ON w.watch_id = d.watch_id
+                        WHERE r.run_id = %s
+                          AND d.folder_generation_id IS NOT NULL
+                          AND w.semantic_v2 = true
+                        """,
+                        (run_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit (event_type, subject_id)
+                        VALUES (%s, %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (audit_event, run_id),
+                    )
         except ServerError:
             raise
         except Exception:

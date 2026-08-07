@@ -18,6 +18,7 @@ from reeloom.kernel.forward_execution import (
     ExecutionOperationStatus,
 )
 from reeloom.executor.forward import ForwardExecutionResult
+from reeloom.executor.folder_housekeeping_v2 import housekeeping_target_name
 from reeloom.server.errors import ServerError, ServerErrorCode
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -518,6 +519,75 @@ class PostgresForwardOperationRepository:
                         """,
                         (settled.status.value, settled.run_id),
                     )
+                    scope = connection.execute(
+                        """
+                        SELECT d.watch_id, d.source_folder, d.inventory_id,
+                               r.config_revision, w.semantic_v2
+                        FROM runs AS r
+                        JOIN discoveries AS d USING (discovery_id)
+                        JOIN watch_states AS w ON w.watch_id = d.watch_id
+                        WHERE r.run_id = %s
+                        """,
+                        (settled.run_id,),
+                    ).fetchone()
+                    if (
+                        scope is not None
+                        and bool(scope[4])
+                        and scope[1] is not None
+                        and scope[2] is not None
+                    ):
+                        source_folder = str(scope[1])
+                        connection.execute(
+                            """
+                            INSERT INTO handled_folder_inventories_v2
+                                (watch_id, source_folder, inventory_id,
+                                 run_id, operation_id, terminal_status,
+                                 handled_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (
+                                str(scope[0]),
+                                source_folder,
+                                str(scope[2]),
+                                settled.run_id,
+                                settled.operation_id,
+                                settled.status.value,
+                                now,
+                            ),
+                        )
+                        if (
+                            settled.status
+                            is ExecutionOperationStatus.COMPLETED
+                        ):
+                            connection.execute(
+                                """
+                                INSERT INTO folder_housekeeping_v2
+                                    (housekeeping_id, run_id, operation_id,
+                                     config_revision, watch_id,
+                                     source_folder, target_folder, action,
+                                     created_at, updated_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s,
+                                        'archive', %s, %s)
+                                ON CONFLICT (run_id) DO NOTHING
+                                """,
+                                (
+                                    "folder-housekeeping-v2-"
+                                    + hashlib.sha256(
+                                        settled.run_id.encode("utf-8")
+                                    ).hexdigest(),
+                                    settled.run_id,
+                                    settled.operation_id,
+                                    int(scope[3]),
+                                    str(scope[0]),
+                                    source_folder,
+                                    housekeeping_target_name(
+                                        source_folder, settled.run_id
+                                    ),
+                                    now,
+                                    now,
+                                ),
+                            )
                     return _operation_from_row(row)
         except ForwardOperationError:
             raise
@@ -532,12 +602,15 @@ class PostgresForwardOperationRepository:
                     SELECT o.schema_version, o.operation_id, o.run_id,
                            o.plan_hash, o.status, o.attempt_count, o.outcomes,
                            r.items, r.warnings, r.fresh_scan_required,
-                           q.state, q.successor_run_id
+                           q.state, q.successor_run_id,
+                           h.state, h.warning
                     FROM execution_operations_v2 AS o
                     LEFT JOIN execution_operation_results_v2 AS r
                       ON r.operation_id = o.operation_id
                     LEFT JOIN execution_rescan_outbox_v2 AS q
                       ON q.operation_id = o.operation_id
+                    LEFT JOIN folder_housekeeping_v2 AS h
+                      ON h.operation_id = o.operation_id
                     WHERE o.operation_id = %s
                     """,
                     (operation_id,),
@@ -563,13 +636,15 @@ class PostgresForwardOperationRepository:
                 }
                 for item in raw_items
             )
-            warnings = (
+            warnings = list(
                 () if row[8] is None else tuple(str(item) for item in row[8])
             )
+            if row[12] == "warning" and row[13] is not None:
+                warnings.append("housekeeping:" + str(row[13]))
             return ForwardOperationView(
                 operation=operation,
                 items=items,
-                warnings=warnings,
+                warnings=tuple(sorted(set(warnings))),
                 fresh_scan_required=(False if row[9] is None else bool(row[9])),
                 rescan_state=None if row[10] is None else str(row[10]),
                 successor_run_id=None if row[11] is None else str(row[11]),

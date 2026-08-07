@@ -38,6 +38,8 @@ def test_foundation_migration_is_versioned_and_immutable() -> None:
     assert "execution_rescan_outbox_v2" in by_version[34]
     assert "subtitle_publication_settlements_v2" in by_version[35]
     assert "subtitle_scan_requests_v2" in by_version[35]
+    assert "handled_folder_inventories_v2" in by_version[36]
+    assert "folder_housekeeping_v2" in by_version[36]
 
 
 def test_checksum_drift_fails_closed() -> None:

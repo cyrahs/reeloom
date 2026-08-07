@@ -32,7 +32,7 @@ class ForwardRescanWorker:
         if claim is None:
             return False
         try:
-            self.scheduler.restart_folder_generation(
+            self.scheduler.acknowledge_forward_rescan(
                 run_id=claim.run_id,
                 audit_event="forward_operation_rescan",
             )

@@ -33,6 +33,7 @@ from reeloom.server.forward_execution_service import (
     ForwardExecutionCoordinator,
 )
 from reeloom.server.forward_rescan import ForwardRescanWorker
+from reeloom.server.folder_housekeeping_v2 import FolderHousekeepingWorker
 from reeloom.server.notification_delivery import (
     ConfiguredNotificationDelivery,
 )
@@ -55,11 +56,8 @@ def _semantic_watch_v2_enabled(
     config: ConfigRevision,
     work_type: ServerWorkType,
 ) -> bool:
-    return (
-        config.apply_policy is ApplyPolicy.PLAN_ONLY
-        and work_type is not ServerWorkType.MOVIE
-        and not config.acgrip.enabled
-    )
+    del config
+    return work_type is not ServerWorkType.MOVIE
 
 
 @dataclass(slots=True)
@@ -78,6 +76,7 @@ class BackgroundServices:
     subtitle_scans: SubtitleScanWorker | None = None
     forward_execution: ForwardExecutionCoordinator | None = None
     forward_rescans: ForwardRescanWorker | None = None
+    folder_housekeeping_v2: FolderHousekeepingWorker | None = None
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -168,6 +167,11 @@ class BackgroundServices:
                     ) or progressed
                 if self.forward_rescans is not None:
                     progressed = self.forward_rescans.process_one(
+                        worker_id=self.boot_id,
+                        now=datetime.now(UTC),
+                    ) or progressed
+                if self.folder_housekeeping_v2 is not None:
+                    progressed = self.folder_housekeeping_v2.process_one(
                         worker_id=self.boot_id,
                         now=datetime.now(UTC),
                     ) or progressed
@@ -335,6 +339,21 @@ class BackgroundServices:
             config = self.configs.get(
                 context.registration.config_revision
             )
+            forward_v2 = (
+                self.forward_execution is not None
+                and self.forward_execution.is_v2_plan(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+            if forward_v2:
+                if config.apply_policy is ApplyPolicy.AUTOMATIC:
+                    self.forward_execution.execute_automatic(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                    )
+                succeeded = True
+                return
             disposition = (
                 None
                 if (
@@ -574,6 +593,14 @@ class BackgroundServices:
     def _prepare_terminal_failure(
         self, *, run_id: str, reason_code: str
     ) -> None:
+        if (
+            self.folder_housekeeping_v2 is not None
+            and self.folder_housekeeping_v2.enqueue_failure(
+                run_id=run_id,
+                reason_code=reason_code,
+            )
+        ):
+            return
         if self.folder_dispositions is None:
             raise RuntimeError("folder disposition service unavailable")
         plan = self.folder_dispositions.prepare_failure(

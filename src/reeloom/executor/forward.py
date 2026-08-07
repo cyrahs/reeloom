@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,13 +19,11 @@ from reeloom.kernel.forward_execution import (
 )
 from reeloom.kernel.plan import PlannedMove
 from reeloom.kernel.semantic_identity import SemanticSourceIdentity
+from reeloom.executor.effect_mutex import effect_mutex
 from reeloom.ports.forward_filesystem import (
     ForwardFilesystem,
     ForwardMoveDiagnostic,
 )
-
-_EFFECT_MUTEX = threading.Lock()
-
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -156,7 +153,7 @@ class ForwardExecutor:
                 ),
                 (),
             )
-        with _EFFECT_MUTEX:
+        with effect_mutex():
             effect = self.filesystem.move(
                 source_root=plan.source_root,
                 source_path=expected.relative_path,

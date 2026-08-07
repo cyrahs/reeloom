@@ -82,6 +82,13 @@ class ForwardExecutionCoordinator:
             required_policy=ApplyPolicy.MANUAL,
         )
 
+    def is_v2_plan(self, *, run_id: str, plan_hash: str) -> bool:
+        try:
+            self._load(run_id=run_id, plan_hash=plan_hash)
+        except ForwardExecutionServiceError:
+            return False
+        return True
+
     def execute_automatic(
         self, *, run_id: str, plan_hash: str
     ) -> ForwardExecutionCommandResult:

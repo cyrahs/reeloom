@@ -85,6 +85,11 @@ from reeloom.server.forward_operation_repository import (
     PostgresForwardOperationRepository,
 )
 from reeloom.server.forward_rescan import ForwardRescanWorker
+from reeloom.server.folder_housekeeping_v2 import (
+    FolderHousekeepingWorker,
+    PostgresFolderHousekeepingRepository,
+)
+from reeloom.executor.folder_housekeeping_v2 import FolderHousekeepingExecutor
 from reeloom.server.database import PostgresControlPlane
 from reeloom.server.directory_browser import PodDirectoryBrowser
 from reeloom.server.instance_lock import ProcessLock
@@ -410,6 +415,11 @@ def build_application(
         journals = FilesystemJournalStore(journal_root)
         approvals = PostgresApprovalStore(database.pool)
         forward_operations = PostgresForwardOperationRepository(database.pool)
+        folder_housekeeping_v2 = FolderHousekeepingWorker(
+            repository=PostgresFolderHousekeepingRepository(database.pool),
+            configs=PostgresConfigRepository(database.pool),
+            executor=FolderHousekeepingExecutor(),
+        )
         notification_outbox = PostgresNotificationOutbox(database.pool)
         notification_projector = PostgresNotificationProjector(
             plans=plans,
@@ -774,6 +784,7 @@ def build_application(
                 operations=forward_operations,
                 scheduler=scheduler,
             ),
+            folder_housekeeping_v2=folder_housekeeping_v2,
         )
 
         def health() -> object:

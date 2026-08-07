@@ -4,7 +4,7 @@
 
 日期：2026-08-07
 
-当前进度：M0-M13、M14.0-M14.2c、M14.3a-M14.3b 已完成；M14.3c-M14.4 尚未开始。
+当前进度：M0-M13、M14.0-M14.3c 已完成；M14.4 尚未开始。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -691,13 +691,14 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 
 ### M14：基于当前状态的前向收敛执行器
 
-当前状态：M14.0-M14.2c、M14.3a-M14.3b 已完成。除 v2 语义身份、plan、operation ledger、
+当前状态：M14.0-M14.3c 已完成。除 v2 语义身份、plan、operation ledger、
 forward executor 与 server-owned execute/reconcile control plane 外，现已增加 canonical
 字幕 publication manifest、直接写 plan-owned 最终目录的 forward-only marker publisher，
 并让 watcher 只接纳 marker 与全部 member 当前 hash 一致的发布目录。现有 M13 publisher
 在迁移期间也会补写相同 marker，避免生成 watcher 不可见的已完成目录。ACG.RIP production
 现已切换到内容寻址缓存、journal-free marker executor 和普通 scan request；manual/automatic
-media 与 folder housekeeping 的 v2 production 切换仍等待 M14.3c。
+media manual/automatic production 现已切换到 v2；folder archive/fail 是独立的
+best-effort housekeeping，不再决定 media operation 终态。
 
 固定决策：
 
@@ -742,8 +743,11 @@ media 与 folder housekeeping 的 v2 production 切换仍等待 M14.3c。
     新 settlement 只写语义 publication identity，并经 durable 普通 scan request 回到 watcher；
     新任务不再创建 subtitle filesystem journal 或 subtitle-specific successor。旧 outbox 仅为
     M14.4 迁移前已存在记录保留只读/排空能力。
-  - M14.3c：接入 non-blocking folder housekeeping、handled inventory，再启用 v2
-    manual/automatic production。
+  - M14.3c（完成）：接入单一进程 effect mutex 下的 checked directory rename 与有界
+    当前状态重观察；archive/fail 只写独立 housekeeping warning，永不回滚或改变 media
+    operation 终态。terminal run 持久记录 handled semantic inventory；残留目录相同则不
+    重复建 run，inventory 改变才经过普通稳定窗口生成新 generation。episode manual、
+    automatic 与启用 ACG.RIP 的 production 均已切换到 v2；Movie 暂留 v1。
 - M14.4：一次性 supersede 未结算 v1 effect、投递 fresh scan、清除旧锁，并在稳定后
   删除 legacy recovery 与 v1 executor 写路径。
 

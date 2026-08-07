@@ -41,7 +41,7 @@ class _Scheduler:
         self.error = error
         self.calls: list[tuple[str, str | None]] = []
 
-    def restart_folder_generation(
+    def acknowledge_forward_rescan(
         self, *, run_id: str, audit_event: str | None = None
     ) -> None:
         self.calls.append((run_id, audit_event))
