@@ -375,6 +375,12 @@ def test_recover_failed_zero_move_run_settles_without_layout(
         )
         journals.begin(transaction)
         journals.record_completed(transaction)
+        detached_incoming = tmp_path / "detached-incoming"
+        detached_library = tmp_path / "detached-library"
+        incoming.rename(detached_incoming)
+        library.rename(detached_library)
+        incoming.mkdir()
+        library.mkdir()
         layouts = PostgresCompletedLayoutRepository(control.pool)
         coordinator = ApplyCoordinator(
             pool=control.pool,
@@ -407,7 +413,11 @@ def test_recover_failed_zero_move_run_settles_without_layout(
             approval_id=approval.approval_id,
         ) == recovered
         assert layouts.head(run_id) is None
-        assert source.read_bytes() == b"unmapped"
+        assert (
+            detached_incoming / "Folder" / "extra.mkv"
+        ).read_bytes() == b"unmapped"
+        assert not any(incoming.iterdir())
+        assert not any(library.iterdir())
 
         with control.pool.connection() as connection:
             row = connection.execute(

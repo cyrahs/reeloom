@@ -146,6 +146,27 @@ class FilesystemPreflightExecutor:
         except (DomainError, OSError):
             raise ExecutorError(ExecutorErrorCode.ROOT_DRIFT) from None
 
+    @staticmethod
+    def _open_rebound_root(binding: RootBinding) -> int:
+        """Open the same persisted path without accepting a symlink.
+
+        Recovery uses this only after an approval has already been claimed
+        and the journal proves that no move was recorded.  It permits a FUSE
+        remount to change the root inode while keeping the immutable plan path.
+        """
+        try:
+            root = AuthorizedRoot.create(Path(binding.path.as_posix()))
+        except DomainError as error:
+            if error.code is ErrorCode.SYMLINK_NOT_ALLOWED:
+                raise ExecutorError(
+                    ExecutorErrorCode.SYMLINK_NOT_ALLOWED
+                ) from None
+            raise ExecutorError(ExecutorErrorCode.ROOT_DRIFT) from None
+        try:
+            return FilesystemScanner._open_root(root)
+        except (DomainError, OSError):
+            raise ExecutorError(ExecutorErrorCode.ROOT_DRIFT) from None
+
     @classmethod
     def _check_source(
         cls,
