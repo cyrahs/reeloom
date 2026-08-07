@@ -13,15 +13,20 @@ from reeloom.adapters.filesystem import (
     FilesystemScanner,
     ScanLimits,
 )
-from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.file_types import candidate_kind_for_filename
 from reeloom.kernel.naming import filesystem_name_key
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticSourceIdentity,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.policy.path_policy import is_forbidden_env_name
 
 _RESERVED_FOLDERS = frozenset({"archive", "fail"})
 _INVENTORY_SCHEMA = "folder-inventory-v1"
+_SEMANTIC_INVENTORY_SCHEMA = "folder-inventory-v2"
 _MAX_FOLDERS = 1_000
 _ACQUISITION_STAGING = re.compile(
     r"^\.reeloom-acquiring-[0-9a-f]{64}$"
@@ -57,6 +62,14 @@ class FolderEntry:
             "size_bytes": self.size_bytes,
         }
 
+    @property
+    def semantic_payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "relative_path": self.relative_path.as_posix(),
+            "size_bytes": self.size_bytes,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class BlockedFolder:
@@ -70,6 +83,7 @@ class FolderSnapshot:
     device: int
     inode: int
     inventory_id: str
+    semantic_inventory_id: str
     entries: tuple[FolderEntry, ...]
     candidates: WatchSnapshot
 
@@ -95,12 +109,31 @@ class FolderSnapshot:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
+        semantic_canonical = json.dumps(
+            [
+                item.semantic_payload
+                for item in sorted(
+                    entries,
+                    key=lambda entry: (
+                        entry.relative_path.as_posix().casefold(),
+                        entry.relative_path.as_posix(),
+                    ),
+                )
+            ],
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
         return cls(
             name=name,
             device=device,
             inode=inode,
             inventory_id=(
                 f"{_INVENTORY_SCHEMA}:{hashlib.sha256(canonical).hexdigest()}"
+            ),
+            semantic_inventory_id=(
+                f"{_SEMANTIC_INVENTORY_SCHEMA}:"
+                f"{hashlib.sha256(semantic_canonical).hexdigest()}"
             ),
             entries=entries,
             candidates=candidates,
@@ -157,6 +190,7 @@ class WatchFile:
     mtime_ns: int
     ctime_ns: int
     sample_digest: str | None
+    sha256: str | None = None
 
     @property
     def identity(self) -> tuple[object, ...]:
@@ -170,11 +204,61 @@ class WatchFile:
             self.sample_digest,
         )
 
+    @property
+    def semantic_identity(self) -> tuple[object, ...]:
+        return (
+            self.relative_path,
+            self.kind,
+            self.size_bytes,
+            self.sha256 if self.kind is CandidateKind.SUBTITLE else None,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class WatchSnapshot:
     snapshot_id: str
     files: tuple[WatchFile, ...]
+
+    @property
+    def semantic_snapshot(self) -> SemanticCandidateSnapshot:
+        ordered = tuple(
+            sorted(
+                self.files,
+                key=lambda item: (
+                    0 if item.kind is CandidateKind.VIDEO else 1,
+                    item.relative_path.as_posix().casefold(),
+                    item.relative_path.as_posix(),
+                ),
+            )
+        )
+        ordinals = {
+            CandidateKind.VIDEO: 0,
+            CandidateKind.SUBTITLE: 0,
+        }
+        sources: list[SemanticSourceIdentity] = []
+        for item in ordered:
+            ordinals[item.kind] += 1
+            sources.append(
+                SemanticSourceIdentity(
+                    candidate_id=CandidateId(
+                        item.kind,
+                        ordinals[item.kind],
+                    ),
+                    kind=item.kind,
+                    relative_path=item.relative_path,
+                    size_bytes=item.size_bytes,
+                    sha256=(
+                        item.sha256
+                        if item.kind is CandidateKind.SUBTITLE
+                        else None
+                    ),
+                )
+            )
+        return SemanticCandidateSnapshot.create(sources)
+
+    @property
+    def semantic_snapshot_id(self) -> str:
+        return self.semantic_snapshot.snapshot_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +289,16 @@ class NoFollowWatcher:
                     mtime_ns=record.mtime_ns,
                     ctime_ns=record.ctime_ns,
                     sample_digest=record.sample_digest,
+                    sha256=(
+                        self._full_subtitle_digest(
+                            root,
+                            record.relative_path,
+                            expected_size=record.size_bytes,
+                        )
+                        if record.candidate.kind
+                        is CandidateKind.SUBTITLE
+                        else None
+                    ),
                 )
             )
         return WatchSnapshot(
@@ -273,23 +367,11 @@ class NoFollowWatcher:
         *,
         logical_name: str,
     ) -> FolderSnapshot:
-        first = self._scan_folder_once(
+        return self._scan_folder_once(
             root,
             relative_directory,
             logical_name=logical_name,
         )
-        second = self._scan_folder_once(
-            root,
-            relative_directory,
-            logical_name=logical_name,
-        )
-        if (
-            first.device != second.device
-            or first.inode != second.inode
-            or first.inventory_id != second.inventory_id
-        ):
-            raise RuntimeError("folder changed during scan")
-        return second
 
     def _scan_folder_once(
         self,
@@ -458,6 +540,7 @@ class NoFollowWatcher:
                     mtime_ns=metadata.st_mtime_ns,
                     ctime_ns=metadata.st_ctime_ns,
                     sample_digest=None,
+                    sha256=None,
                 )
             )
 
@@ -495,13 +578,17 @@ class NoFollowWatcher:
                     or metadata.st_ctime_ns != candidate.ctime_ns
                 ):
                     raise _Blocked("scan_failed")
-                candidates[index] = replace(
-                    candidate,
-                    sample_digest=FilesystemScanner._subtitle_sample_digest(
+                sample_digest, full_digest = (
+                    NoFollowWatcher._subtitle_digests(
                         directory_fd=current_fd,
                         name=parts[-1],
                         expected=metadata,
-                    ),
+                    )
+                )
+                candidates[index] = replace(
+                    candidate,
+                    sample_digest=sample_digest,
+                    sha256=full_digest,
                 )
             except _Blocked:
                 raise
@@ -537,3 +624,90 @@ class NoFollowWatcher:
             for item in files
         )
         return WatchSnapshot(snapshot.snapshot_id, tuple(files))
+
+    @staticmethod
+    def _subtitle_digests(
+        *,
+        directory_fd: int,
+        name: str,
+        expected: os.stat_result,
+    ) -> tuple[str, str]:
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        if no_follow is None:
+            raise _Blocked("scan_failed")
+        file_fd: int | None = None
+        try:
+            file_fd = os.open(
+                name,
+                os.O_RDONLY
+                | no_follow
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=directory_fd,
+            )
+            before = os.fstat(file_fd)
+            if not FilesystemScanner._same_identity(before, expected):
+                raise _Blocked("scan_failed")
+            full = hashlib.sha256()
+            sample = bytearray()
+            while True:
+                chunk = os.read(file_fd, 64 * 1024)
+                if not chunk:
+                    break
+                full.update(chunk)
+                if len(sample) < 64 * 1024:
+                    sample.extend(chunk[: 64 * 1024 - len(sample)])
+            if not FilesystemScanner._same_identity(
+                os.fstat(file_fd),
+                expected,
+            ):
+                raise _Blocked("scan_failed")
+            return (
+                hashlib.sha256(bytes(sample)).hexdigest(),
+                full.hexdigest(),
+            )
+        except _Blocked:
+            raise
+        except OSError:
+            raise _Blocked("scan_failed") from None
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+
+    @staticmethod
+    def _full_subtitle_digest(
+        root: AuthorizedRoot,
+        relative_path: PurePosixPath,
+        *,
+        expected_size: int,
+    ) -> str:
+        root_fd = FilesystemScanner._open_root(root)
+        current_fd = root_fd
+        try:
+            for part in relative_path.parts[:-1]:
+                next_fd = FilesystemScanner._open_directory(
+                    part,
+                    parent_fd=current_fd,
+                )
+                if current_fd != root_fd:
+                    os.close(current_fd)
+                current_fd = next_fd
+            metadata = os.stat(
+                relative_path.name,
+                dir_fd=current_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size != expected_size
+            ):
+                raise _Blocked("scan_failed")
+            return NoFollowWatcher._subtitle_digests(
+                directory_fd=current_fd,
+                name=relative_path.name,
+                expected=metadata,
+            )[1]
+        finally:
+            if current_fd != root_fd:
+                os.close(current_fd)
+            os.close(root_fd)

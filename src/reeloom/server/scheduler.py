@@ -83,6 +83,7 @@ class _WatchState:
     fence: int
     work_type: ServerWorkType
     settle_interval_seconds: int
+    semantic_v2: bool = False
 
 
 @dataclass(slots=True)
@@ -148,6 +149,7 @@ class InMemorySchedulerRepository:
         fence: int,
         work_type: ServerWorkType,
         settle_interval_seconds: int,
+        semantic_v2: bool = False,
     ) -> None:
         with self._lock:
             previous = self._watches.get(watch_id)
@@ -156,11 +158,13 @@ class InMemorySchedulerRepository:
                 fence=fence,
                 work_type=work_type,
                 settle_interval_seconds=settle_interval_seconds,
+                semantic_v2=semantic_v2,
             )
             if (
                 previous is None
                 or previous.config_revision != config_revision
                 or previous.fence != fence
+                or previous.semantic_v2 != semantic_v2
             ):
                 self._observations[watch_id] = {}
                 self._folder_observations[watch_id] = {
@@ -203,7 +207,21 @@ class InMemorySchedulerRepository:
                 mutated = True
             for path, item in current.items():
                 previous = observations.get(path)
-                if previous is None or previous.file.identity != item.identity:
+                previous_identity = (
+                    None
+                    if previous is None
+                    else (
+                        previous.file.semantic_identity
+                        if state.semantic_v2
+                        else previous.file.identity
+                    )
+                )
+                identity = (
+                    item.semantic_identity
+                    if state.semantic_v2
+                    else item.identity
+                )
+                if previous is None or previous_identity != identity:
                     observations[path] = _Observation(
                         file=item,
                         first_observed_at=observed_at,
@@ -225,7 +243,12 @@ class InMemorySchedulerRepository:
                     else:
                         all_settled = False
             discovery: Discovery | None = None
-            key = (watch_id, config_revision, snapshot.snapshot_id)
+            snapshot_id = (
+                snapshot.semantic_snapshot_id
+                if state.semantic_v2
+                else snapshot.snapshot_id
+            )
+            key = (watch_id, config_revision, snapshot_id)
             if all_settled:
                 discovery_id = self._discovery_by_snapshot.get(key)
                 if discovery_id is None:
@@ -234,11 +257,11 @@ class InMemorySchedulerRepository:
                             "discovery",
                             watch_id,
                             str(config_revision),
-                            snapshot.snapshot_id,
+                            snapshot_id,
                         ),
                         watch_id=watch_id,
                         config_revision=config_revision,
-                        snapshot_id=snapshot.snapshot_id,
+                        snapshot_id=snapshot_id,
                         work_type=state.work_type,
                         discovered_at=observed_at,
                         snapshot=snapshot,
@@ -288,19 +311,33 @@ class InMemorySchedulerRepository:
             for folder in scan.folders:
                 previous = observations.get(folder.name)
                 identity = (
-                    folder.device,
-                    folder.inode,
-                    folder.inventory_id,
-                    folder.candidates.snapshot_id,
+                    (
+                        folder.semantic_inventory_id,
+                        folder.candidates.semantic_snapshot_id,
+                    )
+                    if state.semantic_v2
+                    else (
+                        folder.device,
+                        folder.inode,
+                        folder.inventory_id,
+                        folder.candidates.snapshot_id,
+                    )
                 )
                 previous_identity = (
                     None
                     if previous is None
                     else (
-                        previous.folder.device,
-                        previous.folder.inode,
-                        previous.folder.inventory_id,
-                        previous.folder.candidates.snapshot_id,
+                        (
+                            previous.folder.semantic_inventory_id,
+                            previous.folder.candidates.semantic_snapshot_id,
+                        )
+                        if state.semantic_v2
+                        else (
+                            previous.folder.device,
+                            previous.folder.inode,
+                            previous.folder.inventory_id,
+                            previous.folder.candidates.snapshot_id,
+                        )
                     )
                 )
                 if (
@@ -328,33 +365,52 @@ class InMemorySchedulerRepository:
                         continue
                     previous.stable_at = observed_at
                     mutated = True
-                generation_id = _id(
-                    "folder",
-                    watch_id,
-                    folder.name,
-                    str(folder.device),
-                    str(folder.inode),
-                    folder.inventory_id,
-                    previous.first_observed_at.isoformat(),
+                inventory_id = (
+                    folder.semantic_inventory_id
+                    if state.semantic_v2
+                    else folder.inventory_id
                 )
+                snapshot_id = (
+                    folder.candidates.semantic_snapshot_id
+                    if state.semantic_v2
+                    else folder.candidates.snapshot_id
+                )
+                generation_parts = (
+                    (
+                        watch_id,
+                        folder.name,
+                        inventory_id,
+                        previous.first_observed_at.isoformat(),
+                    )
+                    if state.semantic_v2
+                    else (
+                        watch_id,
+                        folder.name,
+                        str(folder.device),
+                        str(folder.inode),
+                        inventory_id,
+                        previous.first_observed_at.isoformat(),
+                    )
+                )
+                generation_id = _id("folder", *generation_parts)
                 discovery_id = _id(
                     "discovery",
                     watch_id,
                     str(config_revision),
                     generation_id,
-                    folder.candidates.snapshot_id,
+                    snapshot_id,
                 )
                 discovery = Discovery(
                     discovery_id=discovery_id,
                     watch_id=watch_id,
                     config_revision=config_revision,
-                    snapshot_id=folder.candidates.snapshot_id,
+                    snapshot_id=snapshot_id,
                     work_type=state.work_type,
                     discovered_at=observed_at,
                     snapshot=folder.candidates,
                     source_folder=folder.name,
                     folder_generation_id=generation_id,
-                    inventory_id=folder.inventory_id,
+                    inventory_id=inventory_id,
                     source_folder_device=folder.device,
                     source_folder_inode=folder.inode,
                 )
