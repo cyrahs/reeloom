@@ -155,10 +155,28 @@ def test_settle_and_fresh_successor_registration_are_transactional(
         fresh = watcher.scan_folders(
             AuthorizedRoot.create(watch_root)
         ).folders[0]
-        successor = repository.complete(
+        assert not repository.stabilize(
             claim,
             snapshot=fresh,
             now=started + timedelta(seconds=2),
+            delay=timedelta(seconds=1),
+        )
+        claim = repository.claim(
+            worker_id="worker-postgres",
+            now=started + timedelta(seconds=3),
+            lease_for=timedelta(seconds=30),
+        )
+        assert claim is not None
+        assert repository.stabilize(
+            claim,
+            snapshot=fresh,
+            now=started + timedelta(seconds=3),
+            delay=timedelta(seconds=1),
+        )
+        successor = repository.complete(
+            claim,
+            snapshot=fresh,
+            now=started + timedelta(seconds=3),
         )
 
         with control.pool.connection() as connection:

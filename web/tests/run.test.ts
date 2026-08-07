@@ -8,6 +8,7 @@ import {
   RunIdentity,
   canApproveCurrentPlan,
   compactRunId,
+  runStatusForDisplay,
   shouldShowArchiveReport,
 } from "../src/pages/RunPage";
 import { errorMessage } from "../src/components/Status";
@@ -22,6 +23,19 @@ test("archive reference is only shown for the exact current plan", () => {
   expect(shouldShowArchiveReport("sha256:head", "sha256:head")).toBe(true);
   expect(shouldShowArchiveReport("sha256:old", "sha256:head")).toBe(false);
   expect(shouldShowArchiveReport(null, "sha256:head")).toBe(false);
+});
+
+test("claimed recovery is not presented as a new approval", () => {
+  expect(
+    runStatusForDisplay(
+      "awaiting_approval",
+      "approval-v1-recovery",
+      ["recover"],
+    ),
+  ).toBe("recovery_required");
+  expect(
+    runStatusForDisplay("awaiting_approval", null, ["approve_apply"]),
+  ).toBe("awaiting_approval");
 });
 
 test("run identity is compact, accessible, and copies the full value", async () => {

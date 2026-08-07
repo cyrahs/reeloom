@@ -32,6 +32,7 @@ from reeloom.server.subtitle_successor import (
     SubtitleSuccessorErrorCode,
     SubtitleSuccessorOutboxState,
     SubtitleFreshScanError,
+    SubtitleFreshScan,
     SubtitleSuccessorWorker,
 )
 from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
@@ -155,6 +156,32 @@ def _repository(
     return repository
 
 
+def _stabilized_claim(
+    repository: InMemorySubtitleSuccessorOutbox,
+    claim,
+    fresh: FolderSnapshot,
+):
+    assert not repository.stabilize(
+        claim,
+        snapshot=fresh,
+        now=_NOW,
+        delay=timedelta(seconds=1),
+    )
+    stable_claim = repository.claim(
+        worker_id=claim.worker_id,
+        now=_NOW + timedelta(seconds=1),
+        lease_for=timedelta(seconds=30),
+    )
+    assert stable_claim is not None
+    assert repository.stabilize(
+        stable_claim,
+        snapshot=fresh,
+        now=_NOW + timedelta(seconds=1),
+        delay=timedelta(seconds=1),
+    )
+    return stable_claim
+
+
 def test_settlement_immediately_supersedes_origin_and_registers_fresh_run(
     tmp_path: Path,
 ) -> None:
@@ -181,8 +208,13 @@ def test_settlement_immediately_supersedes_origin_and_registers_fresh_run(
         lease_for=timedelta(seconds=30),
     )
     assert claim is not None
+    claim = _stabilized_claim(repository, claim, fresh)
 
-    successor = repository.complete(claim, snapshot=fresh, now=_NOW)
+    successor = repository.complete(
+        claim,
+        snapshot=fresh,
+        now=_NOW + timedelta(seconds=1),
+    )
 
     assert successor.predecessor_run_id == settlement.origin_run_id
     assert successor.discovery.snapshot_id != settlement.original_snapshot_id
@@ -241,7 +273,7 @@ def test_only_one_worker_can_claim_and_expired_lease_is_recovered(
 def test_stale_or_incomplete_scan_cannot_create_successor(tmp_path: Path) -> None:
     _, _, settlement, fresh = _case(tmp_path)
     repository = _repository(settlement)
-    repository.settle(settlement)
+    settled = repository.settle(settlement)
     claim = repository.claim(
         worker_id="worker-1",
         now=_NOW,
@@ -278,7 +310,12 @@ def test_successor_lineage_cannot_automatically_acquire_again(
         lease_for=timedelta(seconds=30),
     )
     assert claim is not None
-    successor = repository.complete(claim, snapshot=fresh, now=_NOW)
+    claim = _stabilized_claim(repository, claim, fresh)
+    successor = repository.complete(
+        claim,
+        snapshot=fresh,
+        now=_NOW + timedelta(seconds=1),
+    )
     second = replace(
         settlement,
         origin_run_id=successor.registration.run_id,
@@ -318,20 +355,87 @@ def test_settlement_factory_rejects_result_not_bound_to_plan(
 def test_worker_drives_fresh_scan_from_outbox_capability(tmp_path: Path) -> None:
     _, _, settlement, fresh = _case(tmp_path)
     repository = _repository(settlement)
-    repository.settle(settlement)
+    settled = repository.settle(settlement)
     observed: list[tuple[str, str]] = []
 
     class Scanner:
         def scan(self, claim):
             observed.append((claim.watch_id, claim.settlement.source_folder))
-            return fresh
+            return SubtitleFreshScan(fresh, timedelta(seconds=5))
 
     worker = SubtitleSuccessorWorker(repository, Scanner())
 
-    successor = worker.process_one(worker_id="worker-1", now=_NOW)
+    assert worker.process_one(worker_id="worker-1", now=_NOW) is None
+    assert (
+        repository.outbox_state(settled.lineage_key)
+        is SubtitleSuccessorOutboxState.RETRY_WAIT
+    )
+    assert (
+        worker.process_one(
+            worker_id="worker-1",
+            now=_NOW + timedelta(seconds=4),
+        )
+        is None
+    )
+    successor = worker.process_one(
+        worker_id="worker-1",
+        now=_NOW + timedelta(seconds=5),
+    )
 
     assert successor is not None
-    assert observed == [("watch-anime", "Work")]
+    assert observed == [
+        ("watch-anime", "Work"),
+        ("watch-anime", "Work"),
+    ]
+
+
+def test_worker_restarts_stability_window_when_snapshot_changes(
+    tmp_path: Path,
+) -> None:
+    _, _, settlement, fresh = _case(tmp_path)
+    repository = _repository(settlement)
+    settled = repository.settle(settlement)
+    changed = replace(
+        fresh,
+        inventory_id="inventory-changed",
+        candidates=replace(
+            fresh.candidates,
+            snapshot_id="snapshot-changed",
+        ),
+    )
+    scans = iter(
+        (
+            SubtitleFreshScan(fresh, timedelta(seconds=5)),
+            SubtitleFreshScan(changed, timedelta(seconds=5)),
+            SubtitleFreshScan(changed, timedelta(seconds=5)),
+        )
+    )
+
+    class Scanner:
+        def scan(self, claim):
+            del claim
+            return next(scans)
+
+    worker = SubtitleSuccessorWorker(repository, Scanner())
+
+    assert worker.process_one(worker_id="worker-1", now=_NOW) is None
+    assert (
+        worker.process_one(
+            worker_id="worker-1",
+            now=_NOW + timedelta(seconds=5),
+        )
+        is None
+    )
+    assert repository.outbox_state(settled.lineage_key) is (
+        SubtitleSuccessorOutboxState.RETRY_WAIT
+    )
+    successor = worker.process_one(
+        worker_id="worker-1",
+        now=_NOW + timedelta(seconds=10),
+    )
+
+    assert successor is not None
+    assert successor.discovery.snapshot_id == "snapshot-changed"
 
 
 @pytest.mark.parametrize(
@@ -370,8 +474,13 @@ def test_completed_successor_registration_is_idempotent(tmp_path: Path) -> None:
         lease_for=timedelta(seconds=30),
     )
     assert claim is not None
+    claim = _stabilized_claim(repository, claim, fresh)
 
-    first = repository.complete(claim, snapshot=fresh, now=_NOW)
+    first = repository.complete(
+        claim,
+        snapshot=fresh,
+        now=_NOW + timedelta(seconds=1),
+    )
     second = repository.complete(
         claim,
         snapshot=fresh,

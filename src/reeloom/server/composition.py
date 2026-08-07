@@ -7,6 +7,7 @@ import stat
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI
@@ -49,6 +50,7 @@ from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
 from reeloom.server.subtitle_successor import (
+    SubtitleFreshScan,
     SubtitleFreshScanError,
     SubtitleSuccessorClaim,
     SubtitleSuccessorWorker,
@@ -177,7 +179,7 @@ class _ConfiguredSubtitleFreshScanner:
     configs: PostgresConfigRepository
     watcher: NoFollowWatcher = NoFollowWatcher()
 
-    def scan(self, claim: SubtitleSuccessorClaim) -> FolderSnapshot:
+    def scan(self, claim: SubtitleSuccessorClaim) -> SubtitleFreshScan:
         try:
             config = self.configs.get(claim.config_revision)
             watch = next(
@@ -191,10 +193,15 @@ class _ConfiguredSubtitleFreshScanner:
             )
             if watch is None:
                 raise SubtitleFreshScanError(retryable=False)
-            return self.watcher.scan_folder(
-                AuthorizedRoot.create(watch.root),
-                PurePosixPath(claim.settlement.source_folder),
-                logical_name=claim.settlement.source_folder,
+            return SubtitleFreshScan(
+                snapshot=self.watcher.scan_folder(
+                    AuthorizedRoot.create(watch.root),
+                    PurePosixPath(claim.settlement.source_folder),
+                    logical_name=claim.settlement.source_folder,
+                ),
+                settle_for=timedelta(
+                    seconds=watch.settle_interval_seconds
+                ),
             )
         except SubtitleFreshScanError:
             raise

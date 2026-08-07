@@ -273,7 +273,29 @@ def test_selected_archive_becomes_one_fresh_run_without_acquisition_loop(
         PurePosixPath("Anime"),
         logical_name="Anime",
     )
-    successor = outbox.complete(claim, snapshot=fresh, now=_NOW)
+    assert not outbox.stabilize(
+        claim,
+        snapshot=fresh,
+        now=_NOW,
+        delay=timedelta(seconds=1),
+    )
+    claim = outbox.claim(
+        worker_id="worker-e2e",
+        now=_NOW + timedelta(seconds=1),
+        lease_for=timedelta(seconds=30),
+    )
+    assert claim is not None
+    assert outbox.stabilize(
+        claim,
+        snapshot=fresh,
+        now=_NOW + timedelta(seconds=1),
+        delay=timedelta(seconds=1),
+    )
+    successor = outbox.complete(
+        claim,
+        snapshot=fresh,
+        now=_NOW + timedelta(seconds=1),
+    )
 
     assert result.published_count == 1
     assert fresh.candidates.snapshot_id != original.candidates.snapshot_id

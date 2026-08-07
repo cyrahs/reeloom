@@ -192,9 +192,7 @@ class FilesystemPreflightExecutor:
                     ExecutorErrorCode.SYMLINK_NOT_ALLOWED
                 )
             if not cls._matches_source(before, source):
-                raise ExecutorError(
-                    ExecutorErrorCode.SOURCE_DRIFT
-                )
+                raise cls._source_drift(source, before)
             file_fd = os.open(
                 name,
                 cls._read_flags(),
@@ -205,9 +203,7 @@ class FilesystemPreflightExecutor:
                 not cls._same_identity(before, opened)
                 or not cls._matches_source(opened, source)
             ):
-                raise ExecutorError(
-                    ExecutorErrorCode.SOURCE_DRIFT
-                )
+                raise cls._source_drift(source, opened)
             if source.sample_digest is not None:
                 digest = hashlib.sha256(
                     cls._read_prefix(
@@ -220,15 +216,23 @@ class FilesystemPreflightExecutor:
                     source.sample_digest,
                 ):
                     raise ExecutorError(
-                        ExecutorErrorCode.SOURCE_DRIFT
+                        ExecutorErrorCode.SOURCE_DRIFT,
+                        context={
+                            "candidate_id": str(source.candidate_id),
+                            "relative_path": source.relative_path.as_posix(),
+                            "mismatches": ("sample_digest",),
+                        },
                     )
             if not cls._matches_source(os.fstat(file_fd), source):
-                raise ExecutorError(
-                    ExecutorErrorCode.SOURCE_DRIFT
-                )
+                raise cls._source_drift(source, os.fstat(file_fd))
         except FileNotFoundError:
             raise ExecutorError(
-                ExecutorErrorCode.SOURCE_DRIFT
+                ExecutorErrorCode.SOURCE_DRIFT,
+                context={
+                    "candidate_id": str(source.candidate_id),
+                    "relative_path": source.relative_path.as_posix(),
+                    "mismatches": ("missing",),
+                },
             ) from None
         except ExecutorError:
             raise
@@ -407,6 +411,32 @@ class FilesystemPreflightExecutor:
             and metadata.st_ino == source.inode
             and metadata.st_mtime_ns == source.mtime_ns
             and metadata.st_ctime_ns == source.ctime_ns
+        )
+
+    @staticmethod
+    def _source_drift(
+        source: ExecutionSource,
+        metadata: os.stat_result,
+    ) -> ExecutorError:
+        mismatches: list[str] = []
+        if not stat.S_ISREG(metadata.st_mode):
+            mismatches.append("file_type")
+        for field, current, expected in (
+            ("size", metadata.st_size, source.size_bytes),
+            ("device", metadata.st_dev, source.device),
+            ("inode", metadata.st_ino, source.inode),
+            ("mtime", metadata.st_mtime_ns, source.mtime_ns),
+            ("ctime", metadata.st_ctime_ns, source.ctime_ns),
+        ):
+            if current != expected:
+                mismatches.append(field)
+        return ExecutorError(
+            ExecutorErrorCode.SOURCE_DRIFT,
+            context={
+                "candidate_id": str(source.candidate_id),
+                "relative_path": source.relative_path.as_posix(),
+                "mismatches": tuple(mismatches) or ("identity",),
+            },
         )
 
     @staticmethod

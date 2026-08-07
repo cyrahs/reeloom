@@ -482,7 +482,8 @@ class BackgroundServices:
                     else:
                         retry = False
             _LOG.error(
-                "agent_job_failed run_id=%s error_type=%s error_code=%s",
+                "agent_job_failed run_id=%s error_type=%s error_code=%s "
+                "error_context=%s",
                 run_id,
                 type(error).__name__,
                 (
@@ -497,6 +498,11 @@ class BackgroundServices:
                         ),
                     )
                     else None
+                ),
+                (
+                    dict(error.context)
+                    if isinstance(error, ExecutorError)
+                    else {}
                 ),
             )
         finally:

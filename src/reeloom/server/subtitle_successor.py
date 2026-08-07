@@ -228,6 +228,24 @@ class SubtitleSuccessorRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class SubtitleFreshScan:
+    snapshot: FolderSnapshot
+    settle_for: timedelta
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.snapshot, FolderSnapshot)
+            or not isinstance(self.settle_for, timedelta)
+            or not timedelta(seconds=1)
+            <= self.settle_for
+            <= timedelta(days=7)
+        ):
+            raise SubtitleSuccessorError(
+                SubtitleSuccessorErrorCode.INVALID_REQUEST
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class SubtitleSettlementResult:
     lineage_key: str
     created: bool
@@ -257,6 +275,8 @@ class _Outbox:
     lease_expires_at: datetime | None = None
     available_at: datetime | None = None
     registration: SubtitleSuccessorRegistration | None = None
+    stabilizing_inventory_id: str | None = None
+    stabilizing_snapshot_id: str | None = None
 
 
 def subtitle_lineage_key(origin_discovery_id: str) -> str:
@@ -466,6 +486,38 @@ class InMemorySubtitleSuccessorOutbox:
             item.worker_id = None
             item.lease_expires_at = None
 
+    def stabilize(
+        self,
+        claim: SubtitleSuccessorClaim,
+        *,
+        snapshot: FolderSnapshot,
+        now: datetime,
+        delay: timedelta,
+    ) -> bool:
+        if not timedelta(seconds=1) <= delay <= timedelta(days=7):
+            raise SubtitleSuccessorError(
+                SubtitleSuccessorErrorCode.INVALID_REQUEST
+            )
+        with self._lock:
+            item = self._require_lease(claim, now=now)
+            _validate_fresh_snapshot(item.settlement, snapshot)
+            fingerprint = (
+                snapshot.inventory_id,
+                snapshot.candidates.snapshot_id,
+            )
+            if fingerprint == (
+                item.stabilizing_inventory_id,
+                item.stabilizing_snapshot_id,
+            ):
+                return True
+            item.stabilizing_inventory_id = fingerprint[0]
+            item.stabilizing_snapshot_id = fingerprint[1]
+            item.state = SubtitleSuccessorOutboxState.RETRY_WAIT
+            item.worker_id = None
+            item.lease_expires_at = None
+            item.available_at = now + delay
+            return False
+
     def complete(
         self,
         claim: SubtitleSuccessorClaim,
@@ -486,6 +538,16 @@ class InMemorySubtitleSuccessorOutbox:
                 return completed.registration
             item = self._require_lease(claim, now=now)
             _validate_fresh_snapshot(item.settlement, snapshot)
+            if (
+                item.stabilizing_inventory_id,
+                item.stabilizing_snapshot_id,
+            ) != (
+                snapshot.inventory_id,
+                snapshot.candidates.snapshot_id,
+            ):
+                raise SubtitleSuccessorError(
+                    SubtitleSuccessorErrorCode.FRESH_SCAN_REQUIRED
+                )
             discovery_id = _id(
                 "discovery",
                 claim.lineage_key,
@@ -712,6 +774,15 @@ class SubtitleSuccessorOutboxPort(Protocol):
         now: datetime,
     ) -> None: ...
 
+    def stabilize(
+        self,
+        claim: SubtitleSuccessorClaim,
+        *,
+        snapshot: FolderSnapshot,
+        now: datetime,
+        delay: timedelta,
+    ) -> bool: ...
+
     def complete(
         self,
         claim: SubtitleSuccessorClaim,
@@ -724,7 +795,7 @@ class SubtitleSuccessorOutboxPort(Protocol):
 class SubtitleFreshScanner(Protocol):
     """Scan one trusted watch/folder capability; it never accepts a path."""
 
-    def scan(self, claim: SubtitleSuccessorClaim) -> FolderSnapshot: ...
+    def scan(self, claim: SubtitleSuccessorClaim) -> SubtitleFreshScan: ...
 
 
 class SubtitleFreshScanError(RuntimeError):
@@ -754,12 +825,23 @@ class SubtitleSuccessorWorker:
         if claim is None:
             return None
         try:
-            snapshot = self.scanner.scan(claim)
-            if not isinstance(snapshot, FolderSnapshot):
+            scan = self.scanner.scan(claim)
+            if not isinstance(scan, SubtitleFreshScan):
                 raise SubtitleSuccessorError(
                     SubtitleSuccessorErrorCode.FRESH_SCAN_REQUIRED
                 )
-            return self.outbox.complete(claim, snapshot=snapshot, now=now)
+            if not self.outbox.stabilize(
+                claim,
+                snapshot=scan.snapshot,
+                now=now,
+                delay=scan.settle_for,
+            ):
+                return None
+            return self.outbox.complete(
+                claim,
+                snapshot=scan.snapshot,
+                now=now,
+            )
         except SubtitleFreshScanError as error:
             if not error.retryable:
                 self.outbox.block(claim, now=now)
