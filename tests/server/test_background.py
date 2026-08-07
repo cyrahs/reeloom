@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from reeloom.executor.apply import ApplyResult, ApplyStatus
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.kernel.candidates import CandidateKind
 from reeloom.server.background import BackgroundServices
@@ -87,6 +88,19 @@ class _UnavailableApply:
     def approve_and_apply(self, **kwargs: object) -> object:
         del kwargs
         raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE)
+
+
+class _SettledSourceDriftApply:
+    def approve_and_apply(self, **kwargs: object) -> ApplyResult:
+        return ApplyResult(
+            transaction_id="txn-v1-" + "b" * 64,
+            plan_hash=str(kwargs["plan_hash"]),
+            approval_id="approval-v1-" + "c" * 64,
+            status=ApplyStatus.ROLLED_BACK,
+            applied_count=0,
+            rolled_back_count=0,
+            failure_code=ExecutorErrorCode.SOURCE_DRIFT,
+        )
 
 
 @pytest.mark.parametrize(
@@ -334,6 +348,23 @@ def test_only_source_drift_restarts_folder_generation() -> None:
             ExecutorError(ExecutorErrorCode.SOURCE_DRIFT)
         ),  # type: ignore[arg-type]
         apply=object(),  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert scheduler.settled == []
+    assert scheduler.restarted == 1
+    assert scheduler.failed == 0
+
+
+def test_settled_preflight_source_drift_restarts_without_recovery() -> None:
+    scheduler = _FolderScheduler()
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=_AutomaticConfigs(),  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_SuccessfulWorker(),  # type: ignore[arg-type]
+        apply=_SettledSourceDriftApply(),  # type: ignore[arg-type]
     )
 
     background._execute_job("job-test", "run-test")

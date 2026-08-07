@@ -521,6 +521,11 @@ export function RunPage({ runId }: { runId: string }) {
   }
   if (!run.data) return null;
   const available = new Set(run.data.available_actions);
+  const displayStatus = runStatusForDisplay(
+    run.data.status,
+    run.data.recovery_approval_id,
+    run.data.available_actions,
+  );
   const selectedPlan = lineage.data?.items.find(
     (item) => item.version === effectiveVersion,
   );
@@ -570,12 +575,13 @@ export function RunPage({ runId }: { runId: string }) {
       <section className="run-heading">
         <div>
           <div className="heading-status">
-            <Status value={run.data.status} />
+            <Status value={displayStatus} />
             <span>{workTypeLabel(run.data.work_type)}</span>
             {/* The phase often restates the status; show it only when it adds something. */}
-            {run.data.phase &&
+            {displayStatus !== "recovery_required" &&
+            run.data.phase &&
             statusLabel("phase", run.data.phase) !==
-              statusLabel("run", run.data.status) ? (
+              statusLabel("run", displayStatus) ? (
               <span>{statusLabel("phase", run.data.phase)}</span>
             ) : null}
           </div>
@@ -1161,6 +1167,16 @@ export function canApproveCurrentPlan(
     previewPlanHash !== null &&
     currentPlanHash === previewPlanHash
   );
+}
+
+export function runStatusForDisplay(
+  status: string,
+  recoveryApprovalId: string | null,
+  availableActions: string[],
+): string {
+  return recoveryApprovalId !== null && availableActions.includes("recover")
+    ? "recovery_required"
+    : status;
 }
 
 export function shouldShowArchiveReport(

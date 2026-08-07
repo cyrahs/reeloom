@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from reeloom.executor.errors import (
+    ApprovalError,
+    ApprovalErrorCode,
     ExecutorError,
     ExecutorErrorCode,
     atomic_move_error_code,
@@ -63,6 +65,25 @@ class FilesystemExecutor:
     ) -> ApplyResult:
         preflight = FilesystemPreflightExecutor(plans=self.plans)
         manifest = preflight.load(plan_hash)
+        try:
+            self.approvals.require_claim(
+                approval_id=approval_id,
+                run_id=manifest.run_id,
+                plan_hash=plan_hash,
+                scope=ApprovalScope.APPLY,
+            )
+        except ApprovalError as error:
+            if error.code is not ApprovalErrorCode.NOT_FOUND:
+                raise
+        else:
+            return self.recover(
+                plan_hash=plan_hash,
+                approval_id=approval_id,
+            )
+        # A stale plan is safe to retire only while no approval has been
+        # claimed. Validate once before creating durable transaction state,
+        # then validate again after the claim to close the TOCTOU window.
+        preflight.validate(manifest)
         transaction = TransactionRecord.create(
             manifest,
             approval_id=approval_id,
@@ -75,7 +96,18 @@ class FilesystemExecutor:
                 plan_hash=manifest.plan_hash,
                 scope=ApprovalScope.APPLY,
             )
-            preflight.validate(manifest)
+            try:
+                preflight.validate(manifest)
+            except ExecutorError as error:
+                if error.code is not ExecutorErrorCode.SOURCE_DRIFT:
+                    raise
+                self.journals.record_failure(transaction, error.code)
+                self.journals.record_rolled_back(transaction)
+                return self._terminal_result(
+                    manifest,
+                    transaction,
+                    approval_id=approval_id,
+                )
             return self._apply_locked(
                 manifest,
                 transaction,

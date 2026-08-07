@@ -206,6 +206,12 @@ def test_preflight_rejects_mapped_or_unmapped_source_drift(
         _preflight(environment)
 
     assert raised.value.code is ExecutorErrorCode.SOURCE_DRIFT
+    assert raised.value.context["relative_path"] == relative_path
+    assert raised.value.context["candidate_id"] in {
+        "video:1",
+        "video:2",
+    }
+    assert tuple(raised.value.context["mismatches"])
     assert tuple(environment.output.iterdir()) == ()
 
 

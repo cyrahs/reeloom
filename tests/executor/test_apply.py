@@ -451,6 +451,10 @@ def test_recovery_rolls_back_crash_after_rename_before_event(
     )
 
     assert recovered.status is ApplyStatus.ROLLED_BACK
+    assert (
+        environment.source / "episode-1.mkv"
+    ).read_bytes() == b"video-1"
+    assert not _destination(environment, 0).exists()
     assert recovered.rolled_back_count == 1
     assert recovered_again.status is ApplyStatus.ROLLED_BACK
     assert recovered_again.applied_count == 1
@@ -808,15 +812,24 @@ def test_recovery_handles_crash_after_claim_before_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     environment = _setup(tmp_path, mapped_count=1)
+    real_validate = FilesystemPreflightExecutor.validate
+    calls = 0
 
-    def crash_before_validation(*args: object) -> None:
-        del args
+    def crash_after_claim(
+        preflight: FilesystemPreflightExecutor,
+        manifest: ExecutionManifest,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            real_validate(preflight, manifest)
+            return
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
         FilesystemPreflightExecutor,
         "validate",
-        crash_before_validation,
+        crash_after_claim,
     )
     with pytest.raises(KeyboardInterrupt):
         _apply(environment)
@@ -828,7 +841,62 @@ def test_recovery_handles_crash_after_claim_before_validation(
     )
 
     assert recovered.status is ApplyStatus.ROLLED_BACK
-    assert (
-        environment.source / "episode-1.mkv"
-    ).read_bytes() == b"video-1"
+
+
+def test_source_drift_before_claim_leaves_no_transaction_state(
+    tmp_path: Path,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    source = environment.source / "episode-1.mkv"
+    source.rename(environment.source / "original-episode-1.mkv")
+    source.write_bytes(b"replacement")
+
+    with pytest.raises(ExecutorError) as raised:
+        _apply(environment)
+
+    assert raised.value.code is ExecutorErrorCode.SOURCE_DRIFT
+    assert raised.value.context["candidate_id"] == "video:1"
+    assert not any(
+        path.name.endswith(".claim.json")
+        for path in environment.approvals.root.path.iterdir()
+    )
+    assert tuple(environment.journals.root.path.iterdir()) == ()
+
+
+def test_source_drift_after_claim_is_settled_without_moves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _setup(tmp_path, mapped_count=1)
+    real_validate = FilesystemPreflightExecutor.validate
+    calls = 0
+
+    def drift_after_claim(
+        preflight: FilesystemPreflightExecutor,
+        manifest: ExecutionManifest,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            source = environment.source / "episode-1.mkv"
+            source.rename(environment.source / "original-episode-1.mkv")
+            source.write_bytes(b"replacement")
+        real_validate(preflight, manifest)
+
+    monkeypatch.setattr(
+        FilesystemPreflightExecutor,
+        "validate",
+        drift_after_claim,
+    )
+
+    result = _apply(environment)
+
+    assert result.status is ApplyStatus.ROLLED_BACK
+    assert result.failure_code is ExecutorErrorCode.SOURCE_DRIFT
+    assert result.applied_count == 0
+    assert result.rolled_back_count == 0
     assert not _destination(environment, 0).exists()
+    assert any(
+        path.name.endswith(".claim.json")
+        for path in environment.approvals.root.path.iterdir()
+    )

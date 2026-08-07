@@ -382,6 +382,90 @@ class PostgresSubtitleSuccessorOutbox:
             ),
         )
 
+    def stabilize(
+        self,
+        claim: SubtitleSuccessorClaim,
+        *,
+        snapshot: FolderSnapshot,
+        now: datetime,
+        delay: timedelta,
+    ) -> bool:
+        if (
+            not isinstance(claim, SubtitleSuccessorClaim)
+            or not timedelta(seconds=1) <= delay <= timedelta(days=7)
+        ):
+            raise SubtitleSuccessorError(
+                SubtitleSuccessorErrorCode.INVALID_REQUEST
+            )
+        _validate_fresh_snapshot(claim.settlement, snapshot)
+        fingerprint = (
+            snapshot.inventory_id,
+            snapshot.candidates.snapshot_id,
+        )
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        SELECT stabilizing_inventory_id,
+                               stabilizing_snapshot_id
+                        FROM subtitle_successor_outbox
+                        WHERE lineage_key = %s AND state = 'leased'
+                          AND lease_owner = %s AND attempt_count = %s
+                          AND lease_expires_at = %s
+                          AND lease_expires_at > %s
+                        FOR UPDATE
+                        """,
+                        (
+                            claim.lineage_key,
+                            claim.worker_id,
+                            claim.attempt_count,
+                            claim.lease_expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        raise SubtitleSuccessorError(
+                            SubtitleSuccessorErrorCode.LEASE_EXPIRED
+                            if now >= claim.lease_expires_at
+                            else SubtitleSuccessorErrorCode.LEASE_CONFLICT
+                        )
+                    previous = (
+                        None if row[0] is None else str(row[0]),
+                        None if row[1] is None else str(row[1]),
+                    )
+                    if previous == fingerprint:
+                        return True
+                    updated = connection.execute(
+                        """
+                        UPDATE subtitle_successor_outbox
+                        SET state = 'retry_wait', lease_owner = NULL,
+                            lease_expires_at = NULL, available_at = %s,
+                            stabilizing_inventory_id = %s,
+                            stabilizing_snapshot_id = %s,
+                            updated_at = clock_timestamp()
+                        WHERE lineage_key = %s AND state = 'leased'
+                        RETURNING lineage_key
+                        """,
+                        (
+                            now + delay,
+                            fingerprint[0],
+                            fingerprint[1],
+                            claim.lineage_key,
+                        ),
+                    ).fetchone()
+                    if updated is None:
+                        raise SubtitleSuccessorError(
+                            SubtitleSuccessorErrorCode.LEASE_CONFLICT
+                        )
+                    return False
+        except SubtitleSuccessorError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
     def complete(
         self,
         claim: SubtitleSuccessorClaim,
@@ -490,6 +574,8 @@ class PostgresSubtitleSuccessorOutbox:
                           AND lease_owner = %s AND attempt_count = %s
                           AND lease_expires_at = %s
                           AND lease_expires_at > %s
+                          AND stabilizing_inventory_id = %s
+                          AND stabilizing_snapshot_id = %s
                         """,
                         (
                             claim.lineage_key,
@@ -497,11 +583,13 @@ class PostgresSubtitleSuccessorOutbox:
                             claim.attempt_count,
                             claim.lease_expires_at,
                             now,
+                            snapshot.inventory_id,
+                            snapshot.candidates.snapshot_id,
                         ),
                     ).fetchone()
                     if valid is None:
                         raise SubtitleSuccessorError(
-                            SubtitleSuccessorErrorCode.LEASE_CONFLICT
+                            SubtitleSuccessorErrorCode.FRESH_SCAN_REQUIRED
                         )
                     connection.execute(
                         """
