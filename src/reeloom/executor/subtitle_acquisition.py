@@ -31,6 +31,10 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleAcquisitionPlan,
     SubtitleArchiveSetCapability,
 )
+from reeloom.kernel.subtitle_publication import (
+    SUBTITLE_PUBLICATION_MARKER,
+    SubtitlePublicationManifest,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.approvals import ApprovalStore
 from reeloom.ports.subtitle_acquisition import (
@@ -225,6 +229,7 @@ class SubtitleAcquisitionExecutor:
                         member,
                         archive,
                     )
+                self._write_complete_marker(staging_fd, plan)
                 self._verify_directory(staging_fd, plan)
                 try:
                     os.fsync(staging_fd)
@@ -499,7 +504,12 @@ class SubtitleAcquisitionExecutor:
                 if written <= 0:
                     raise OSError
                 remaining = remaining[written:]
-            os.fsync(descriptor)
+            try:
+                os.fsync(descriptor)
+            except OSError:
+                # This is only a compatibility bridge for the legacy v1
+                # publisher. Current bytes and the marker are authoritative.
+                pass
         except FileExistsError:
             raise _collision(
                 stage="member_write",
@@ -532,13 +542,18 @@ class SubtitleAcquisitionExecutor:
             for member in plan.members
         ):
             raise ExecutorError(ExecutorErrorCode.RECOVERY_REQUIRED)
+        marker_state = cls._complete_marker_state(directory_fd, plan)
+        if marker_state not in {"absent", "matching"}:
+            raise ExecutorError(ExecutorErrorCode.RECOVERY_REQUIRED)
 
     @staticmethod
     def _require_only_planned_names(
         directory_fd: int,
         plan: SubtitleAcquisitionPlan,
     ) -> None:
-        expected = {item.destination_name for item in plan.members}
+        expected = {item.destination_name for item in plan.members} | {
+            SUBTITLE_PUBLICATION_MARKER
+        }
         expected_keys = {filesystem_name_key(item) for item in expected}
         try:
             names = set(os.listdir(directory_fd))
@@ -622,11 +637,101 @@ class SubtitleAcquisitionExecutor:
             if (metadata.st_dev, metadata.st_ino) != identity:
                 return False
             cls._verify_directory(destination_fd, plan)
+            cls._write_complete_marker(destination_fd, plan)
             return True
         except ExecutorError:
             return False
         finally:
             os.close(destination_fd)
+
+    @classmethod
+    def _write_complete_marker(
+        cls,
+        directory_fd: int,
+        plan: SubtitleAcquisitionPlan,
+    ) -> None:
+        state = cls._complete_marker_state(directory_fd, plan)
+        if state == "matching":
+            return
+        if state != "absent":
+            raise _collision(
+                stage="complete_marker",
+                reason="marker_mismatch",
+            )
+        content = SubtitlePublicationManifest.from_plan(plan).canonical_bytes()
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                SUBTITLE_PUBLICATION_MARKER,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=directory_fd,
+            )
+            remaining = memoryview(content)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+        except FileExistsError:
+            if cls._complete_marker_state(directory_fd, plan) != "matching":
+                raise _collision(
+                    stage="complete_marker",
+                    reason="marker_race",
+                ) from None
+        except OSError as error:
+            raise ExecutorError(
+                filesystem_error_code(
+                    error,
+                    default=ExecutorErrorCode.RECOVERY_REQUIRED,
+                )
+            ) from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _complete_marker_state(
+        directory_fd: int,
+        plan: SubtitleAcquisitionPlan,
+    ) -> str:
+        expected = SubtitlePublicationManifest.from_plan(plan).canonical_bytes()
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                SUBTITLE_PUBLICATION_MARKER,
+                os.O_RDONLY
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=directory_fd,
+            )
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != len(
+                expected
+            ):
+                return "mismatch"
+            content = bytearray()
+            while len(content) < len(expected):
+                chunk = os.read(descriptor, len(expected) - len(content))
+                if not chunk:
+                    break
+                content.extend(chunk)
+            if os.read(descriptor, 1):
+                return "mismatch"
+            return "matching" if bytes(content) == expected else "mismatch"
+        except FileNotFoundError:
+            return "absent"
+        except OSError:
+            return "unsafe"
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     @staticmethod
     def _name_state(parent_fd: int, name: str) -> str:

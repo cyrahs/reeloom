@@ -93,7 +93,7 @@ def _completed_run_row(
     layout_matches_current_plan: bool,
     interaction_budget_available: bool = True,
 ) -> tuple[object, ...]:
-    row: list[object] = [None] * 50
+    row: list[object] = [None] * 61
     row[:14] = (
         "run-1",
         "completed",
@@ -116,7 +116,77 @@ def _completed_run_row(
     row[46] = 3
     row[47] = False
     row[48] = "completed"
+    row[60] = False
     return tuple(row)
+
+
+def test_v2_run_uses_operation_actions_and_hides_legacy_recovery() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "awaiting_approval"
+    row[3] = "awaiting_approval"
+    row[11] = "legacy-approval-must-not-leak"
+    row[50] = "operation:m14"
+    row[51] = row[10]
+    row[52] = "partial"
+    row[53] = 1
+    row[54] = ["satisfied", "collision"]
+    row[55] = [
+        {
+            "source_id": "video:1",
+            "outcome": "satisfied",
+            "diagnostic": "checked_rename",
+        },
+        {
+            "source_id": "video:2",
+            "outcome": "collision",
+            "diagnostic": None,
+        },
+    ]
+    row[56] = ["directory_fsync_unsupported"]
+    row[57] = True
+    row[58] = "queued"
+    row[60] = True
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["recovery_approval_id"] is None
+    assert "recover" not in run["available_actions"]
+    assert "approve_apply" not in run["available_actions"]
+    assert "rescan" in run["available_actions"]
+    assert run["execution"] == {
+        "operation_id": "operation:m14",
+        "plan_hash": "sha256:" + "a" * 64,
+        "status": "partial",
+        "attempt_count": 1,
+        "counts": {
+            "satisfied": 1,
+            "stale": 0,
+            "collision": 1,
+            "unsafe": 0,
+            "unavailable": 0,
+        },
+        "items": row[55],
+        "warnings": ["directory_fsync_unsupported"],
+        "fresh_scan_required": True,
+        "rescan_state": "queued",
+        "successor_run_id": None,
+    }
+
+
+def test_manual_v2_plan_exposes_only_shared_execute_action() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "awaiting_approval"
+    row[3] = "awaiting_approval"
+    row[60] = True
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["execution"] is None
+    assert run["available_actions"] == ["execute"]
 
 
 def test_needs_attention_exposes_bounded_preplan_controls() -> None:

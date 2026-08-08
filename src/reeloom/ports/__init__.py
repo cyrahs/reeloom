@@ -3,6 +3,11 @@
 from reeloom.ports.approvals import ApprovalStore
 from reeloom.ports.journals import JournalStore
 from reeloom.ports.plans import PlanCompiler, PlanStore
+from reeloom.ports.forward_filesystem import (
+    ForwardFilesystem,
+    ForwardMoveDiagnostic,
+    ForwardMoveEffect,
+)
 from reeloom.ports.subtitles import (
     SubtitleSample,
     SubtitleSampleProvider,
@@ -13,6 +18,7 @@ from reeloom.ports.subtitle_acquisition import (
     InspectedSubtitleArchiveSet,
     SubtitleArchiveError,
     SubtitleArchiveErrorCode,
+    SubtitleArchiveCache,
     SubtitleArchiveFetcher,
     SubtitleArchiveInspector,
     SubtitleAcquisitionPlanStore,
@@ -40,6 +46,7 @@ __all__ = [
     "InspectedSubtitleArchiveSet",
     "SubtitleArchiveError",
     "SubtitleArchiveErrorCode",
+    "SubtitleArchiveCache",
     "SubtitleArchiveFetcher",
     "SubtitleArchiveInspector",
     "SubtitleSearchProvider",
@@ -50,6 +57,9 @@ __all__ = [
     "VideoSubtitleInspector",
     "PlanCompiler",
     "PlanStore",
+    "ForwardFilesystem",
+    "ForwardMoveDiagnostic",
+    "ForwardMoveEffect",
     "TmdbErrorCode",
     "TmdbProvider",
     "TmdbProviderError",

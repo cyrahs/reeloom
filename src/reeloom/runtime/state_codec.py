@@ -60,7 +60,8 @@ V4_STATE_PROJECTION_SCHEMA = "runtime-state-v4"
 V5_STATE_PROJECTION_SCHEMA = "runtime-state-v5"
 V6_STATE_PROJECTION_SCHEMA = "runtime-state-v6"
 V7_STATE_PROJECTION_SCHEMA = "runtime-state-v7"
-STATE_PROJECTION_SCHEMA = "runtime-state-v8"
+V8_STATE_PROJECTION_SCHEMA = "runtime-state-v8"
+STATE_PROJECTION_SCHEMA = "runtime-state-v9"
 _LEGACY_FIELDS = frozenset(
     {
         "applied_count",
@@ -138,6 +139,7 @@ def is_supported_projection_schema(value: object) -> bool:
         V5_STATE_PROJECTION_SCHEMA,
         V6_STATE_PROJECTION_SCHEMA,
         V7_STATE_PROJECTION_SCHEMA,
+        V8_STATE_PROJECTION_SCHEMA,
         STATE_PROJECTION_SCHEMA,
     }
 
@@ -805,6 +807,7 @@ def _normalized_payload(
             V5_STATE_PROJECTION_SCHEMA: (_V5_FIELDS,),
             V6_STATE_PROJECTION_SCHEMA: (_V6_FIELDS,),
             V7_STATE_PROJECTION_SCHEMA: (_V7_FIELDS,),
+            V8_STATE_PROJECTION_SCHEMA: (_FIELDS,),
             STATE_PROJECTION_SCHEMA: (_FIELDS,),
         }.get(schema_version)
         if expected is None or keys not in expected:

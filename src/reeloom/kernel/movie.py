@@ -16,6 +16,7 @@ from reeloom.kernel.naming import (
     movie_subtitle_relative_path,
     movie_video_relative_path,
 )
+from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
 from reeloom.kernel.schema import check_fields
 from reeloom.kernel.scanner import ScannedCandidateSnapshot
 
@@ -223,4 +224,88 @@ def compile_movie_plan_draft(
         unmapped_candidate_ids=tuple(
             sorted(all_ids - mapped, key=_sort_key)
         ),
+    )
+
+
+def compile_movie_plan_draft_v2(
+    *,
+    movie: MovieIdentity,
+    mapping: MovieMappingDraft,
+    candidates: SemanticCandidateSnapshot,
+    subtitle_variants: tuple[tuple[CandidateId, SubtitleVariant], ...],
+) -> MoviePlanDraft:
+    """Compile the movie layout from semantic sources only."""
+
+    if (
+        not isinstance(movie, MovieIdentity)
+        or not isinstance(mapping, MovieMappingDraft)
+        or not isinstance(candidates, SemanticCandidateSnapshot)
+    ):
+        raise DomainError(ErrorCode.INVALID_FIELD_TYPE)
+    variants = dict(subtitle_variants)
+    if (
+        len(variants) != len(subtitle_variants)
+        or set(variants) != set(mapping.subtitle_ids)
+        or any(
+            candidate_id.kind is not CandidateKind.SUBTITLE
+            or not isinstance(variant, SubtitleVariant)
+            for candidate_id, variant in subtitle_variants
+        )
+    ):
+        raise DomainError(ErrorCode.SUBTITLE_VARIANT_REQUIRED)
+    moves = [
+        MoviePlannedMove(
+            source_id=mapping.video_id,
+            video_id=mapping.video_id,
+            destination=movie_video_relative_path(
+                movie,
+                candidates.source_for(mapping.video_id).relative_path.suffix,
+            ),
+        )
+    ]
+    subtitle_moves = [
+        MoviePlannedMove(
+            source_id=subtitle_id,
+            video_id=mapping.video_id,
+            destination=movie_subtitle_relative_path(
+                movie,
+                variants[subtitle_id],
+                candidates.source_for(subtitle_id).relative_path.suffix,
+            ),
+        )
+        for subtitle_id in mapping.subtitle_ids
+    ]
+    grouped: dict[PurePosixPath, list[MoviePlannedMove]] = {}
+    for move in subtitle_moves:
+        grouped.setdefault(move.destination, []).append(move)
+    for destination, group in grouped.items():
+        ordered = sorted(group, key=lambda item: _sort_key(item.source_id))
+        if len(ordered) == 1:
+            moves.extend(ordered)
+            continue
+        suffix = destination.suffix
+        for index, move in enumerate(ordered, start=1):
+            moves.append(
+                MoviePlannedMove(
+                    source_id=move.source_id,
+                    video_id=move.video_id,
+                    destination=destination.with_name(
+                        f"{destination.stem}.{index}{suffix}"
+                    ),
+                )
+            )
+    moves = sorted(moves, key=lambda item: _sort_key(item.source_id))
+    for move in moves:
+        _validate_destination(move.destination)
+    if len({_collision_key(item.destination) for item in moves}) != len(moves):
+        raise DomainError(ErrorCode.DESTINATION_COLLISION)
+    mapped = {mapping.video_id, *mapping.subtitle_ids}
+    all_ids = {item.candidate_id for item in candidates.sources}
+    return MoviePlanDraft(
+        schema_version=CURRENT_MOVIE_DRAFT_SCHEMA_VERSION,
+        policy_version=CURRENT_MOVIE_DRAFT_POLICY_VERSION,
+        movie=movie,
+        mapping=mapping,
+        moves=tuple(moves),
+        unmapped_candidate_ids=tuple(sorted(all_ids - mapped, key=_sort_key)),
     )

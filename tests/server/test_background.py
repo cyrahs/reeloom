@@ -8,9 +8,13 @@ import pytest
 from reeloom.executor.apply import ApplyResult, ApplyStatus
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.kernel.candidates import CandidateKind
-from reeloom.server.background import BackgroundServices
+from reeloom.server.background import (
+    BackgroundServices,
+    _semantic_watch_v2_enabled,
+)
 from reeloom.server.config import (
     ApplyPolicy,
+    ServerWorkType,
     SubtitleAcquisitionPolicy,
 )
 from reeloom.server.agent_worker import AgentWorkKind, AgentWorkResult
@@ -20,6 +24,33 @@ from reeloom.server.errors import ServerError, ServerErrorCode
 class _UnavailableConfigs:
     def head(self) -> None:
         raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE)
+
+
+@pytest.mark.parametrize(
+    ("policy", "work_type", "acgrip", "expected"),
+    (
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, False, True),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.TV, False, True),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.MOVIE, False, True),
+        (ApplyPolicy.MANUAL, ServerWorkType.ANIME, False, True),
+        (ApplyPolicy.AUTOMATIC, ServerWorkType.ANIME, False, True),
+        (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, True, True),
+    ),
+)
+def test_semantic_watch_enabled_for_all_work_types_and_policies(
+    policy: ApplyPolicy,
+    work_type: ServerWorkType,
+    acgrip: bool,
+    expected: bool,
+) -> None:
+    config = SimpleNamespace(
+        apply_policy=policy,
+        acgrip=SimpleNamespace(enabled=acgrip),
+    )
+
+    assert _semantic_watch_v2_enabled(  # type: ignore[arg-type]
+        config, work_type
+    ) is expected
 
 
 def test_database_unavailable_stops_background_fail_closed() -> None:
@@ -78,6 +109,20 @@ class _SuccessfulWorker:
         return "sha256:" + "a" * 64
 
 
+class _ForwardExecution:
+    def __init__(self, *, v2: bool = True) -> None:
+        self.v2 = v2
+        self.automatic: list[tuple[str, str]] = []
+
+    def is_v2_plan(self, *, run_id: str, plan_hash: str) -> bool:
+        del run_id, plan_hash
+        return self.v2
+
+    def execute_automatic(self, *, run_id: str, plan_hash: str) -> object:
+        self.automatic.append((run_id, plan_hash))
+        return object()
+
+
 class _AutomaticConfigs:
     def get(self, revision: int) -> object:
         del revision
@@ -129,6 +174,36 @@ def test_database_failure_is_rethrown_without_settling_job(
 
     assert raised.value.code is ServerErrorCode.DATABASE_UNAVAILABLE
     assert scheduler.settled == []
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_calls"),
+    (
+        (ApplyPolicy.AUTOMATIC, 1),
+        (ApplyPolicy.MANUAL, 0),
+        (ApplyPolicy.PLAN_ONLY, 0),
+    ),
+)
+def test_v2_plan_never_enters_legacy_apply_or_folder_disposition(
+    policy: ApplyPolicy, expected_calls: int
+) -> None:
+    scheduler = _SettlingScheduler()
+    forward = _ForwardExecution()
+    config = SimpleNamespace(apply_policy=policy)
+    configs = SimpleNamespace(get=lambda _revision: config)
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=configs,  # type: ignore[arg-type]
+        scheduler=scheduler,  # type: ignore[arg-type]
+        worker=_SuccessfulWorker(),  # type: ignore[arg-type]
+        apply=_UnavailableApply(),  # type: ignore[arg-type]
+        forward_execution=forward,  # type: ignore[arg-type]
+    )
+
+    background._execute_job("job-test", "run-test")
+
+    assert len(forward.automatic) == expected_calls
+    assert scheduler.settled == [True]
 
 
 def test_only_deterministic_executor_collision_is_terminal() -> None:

@@ -8,6 +8,7 @@ from typing import Any, Literal
 from psycopg_pool import ConnectionPool
 
 from reeloom.kernel.candidates import CandidateKind
+from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
 from reeloom.server.config import ServerWorkType
 from reeloom.server.config_repository import CONFIG_LOCK_ID
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -29,7 +30,22 @@ from reeloom.server.watcher import (
 )
 
 
-def _snapshot_json(snapshot: WatchSnapshot) -> str:
+def _snapshot_json(
+    snapshot: WatchSnapshot,
+    *,
+    semantic_v2: bool = False,
+) -> str:
+    if semantic_v2:
+        semantic = snapshot.semantic_snapshot
+        return json.dumps(
+            {
+                "files": semantic.payload(),
+                "schema": "semantic-watch-v2",
+                "snapshot_id": semantic.snapshot_id,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     return json.dumps(
         {
             "files": [
@@ -54,6 +70,33 @@ def _snapshot_json(snapshot: WatchSnapshot) -> str:
 
 def _snapshot_from_json(value: object) -> WatchSnapshot:
     raw = value if isinstance(value, dict) else json.loads(str(value))
+    if not isinstance(raw, dict):
+        raise ValueError("invalid snapshot payload")
+    if raw.get("schema") == "semantic-watch-v2":
+        semantic = SemanticCandidateSnapshot.from_payload(
+            raw["files"],
+            snapshot_id=raw["snapshot_id"],
+        )
+        snapshot = WatchSnapshot(
+            snapshot_id=semantic.snapshot_id,
+            files=tuple(
+                WatchFile(
+                    relative_path=source.relative_path,
+                    kind=source.kind,
+                    size_bytes=source.size_bytes,
+                    device=0,
+                    inode=0,
+                    mtime_ns=0,
+                    ctime_ns=0,
+                    sample_digest=None,
+                    sha256=source.sha256,
+                )
+                for source in semantic.sources
+            ),
+        )
+        if snapshot.semantic_snapshot_id != semantic.snapshot_id:
+            raise ValueError("semantic snapshot identity mismatch")
+        return snapshot
     return WatchSnapshot(
         snapshot_id=raw["snapshot_id"],
         files=tuple(
@@ -72,7 +115,25 @@ def _snapshot_from_json(value: object) -> WatchSnapshot:
     )
 
 
-def _inventory_json(folder: FolderSnapshot) -> str:
+def _inventory_json(
+    folder: FolderSnapshot,
+    *,
+    semantic_v2: bool = False,
+) -> str:
+    if semantic_v2:
+        return json.dumps(
+            {
+                "candidate_snapshot_id": (
+                    folder.candidates.semantic_snapshot_id
+                ),
+                "entries": [item.semantic_payload for item in folder.entries],
+                "inventory_id": folder.semantic_inventory_id,
+                "schema": "folder-inventory-v2",
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     return json.dumps(
         {
             "candidate_snapshot_id": folder.candidates.snapshot_id,
@@ -252,13 +313,14 @@ class PostgresSchedulerRepository:
         fence: int,
         work_type: ServerWorkType,
         settle_interval_seconds: int,
+        semantic_v2: bool = False,
     ) -> None:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
                     previous = connection.execute(
                         """
-                        SELECT config_revision, fence
+                        SELECT config_revision, fence, semantic_v2
                         FROM watch_states
                         WHERE watch_id = %s
                         FOR UPDATE
@@ -269,14 +331,15 @@ class PostgresSchedulerRepository:
                         """
                         INSERT INTO watch_states
                             (watch_id, config_revision, fence, work_type,
-                             settle_interval_seconds)
-                        VALUES (%s, %s, %s, %s, %s)
+                             settle_interval_seconds, semantic_v2)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (watch_id) DO UPDATE SET
                             config_revision = EXCLUDED.config_revision,
                             fence = EXCLUDED.fence,
                             work_type = EXCLUDED.work_type,
                             settle_interval_seconds =
-                                EXCLUDED.settle_interval_seconds
+                                EXCLUDED.settle_interval_seconds,
+                            semantic_v2 = EXCLUDED.semantic_v2
                         """,
                         (
                             watch_id,
@@ -284,12 +347,14 @@ class PostgresSchedulerRepository:
                             fence,
                             work_type.value,
                             settle_interval_seconds,
+                            semantic_v2,
                         ),
                     )
                     if (
                         previous is None
                         or int(previous[0]) != config_revision
                         or int(previous[1]) != fence
+                        or bool(previous[2]) != semantic_v2
                     ):
                         connection.execute(
                             """
@@ -553,7 +618,7 @@ class PostgresSchedulerRepository:
                     state = connection.execute(
                         """
                         SELECT config_revision, fence, work_type,
-                               settle_interval_seconds
+                               settle_interval_seconds, semantic_v2
                         FROM watch_states
                         WHERE watch_id = %s
                         FOR UPDATE
@@ -568,6 +633,7 @@ class PostgresSchedulerRepository:
                         raise ServerError(
                             ServerErrorCode.STALE_WATCH_SCAN
                         )
+                    semantic_v2 = bool(state[4])
                     rows = connection.execute(
                         """
                         SELECT folder_name, config_revision, folder_device,
@@ -752,6 +818,20 @@ class PostgresSchedulerRepository:
                     discoveries: list[Discovery] = []
                     disposition_runs: list[str] = []
                     for folder in scan.folders:
+                        folder_device = (
+                            None if semantic_v2 else folder.device
+                        )
+                        folder_inode = None if semantic_v2 else folder.inode
+                        inventory_id = (
+                            folder.semantic_inventory_id
+                            if semantic_v2
+                            else folder.inventory_id
+                        )
+                        snapshot_id = (
+                            folder.candidates.semantic_snapshot_id
+                            if semantic_v2
+                            else folder.candidates.snapshot_id
+                        )
                         row = previous.get(folder.name)
                         if row is not None and row[8] is not None:
                             if (
@@ -856,13 +936,28 @@ class PostgresSchedulerRepository:
                                         ServerErrorCode.DATABASE_UNAVAILABLE
                                     )
                                 unchanged = (
-                                    row[2] == folder.device
-                                    and row[3] == folder.inode
-                                    and row[4] == folder.inventory_id
-                                    and row[5]
-                                    == folder.candidates.snapshot_id
+                                    (
+                                        semantic_v2
+                                        or (
+                                            row[2] == folder.device
+                                            and row[3] == folder.inode
+                                        )
+                                    )
+                                    and row[4] == inventory_id
+                                    and row[5] == snapshot_id
                                 )
                                 if unchanged:
+                                    if (
+                                        semantic_v2
+                                        and str(run[1])
+                                        in {"completed", "failed", "superseded"}
+                                    ):
+                                        # A terminal v2 run owns this exact
+                                        # semantic inventory. Residual source
+                                        # content is current truth, not a new
+                                        # generation until its inventory
+                                        # changes.
+                                        continue
                                     if (
                                         str(row[9]) == "active"
                                         and (
@@ -901,6 +996,51 @@ class PostgresSchedulerRepository:
                                         mutated = True
                                     continue
                                 if (
+                                    semantic_v2
+                                    and str(run[1])
+                                    in {"completed", "failed", "superseded"}
+                                ):
+                                    connection.execute(
+                                        """
+                                        UPDATE watch_folder_observations
+                                        SET discovery_id = NULL,
+                                            config_revision = %s,
+                                            folder_device = NULL,
+                                            folder_inode = NULL,
+                                            inventory_id = %s,
+                                            inventory_payload = %s::jsonb,
+                                            snapshot_id = %s,
+                                            snapshot_payload = %s::jsonb,
+                                            first_observed_at = %s,
+                                            stable_at = NULL,
+                                            status = 'settling',
+                                            blocked_reason = NULL,
+                                            retry_count = 0
+                                        WHERE watch_id = %s
+                                          AND folder_name = %s
+                                          AND discovery_id = %s
+                                        """,
+                                        (
+                                            config_revision,
+                                            inventory_id,
+                                            _inventory_json(
+                                                folder, semantic_v2=True
+                                            ),
+                                            snapshot_id,
+                                            _snapshot_json(
+                                                folder.candidates,
+                                                semantic_v2=True,
+                                            ),
+                                            observed_at,
+                                            watch_id,
+                                            folder.name,
+                                            str(row[8]),
+                                        ),
+                                    )
+                                    row = None
+                                    mutated = True
+                                    continue
+                                if (
                                     str(run[1]) == "completed"
                                     and not bool(run[2])
                                     and not bool(run[3])
@@ -925,12 +1065,18 @@ class PostgresSchedulerRepository:
                                         """,
                                         (
                                             config_revision,
-                                            folder.device,
-                                            folder.inode,
-                                            folder.inventory_id,
-                                            _inventory_json(folder),
-                                            folder.candidates.snapshot_id,
-                                            _snapshot_json(folder.candidates),
+                                            folder_device,
+                                            folder_inode,
+                                            inventory_id,
+                                            _inventory_json(
+                                                folder,
+                                                semantic_v2=semantic_v2,
+                                            ),
+                                            snapshot_id,
+                                            _snapshot_json(
+                                                folder.candidates,
+                                                semantic_v2=semantic_v2,
+                                            ),
                                             observed_at,
                                             watch_id,
                                             folder.name,
@@ -961,10 +1107,15 @@ class PostgresSchedulerRepository:
                         same = (
                             row is not None
                             and int(row[1]) == config_revision
-                            and row[2] == folder.device
-                            and row[3] == folder.inode
-                            and row[4] == folder.inventory_id
-                            and row[5] == folder.candidates.snapshot_id
+                            and (
+                                semantic_v2
+                                or (
+                                    row[2] == folder.device
+                                    and row[3] == folder.inode
+                                )
+                            )
+                            and row[4] == inventory_id
+                            and row[5] == snapshot_id
                             and str(row[9]) == "settling"
                         )
                         if not same:
@@ -1010,12 +1161,18 @@ class PostgresSchedulerRepository:
                                     watch_id,
                                     folder.name,
                                     config_revision,
-                                    folder.device,
-                                    folder.inode,
-                                    folder.inventory_id,
-                                    _inventory_json(folder),
-                                    folder.candidates.snapshot_id,
-                                    _snapshot_json(folder.candidates),
+                                    folder_device,
+                                    folder_inode,
+                                    inventory_id,
+                                    _inventory_json(
+                                        folder,
+                                        semantic_v2=semantic_v2,
+                                    ),
+                                    snapshot_id,
+                                    _snapshot_json(
+                                        folder.candidates,
+                                        semantic_v2=semantic_v2,
+                                    ),
                                     observed_at,
                                 ),
                             )
@@ -1045,21 +1202,30 @@ class PostgresSchedulerRepository:
                                 (observed_at, watch_id, folder.name),
                             )
                             mutated = True
-                        generation_id = _id(
-                            "folder",
-                            watch_id,
-                            folder.name,
-                            str(folder.device),
-                            str(folder.inode),
-                            folder.inventory_id,
-                            first_observed.isoformat(),
+                        generation_parts = (
+                            (
+                                watch_id,
+                                folder.name,
+                                inventory_id,
+                                first_observed.isoformat(),
+                            )
+                            if semantic_v2
+                            else (
+                                watch_id,
+                                folder.name,
+                                str(folder.device),
+                                str(folder.inode),
+                                inventory_id,
+                                first_observed.isoformat(),
+                            )
                         )
+                        generation_id = _id("folder", *generation_parts)
                         discovery_id = _id(
                             "discovery",
                             watch_id,
                             str(config_revision),
                             generation_id,
-                            folder.candidates.snapshot_id,
+                            snapshot_id,
                         )
                         inserted = connection.execute(
                             """
@@ -1078,13 +1244,16 @@ class PostgresSchedulerRepository:
                                 discovery_id,
                                 watch_id,
                                 config_revision,
-                                folder.candidates.snapshot_id,
-                                _snapshot_json(folder.candidates),
+                                snapshot_id,
+                                _snapshot_json(
+                                    folder.candidates,
+                                    semantic_v2=semantic_v2,
+                                ),
                                 str(state[2]),
                                 observed_at,
                                 folder.name,
                                 generation_id,
-                                folder.inventory_id,
+                                inventory_id,
                             ),
                         ).fetchone()
                         discovery_row = connection.execute(
@@ -1112,7 +1281,7 @@ class PostgresSchedulerRepository:
                                 observed_at,
                                 watch_id,
                                 folder.name,
-                                folder.inventory_id,
+                                inventory_id,
                             ),
                         )
                         if inserted is not None:
@@ -1132,15 +1301,15 @@ class PostgresSchedulerRepository:
                                 discovery_id=str(discovery_row[0]),
                                 watch_id=watch_id,
                                 config_revision=config_revision,
-                                snapshot_id=folder.candidates.snapshot_id,
+                                snapshot_id=snapshot_id,
                                 work_type=ServerWorkType(str(state[2])),
                                 discovered_at=discovery_row[1],
                                 snapshot=folder.candidates,
                                 source_folder=folder.name,
                                 folder_generation_id=generation_id,
-                                inventory_id=folder.inventory_id,
-                                source_folder_device=folder.device,
-                                source_folder_inode=folder.inode,
+                                inventory_id=inventory_id,
+                                source_folder_device=folder_device,
+                                source_folder_inode=folder_inode,
                             )
                         )
                     return FolderPollResult(
@@ -1161,7 +1330,8 @@ class PostgresSchedulerRepository:
                 with connection.transaction():
                     discovery = connection.execute(
                         """
-                        SELECT config_revision, work_type
+                        SELECT config_revision, work_type,
+                               watch_id, source_folder
                         FROM discoveries
                         WHERE discovery_id = %s
                         """,
@@ -1173,12 +1343,27 @@ class PostgresSchedulerRepository:
                     )
                     run_id = _id("run", discovery_id)
                     capability = _id("capability", run_id)
+                    pending = connection.execute(
+                        """
+                        SELECT request_id, lineage_key
+                        FROM subtitle_scan_requests_v2
+                        WHERE watch_id = %s AND source_folder = %s
+                          AND state = 'dispatched'
+                          AND successor_discovery_id IS NULL
+                        ORDER BY created_at, request_id
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                        """,
+                        (str(discovery[2]), str(discovery[3])),
+                    ).fetchone()
+                    lineage_key = None if pending is None else str(pending[1])
                     connection.execute(
                         """
                         INSERT INTO runs
                             (run_id, discovery_id, config_revision, work_type,
-                             source_capability, status)
-                        VALUES (%s, %s, %s, %s, %s, 'registered')
+                             source_capability, status,
+                             subtitle_acquisition_lineage_key)
+                        VALUES (%s, %s, %s, %s, %s, 'registered', %s)
                         ON CONFLICT (discovery_id) DO NOTHING
                         """,
                         (
@@ -1187,6 +1372,7 @@ class PostgresSchedulerRepository:
                             int(discovery[0]),
                             str(discovery[1]),
                             capability,
+                            lineage_key,
                         ),
                     )
                     row = connection.execute(
@@ -1199,6 +1385,23 @@ class PostgresSchedulerRepository:
                         (discovery_id,),
                     ).fetchone()
                     actual_run = str(row[0])
+                    if pending is not None:
+                        completed = connection.execute(
+                            """
+                            UPDATE subtitle_scan_requests_v2
+                            SET state = 'completed',
+                                successor_discovery_id = %s,
+                                successor_run_id = %s,
+                                updated_at = clock_timestamp()
+                            WHERE request_id = %s
+                              AND state = 'dispatched'
+                              AND successor_discovery_id IS NULL
+                            RETURNING request_id
+                            """,
+                            (discovery_id, actual_run, str(pending[0])),
+                        ).fetchone()
+                        if completed is None:
+                            raise ServerError(ServerErrorCode.RUN_BUSY)
                     actual_job = _id("job", actual_run)
                     connection.execute(
                         """
@@ -1235,6 +1438,173 @@ class PostgresSchedulerRepository:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
+
+    def dispatch_subtitle_scan(
+        self,
+        *,
+        request_id: str,
+        run_id: str,
+        worker_id: str,
+        attempt_count: int,
+        lease_expires_at: datetime,
+        now: datetime,
+    ) -> None:
+        """Durably return a completed subtitle publication to normal polling."""
+
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (CONFIG_LOCK_ID,),
+                    )
+                    existing = connection.execute(
+                        """
+                        SELECT 1 FROM scheduler_audit
+                        WHERE event_type = 'subtitle_scan_dispatched_v2'
+                          AND subject_id = %s
+                        """,
+                        (request_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        return
+                    request = connection.execute(
+                        """
+                        SELECT scan.watch_id, scan.source_folder,
+                               discovery.discovery_id, scan.lineage_key
+                        FROM subtitle_scan_requests_v2 AS scan
+                        JOIN runs AS run ON run.run_id = scan.run_id
+                        JOIN discoveries AS discovery
+                          ON discovery.discovery_id = run.discovery_id
+                        WHERE scan.request_id = %s
+                          AND scan.run_id = %s
+                          AND scan.state = 'leased'
+                          AND scan.lease_owner = %s
+                          AND scan.attempt_count = %s
+                          AND scan.lease_expires_at = %s
+                          AND scan.lease_expires_at > %s
+                          AND run.status = 'superseded'
+                        FOR UPDATE OF scan
+                        """,
+                        (
+                            request_id,
+                            run_id,
+                            worker_id,
+                            attempt_count,
+                            lease_expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if request is None:
+                        raise ServerError(ServerErrorCode.RUN_BUSY)
+                    observation = connection.execute(
+                        """
+                        SELECT status, discovery_id
+                        FROM watch_folder_observations
+                        WHERE watch_id = %s AND folder_name = %s
+                        FOR UPDATE
+                        """,
+                        (
+                            str(request[0]),
+                            str(request[1]),
+                        ),
+                    ).fetchone()
+                    if observation is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    current_discovery = (
+                        None if observation[1] is None else str(observation[1])
+                    )
+                    successor_run: str | None = None
+                    if (
+                        str(observation[0]) == "active"
+                        and current_discovery == str(request[2])
+                    ):
+                        connection.execute(
+                            """
+                            UPDATE watch_folder_observations
+                            SET discovery_id = NULL, status = 'settling',
+                                first_observed_at = %s, stable_at = NULL,
+                                blocked_reason = NULL, retry_count = 0
+                            WHERE watch_id = %s AND folder_name = %s
+                            """,
+                            (now, str(request[0]), str(request[1])),
+                        )
+                    elif (
+                        str(observation[0]) == "active"
+                        and current_discovery is not None
+                    ):
+                        successor = connection.execute(
+                            """
+                            SELECT run_id, subtitle_acquisition_lineage_key
+                            FROM runs
+                            WHERE discovery_id = %s
+                            FOR UPDATE
+                            """,
+                            (current_discovery,),
+                        ).fetchone()
+                        if successor is not None:
+                            if successor[1] not in {None, str(request[3])}:
+                                raise ServerError(
+                                    ServerErrorCode.INTERACTION_CONFLICT
+                                )
+                            successor_run = str(successor[0])
+                            connection.execute(
+                                """
+                                UPDATE runs
+                                SET subtitle_acquisition_lineage_key = %s
+                                WHERE run_id = %s
+                                  AND subtitle_acquisition_lineage_key IS NULL
+                                """,
+                                (str(request[3]), successor_run),
+                            )
+                    elif not (
+                        str(observation[0]) == "settling"
+                        and current_discovery is None
+                    ):
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    if successor_run is None:
+                        connection.execute(
+                            """
+                            UPDATE subtitle_scan_requests_v2
+                            SET state = 'dispatched', lease_owner = NULL,
+                                lease_expires_at = NULL, updated_at = %s
+                            WHERE request_id = %s
+                            """,
+                            (now, request_id),
+                        )
+                    else:
+                        connection.execute(
+                            """
+                            UPDATE subtitle_scan_requests_v2
+                            SET state = 'completed', lease_owner = NULL,
+                                lease_expires_at = NULL,
+                                successor_discovery_id = %s,
+                                successor_run_id = %s, updated_at = %s
+                            WHERE request_id = %s
+                            """,
+                            (
+                                current_discovery,
+                                successor_run,
+                                now,
+                                request_id,
+                            ),
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit
+                            (event_type, subject_id)
+                        VALUES ('subtitle_scan_dispatched_v2', %s)
+                        """,
+                        (request_id,),
+                    )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
     def claim_job(self, *, boot_id: str) -> ClaimedJob | None:
         try:
@@ -1614,6 +1984,16 @@ class PostgresSchedulerRepository:
                         "SELECT pg_advisory_xact_lock(%s)",
                         (CONFIG_LOCK_ID,),
                     )
+                    if audit_event is not None:
+                        already_dispatched = connection.execute(
+                            """
+                            SELECT 1 FROM scheduler_audit
+                            WHERE event_type = %s AND subject_id = %s
+                            """,
+                            (audit_event, run_id),
+                        ).fetchone()
+                        if already_dispatched is not None:
+                            return
                     row = connection.execute(
                         """
                         SELECT d.discovery_id, d.watch_id, d.source_folder
@@ -1661,6 +2041,45 @@ class PostgresSchedulerRepository:
                             """,
                             (audit_event, run_id),
                         )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(
+                ServerErrorCode.DATABASE_UNAVAILABLE
+            ) from None
+
+    def acknowledge_forward_rescan(
+        self, *, run_id: str, audit_event: str
+    ) -> None:
+        """Durably request a poll without invalidating handled v2 state."""
+
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        SELECT 1
+                        FROM runs AS r
+                        JOIN discoveries AS d USING (discovery_id)
+                        JOIN watch_states AS w ON w.watch_id = d.watch_id
+                        WHERE r.run_id = %s
+                          AND d.folder_generation_id IS NOT NULL
+                          AND w.semantic_v2 = true
+                        """,
+                        (run_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(
+                            ServerErrorCode.INTERACTION_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit (event_type, subject_id)
+                        VALUES (%s, %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (audit_event, run_id),
+                    )
         except ServerError:
             raise
         except Exception:

@@ -39,6 +39,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveVolume,
     SubtitleReleaseId,
 )
+from reeloom.kernel.subtitle_publication import SUBTITLE_PUBLICATION_MARKER
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.subtitle_acquisition import (
     DownloadedArchiveVolume,
@@ -317,10 +318,13 @@ def test_apply_refetches_verifies_and_publishes_exact_plan(
     assert environment.fetcher.calls == 1
     assert environment.inspector.inspect_calls == 1
     assert environment.inspector.extract_calls == 1
-    assert [item.name for item in destination.iterdir()] == [
-        environment.plan.members[0].destination_name
-    ]
-    assert next(destination.iterdir()).read_bytes() == _SUBTITLE_CONTENT
+    assert {item.name for item in destination.iterdir()} == {
+        environment.plan.members[0].destination_name,
+        SUBTITLE_PUBLICATION_MARKER,
+    }
+    assert (
+        destination / environment.plan.members[0].destination_name
+    ).read_bytes() == _SUBTITLE_CONTENT
     assert not (environment.source_folder / environment.transaction.staging_name).exists()
     assert environment.journals.has(environment.transaction, "completed")
 
@@ -460,9 +464,10 @@ def test_fuse_checked_rename_publishes_when_native_is_unavailable(
         environment.source_folder / environment.transaction.staging_name
     ).exists()
     assert destination.is_dir()
-    assert tuple(path.name for path in destination.iterdir()) == (
+    assert {path.name for path in destination.iterdir()} == {
         environment.plan.members[0].destination_name,
-    )
+        SUBTITLE_PUBLICATION_MARKER,
+    }
 
 
 def test_recovery_adopts_empty_staging_created_after_started_event(

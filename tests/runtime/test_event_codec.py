@@ -50,6 +50,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleSelectionDecision,
 )
 from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
 from reeloom.runtime.errors import RuntimeDomainError
 from reeloom.runtime.event_codec import decode_event, encode_event
@@ -470,3 +471,19 @@ def test_event_codec_rejects_extreme_mapping_before_expansion() -> None:
 
     with pytest.raises(RuntimeDomainError):
         decode_event(extreme)
+
+
+def test_candidate_snapshot_event_round_trips_semantic_roots() -> None:
+    event = CandidateSnapshotCreated(
+        snapshot_id="candidate-snapshot-v2:" + "a" * 64,
+        candidate_count=1,
+        candidate_ids=(CandidateId(CandidateKind.VIDEO, 1),),
+        source_root=SemanticRootBinding(PurePosixPath("/source")),
+        output_root=SemanticRootBinding(PurePosixPath("/output")),
+    )
+
+    encoded = encode_event(event)
+    payload = json.loads(encoded)
+
+    assert payload["payload"]["source_root"] == {"path": "/source"}
+    assert decode_event(encoded) == event

@@ -103,6 +103,99 @@ const subtitleFailureDiagnosticSchema = z
   })
   .strict();
 
+const subtitlePublicationFailureDiagnosticSchema = z
+  .object({
+    schema_version: z.literal(2),
+    stage: z.literal("publication"),
+    reason: z.enum([
+      "invalid_binding",
+      "no_follow_unavailable",
+      "directory_unreadable",
+      "unexpected_entry",
+      "casefold_collision",
+      "invalid_complete_marker",
+      "member_mismatch",
+      "content_unavailable",
+      "content_mismatch",
+      "member_post_write_mismatch",
+      "marker_post_write_mismatch",
+      "exclusive_name_exists",
+      "unsafe_path",
+      "filesystem_unavailable",
+      "collision",
+      "unsafe",
+      "unavailable",
+    ]),
+  })
+  .strict();
+
+const anySubtitleFailureDiagnosticSchema = z.union([
+  subtitleFailureDiagnosticSchema,
+  subtitlePublicationFailureDiagnosticSchema,
+]);
+
+const forwardExecutionSchema = z
+  .object({
+    operation_id: z.string(),
+    plan_hash: z.string(),
+    status: z.enum([
+      "authorized",
+      "running",
+      "completed",
+      "partial",
+      "stale",
+      "collision",
+      "unsafe",
+      "unavailable",
+      "superseded",
+    ]),
+    attempt_count: z.number().int().min(0).max(100),
+    counts: z
+      .object({
+        satisfied: z.number().int().nonnegative(),
+        stale: z.number().int().nonnegative(),
+        collision: z.number().int().nonnegative(),
+        unsafe: z.number().int().nonnegative(),
+        unavailable: z.number().int().nonnegative(),
+      })
+      .strict(),
+    items: z
+      .array(
+        z
+          .object({
+            source_id: z.string(),
+            outcome: z.enum([
+              "satisfied",
+              "stale",
+              "collision",
+              "unsafe",
+              "unavailable",
+            ]),
+            diagnostic: z
+              .enum([
+                "native",
+                "checked_rename",
+                "collision",
+                "cross_filesystem",
+                "permission_denied",
+                "transient_io",
+                "unsafe",
+                "unknown",
+              ])
+              .nullable(),
+          })
+          .strict(),
+      )
+      .max(10_000),
+    warnings: z.array(z.string()).max(1_000),
+    fresh_scan_required: z.boolean(),
+    rescan_state: z
+      .enum(["queued", "leased", "retry_wait", "completed", "blocked"])
+      .nullable(),
+    successor_run_id: z.string().nullable(),
+  })
+  .strict();
+
 export const runSchema = z
   .object({
     run_id: z.string(),
@@ -123,6 +216,8 @@ export const runSchema = z
         "question",
         "revision",
         "approve_apply",
+        "execute",
+        "rescan",
         "reapply",
         "recover",
         "settle_folder",
@@ -149,6 +244,7 @@ export const runSchema = z
       })
       .strict()
       .nullable(),
+    execution: forwardExecutionSchema.nullable().default(null),
     source_folder: z.string().nullable(),
     folder_disposition: z
       .object({
@@ -211,11 +307,11 @@ export const runSchema = z
         approval_id: z.string().nullable(),
         transaction_id: z.string().nullable(),
         failure_code: z.string().nullable(),
-        failure_diagnostic: subtitleFailureDiagnosticSchema
+        failure_diagnostic: anySubtitleFailureDiagnosticSchema
           .nullable()
           .default(null),
         successor_status: z
-          .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
+          .enum(["queued", "retry_wait", "leased", "dispatched", "completed", "blocked"])
           .nullable()
           .default(null),
       })
@@ -516,6 +612,10 @@ export const applyResultSchema = z
   })
   .strict();
 
+export const forwardExecutionResultSchema = forwardExecutionSchema.extend({
+  run_id: z.string(),
+});
+
 export const subtitleAcquisitionResultSchema = z
   .object({
     run_id: z.string(),
@@ -525,11 +625,11 @@ export const subtitleAcquisitionResultSchema = z
     approval_id: z.string().nullable(),
     transaction_id: z.string().nullable(),
     failure_code: z.string().nullable(),
-    failure_diagnostic: subtitleFailureDiagnosticSchema
+    failure_diagnostic: anySubtitleFailureDiagnosticSchema
       .nullable()
       .default(null),
     successor_status: z
-      .enum(["queued", "retry_wait", "leased", "completed", "blocked"])
+      .enum(["queued", "retry_wait", "leased", "dispatched", "completed", "blocked"])
       .nullable()
       .default(null),
   })

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -7,6 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from reeloom.kernel.subtitle_publication import (
+    SUBTITLE_PUBLICATION_MARKER,
+    SubtitlePublicationManifest,
+    SubtitlePublicationMember,
+)
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.config import (
     ApplyPolicy,
@@ -103,6 +109,19 @@ def test_settle_and_fresh_successor_registration_are_transactional(
         member_name = "subtitle.ass"
         content = b"subtitle"
         (destination / member_name).write_bytes(content)
+        (destination / SUBTITLE_PUBLICATION_MARKER).write_bytes(
+            SubtitlePublicationManifest.create(
+                plan_hash="sha256:" + "a" * 64,
+                publication_directory=destination_name,
+                members=(
+                    SubtitlePublicationMember(
+                        name=member_name,
+                        size_bytes=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(),
+                    ),
+                ),
+            ).canonical_bytes()
+        )
         destination_stat = destination.stat()
         with control.pool.connection() as connection:
             with connection.transaction():

@@ -19,6 +19,7 @@ from reeloom.kernel.movie import MovieMappingDraft
 from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.naming import MovieIdentity
 from reeloom.kernel.tmdb import TmdbCandidateRef, TmdbWorkType
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     EmbeddedChineseStatus,
     EmbeddedSubtitleInspection,
@@ -82,6 +83,31 @@ def test_run_state_projection_round_trips_without_event_history() -> None:
         load_plan=lambda _plan_hash: pytest.fail(
             "projection has no plan reference"
         ),
+    )
+
+    assert recovered == state
+
+
+def test_run_state_projection_round_trips_semantic_roots() -> None:
+    state = reduce_event(
+        None,
+        RunStarted("run-v2", TmdbWorkType.ANIME),
+    )
+    state = reduce_event(
+        state,
+        CandidateSnapshotCreated(
+            "candidate-snapshot-v2:" + "a" * 64,
+            1,
+            (CandidateId(CandidateKind.VIDEO, 1),),
+            SemanticRootBinding(PurePosixPath("/source")),
+            SemanticRootBinding(PurePosixPath("/output")),
+        ),
+    )
+
+    recovered = decode_state(
+        encode_state(state),
+        load_plan=lambda _plan_hash: pytest.fail(),
+        schema_version=STATE_PROJECTION_SCHEMA,
     )
 
     assert recovered == state

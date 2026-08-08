@@ -104,6 +104,56 @@ class RunSettlement(_StrictModel):
     settled_at: str
 
 
+class ForwardExecutionCounts(_StrictModel):
+    satisfied: int = Field(ge=0)
+    stale: int = Field(ge=0)
+    collision: int = Field(ge=0)
+    unsafe: int = Field(ge=0)
+    unavailable: int = Field(ge=0)
+
+
+class ForwardExecutionItemView(_StrictModel):
+    source_id: str
+    outcome: Literal[
+        "satisfied", "stale", "collision", "unsafe", "unavailable"
+    ]
+    diagnostic: Literal[
+        "native",
+        "checked_rename",
+        "collision",
+        "cross_filesystem",
+        "permission_denied",
+        "transient_io",
+        "unsafe",
+        "unknown",
+    ] | None
+
+
+class ForwardExecutionView(_StrictModel):
+    operation_id: str
+    plan_hash: str
+    status: Literal[
+        "authorized",
+        "running",
+        "completed",
+        "partial",
+        "stale",
+        "collision",
+        "unsafe",
+        "unavailable",
+        "superseded",
+    ]
+    attempt_count: int = Field(ge=0, le=100)
+    counts: ForwardExecutionCounts
+    items: list[ForwardExecutionItemView] = Field(max_length=10_000)
+    warnings: list[str] = Field(max_length=1_000)
+    fresh_scan_required: bool
+    rescan_state: Literal[
+        "queued", "leased", "retry_wait", "completed", "blocked"
+    ] | None
+    successor_run_id: str | None
+
+
 class FolderDispositionView(_StrictModel):
     plan_hash: str
     action: Literal["archive", "fail", "remove_empty"]
@@ -168,6 +218,7 @@ class RunResponse(_StrictModel):
             "question",
             "revision",
             "approve_apply",
+            "execute",
             "reapply",
             "recover",
             "settle_folder",
@@ -182,6 +233,7 @@ class RunResponse(_StrictModel):
         ]
     ]
     settlement: RunSettlement | None
+    execution: ForwardExecutionView | None = None
     source_folder: str | None = None
     folder_disposition: FolderDispositionView | None = None
     archive_report: ArchiveReport | None
@@ -217,6 +269,30 @@ class SubtitleFailureDiagnostic(_StrictModel):
     member_index: int | None = Field(default=None, ge=0, le=255)
 
 
+class SubtitlePublicationFailureDiagnostic(_StrictModel):
+    schema_version: Literal[2]
+    stage: Literal["publication"]
+    reason: Literal[
+        "invalid_binding",
+        "no_follow_unavailable",
+        "directory_unreadable",
+        "unexpected_entry",
+        "casefold_collision",
+        "invalid_complete_marker",
+        "member_mismatch",
+        "content_unavailable",
+        "content_mismatch",
+        "member_post_write_mismatch",
+        "marker_post_write_mismatch",
+        "exclusive_name_exists",
+        "unsafe_path",
+        "filesystem_unavailable",
+        "collision",
+        "unsafe",
+        "unavailable",
+    ]
+
+
 class SubtitleAcquisitionView(_StrictModel):
     plan_hash: str
     policy: Literal["plan_only", "manual", "automatic"]
@@ -224,9 +300,11 @@ class SubtitleAcquisitionView(_StrictModel):
     approval_id: str | None
     transaction_id: str | None
     failure_code: str | None
-    failure_diagnostic: SubtitleFailureDiagnostic | None = None
+    failure_diagnostic: (
+        SubtitleFailureDiagnostic | SubtitlePublicationFailureDiagnostic | None
+    ) = None
     successor_status: Literal[
-        "queued", "retry_wait", "leased", "completed", "blocked"
+        "queued", "retry_wait", "leased", "dispatched", "completed", "blocked"
     ] | None = None
 
 
@@ -591,6 +669,14 @@ class ReapplyResponse(_StrictModel):
 class ApproveApplyRequest(_StrictModel):
     automatic: bool
     folder_disposition_plan_hash: str | None = None
+
+
+class ForwardExecuteRequest(_StrictModel):
+    pass
+
+
+class ForwardExecuteResponse(ForwardExecutionView):
+    run_id: str
 
 
 class SubtitleAcquisitionApprovalRequest(_StrictModel):

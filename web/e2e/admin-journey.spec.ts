@@ -262,7 +262,7 @@ test("exact approval sends manual intent and waits for durable settlement", asyn
   expect(approvalHeaders["idempotency-key"]).toMatch(/^ui-v1-/);
 });
 
-test("Movie review shows exact paths and completed reapply converges to no-op", async ({
+test("Movie review shows exact paths and terminal forward execution", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -301,28 +301,9 @@ test("Movie review shows exact paths and completed reapply converges to no-op", 
     page.getByText("旅程电影 (2025) {tmdb-700}/旅程电影 (2025).mkv"),
   ).toBeVisible();
   await expect(page.getByText("zz-extra.mkv")).toBeVisible();
-  await expect(page.getByText("执行状态：已完成")).toBeVisible();
-  await page.getByRole("button", { name: "重新整理已完成布局" }).click();
-  await page.getByLabel("重新整理已完成布局").fill("复验当前布局");
-  const historyRefreshed = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      response.url().includes("/interactions?"),
-  );
-  await page.getByRole("button", { name: "提交" }).click();
-
+  await expect(page.getByText("前向执行：全部完成")).toBeVisible();
   await expect(
-    page.getByText(
-      "布局没有变化；服务端保留了原有计划，未生成空的修订版本。",
-    ),
-  ).toBeVisible();
-  await historyRefreshed;
-  const historyHeading = page.getByRole("heading", { name: "交互历史" });
-  await expect(historyHeading).toBeVisible();
-  const newestInteraction = page.locator(".interaction-history article").first();
-  await expect(newestInteraction).toContainText("复验当前布局");
-  await expect(newestInteraction.locator(".assistant-message")).toHaveCount(1);
-  await expect(page.locator(".run-main > section").first()).toHaveClass(
-    /interaction-history/,
-  );
+    page.getByRole("button", { name: "重新整理已完成布局" }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "删除记录" })).toBeVisible();
 });

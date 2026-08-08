@@ -41,6 +41,7 @@ import {
   applyResultSchema,
   attentionControlResultSchema,
   folderDispositionResultSchema,
+  forwardExecutionResultSchema,
   interactionsSchema,
   interactionResultSchema,
   lineageSchema,
@@ -403,6 +404,55 @@ export function RunPage({ runId }: { runId: string }) {
     },
   });
 
+  const forwardExecution = useMutation({
+    mutationFn: async ({ planHash }: { planHash: string }) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}/execute`,
+        forwardExecutionResultSchema,
+        {
+          method: "POST",
+          headers: { "If-Match": planHash },
+          body: {},
+        },
+      ),
+    onSuccess: async () => {
+      closeApprove();
+      setActionNotice(
+        "执行已按当前文件状态结算；已完成项不会因其他项失败而回滚。",
+      );
+      await invalidateRun();
+    },
+    onError: async (error) => {
+      closeApprove();
+      if (error instanceof ApiError && error.code === "network_uncertain") {
+        setActionNotice(
+          "请求结果不确定；服务端会用同一 operation 自动对账，页面正在重新读取。",
+        );
+      }
+      await invalidateRun();
+    },
+  });
+
+  const forwardRescan = useMutation({
+    mutationFn: async ({ planHash }: { planHash: string }) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}/rescan`,
+        forwardExecutionResultSchema,
+        {
+          method: "POST",
+          headers: { "If-Match": planHash },
+          body: {},
+        },
+      ),
+    onSuccess: async () => {
+      setActionNotice("已提交当前来源目录的重新扫描请求。");
+      await invalidateRun();
+    },
+    onError: async () => {
+      await invalidateRun();
+    },
+  });
+
   const folderDisposition = useMutation({
     mutationFn: async ({
       planHash,
@@ -539,11 +589,19 @@ export function RunPage({ runId }: { runId: string }) {
       run.data.plan_hash,
       currentPreview?.plan_hash ?? null,
     );
+  const canExecuteForward =
+    available.has("execute") &&
+    canApproveCurrentPlan(
+      run.data.plan_hash,
+      currentPreview?.plan_hash ?? null,
+    );
   const blocked =
     resyncing ||
     uncertainAttempt !== null ||
     action.isPending ||
     apply.isPending ||
+    forwardExecution.isPending ||
+    forwardRescan.isPending ||
     recover.isPending ||
     subtitleAcquisition.isPending ||
     folderDisposition.isPending ||
@@ -629,6 +687,53 @@ export function RunPage({ runId }: { runId: string }) {
               {errorMessage(run.data.settlement.failure_code)}{" "}
               <code>{run.data.settlement.failure_code}</code>
             </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      {run.data.execution ? (
+        <section className="settlement" aria-live="polite">
+          <div>
+            <h2>前向执行：{forwardStatusLabel(run.data.execution.status)}</h2>
+          </div>
+          <dl>
+            <div>
+              <dt>已满足</dt>
+              <dd>{run.data.execution.counts.satisfied}</dd>
+            </div>
+            <div>
+              <dt>碰撞</dt>
+              <dd>{run.data.execution.counts.collision}</dd>
+            </div>
+            <div>
+              <dt>过期</dt>
+              <dd>{run.data.execution.counts.stale}</dd>
+            </div>
+            <div>
+              <dt>尝试次数</dt>
+              <dd>{run.data.execution.attempt_count}</dd>
+            </div>
+          </dl>
+          {run.data.execution.fresh_scan_required ? (
+            <p className="notice" role="status">
+              已保留成功项；重新扫描状态：
+              {run.data.execution.rescan_state ?? "等待投递"}。
+            </p>
+          ) : null}
+          {run.data.execution.successor_run_id ? (
+            <p>
+              后继运行：
+              <HashLink to={`/runs/${encodeURIComponent(run.data.execution.successor_run_id)}`}>
+                {compactRunId(run.data.execution.successor_run_id)}
+              </HashLink>
+            </p>
+          ) : null}
+          {run.data.execution.warnings.length ? (
+            <div className="notice" role="status">
+              {run.data.execution.warnings.map((warning) => (
+                <code key={warning}>{warning}</code>
+              ))}
+            </div>
           ) : null}
         </section>
       ) : null}
@@ -968,6 +1073,16 @@ export function RunPage({ runId }: { runId: string }) {
                     审批并执行此计划
                   </button>
                 ) : null}
+                {canExecuteForward && currentPreview ? (
+                  <button
+                    ref={canApprove ? undefined : approveButtonRef}
+                    className="primary wide"
+                    disabled={blocked}
+                    onClick={() => setApproveOpen(true)}
+                  >
+                    审批并执行此计划
+                  </button>
+                ) : null}
                 {available.has("approve_subtitle_acquisition") &&
                 run.data.subtitle_acquisition ? (
                   <button
@@ -1019,6 +1134,21 @@ export function RunPage({ runId }: { runId: string }) {
                     恢复文件夹事务
                   </button>
                 ) : null}
+                {available.has("rescan") && run.data.plan_hash ? (
+                  <button
+                    className="secondary wide"
+                    disabled={blocked || forwardRescan.isPending}
+                    onClick={() =>
+                      forwardRescan.mutate({
+                        planHash: run.data.plan_hash!,
+                      })
+                    }
+                  >
+                    {forwardRescan.isPending
+                      ? "正在提交重新扫描…"
+                      : "重新扫描当前目录"}
+                  </button>
+                ) : null}
                 {available.has("delete_run") ? (
                   <div className="danger-zone">
                     <p className="danger-zone-note">
@@ -1042,6 +1172,12 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {apply.error instanceof ApiError ? (
               <PageError code={apply.error.code} />
+            ) : null}
+            {forwardExecution.error instanceof ApiError ? (
+              <PageError code={forwardExecution.error.code} />
+            ) : null}
+            {forwardRescan.error instanceof ApiError ? (
+              <PageError code={forwardRescan.error.code} />
             ) : null}
             {recover.error instanceof ApiError ? (
               <PageError
@@ -1082,20 +1218,29 @@ export function RunPage({ runId }: { runId: string }) {
         </aside>
       </div>
 
-      {approveOpen && currentPreview && canApprove ? (
+      {approveOpen && currentPreview && (canApprove || canExecuteForward) ? (
         <ApproveDialog
           preview={currentPreview}
-          folderDisposition={run.data.folder_disposition}
-          pending={apply.isPending || blocked}
-          onCancel={closeApprove}
-          onConfirm={() =>
-            apply.mutate({
-              planHash: currentPreview.plan_hash,
-              folderDispositionPlanHash:
-                run.data.folder_disposition?.plan_hash ?? null,
-              key: idempotencyKey(),
-            })
+          folderDisposition={
+            canExecuteForward ? null : run.data.folder_disposition
           }
+          forwardOnly={canExecuteForward}
+          pending={apply.isPending || forwardExecution.isPending || blocked}
+          onCancel={closeApprove}
+          onConfirm={() => {
+            if (canExecuteForward) {
+              forwardExecution.mutate({
+                planHash: currentPreview.plan_hash,
+              });
+            } else {
+              apply.mutate({
+                planHash: currentPreview.plan_hash,
+                folderDispositionPlanHash:
+                  run.data.folder_disposition?.plan_hash ?? null,
+                key: idempotencyKey(),
+              });
+            }
+          }}
         />
       ) : null}
       {folderConfirmOpen && run.data.folder_disposition ? (
@@ -1159,6 +1304,20 @@ function subtitleFailureDiagnostic(diagnostic: {
       : `member #${diagnostic.member_index + 1}`,
   ].filter((value): value is string => value !== null);
   return `${stage}：${reason}${details.length ? `（${details.join("，")}）` : ""}`;
+}
+
+function forwardStatusLabel(status: NonNullable<Run["execution"]>["status"]) {
+  return {
+    authorized: "等待执行",
+    running: "正在收敛",
+    completed: "全部完成",
+    partial: "部分完成",
+    stale: "来源已变化",
+    collision: "目标碰撞",
+    unsafe: "安全拒绝",
+    unavailable: "当前不可用",
+    superseded: "已由新扫描替代",
+  }[status];
 }
 
 export function canApproveCurrentPlan(
@@ -1496,12 +1655,14 @@ function InteractionForm({
 function ApproveDialog({
   preview,
   folderDisposition,
+  forwardOnly,
   pending,
   onCancel,
   onConfirm,
 }: {
   preview: Preview;
   folderDisposition: Run["folder_disposition"];
+  forwardOnly: boolean;
   pending: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -1559,8 +1720,9 @@ function ApproveDialog({
         <div className="heading-title">
           <h2 id="approve-title">确认文件移动</h2>
           <Hint label="执行前的服务端校验" align="end">
-            服务端会再次校验计划哈希、审批记录、源文件身份、目标冲突与目标不存在，
-            任一不符都会中止。
+            {forwardOnly
+              ? "服务端按当前路径、文件类型与大小逐项收敛；不会依据历史 inode 或时间戳恢复。"
+              : "服务端会再次校验计划哈希、审批记录、源文件身份、目标冲突与目标不存在，任一不符都会中止。"}
           </Hint>
         </div>
         <p>即将审批 v{preview.version}（{preview.plan_kind}）。</p>
@@ -1600,7 +1762,9 @@ function ApproveDialog({
             autoFocus
           />
           <span>
-            我已审查计划哈希与路径预览，并理解文件移动可能需要恢复操作。
+            {forwardOnly
+              ? "我已审查计划哈希与路径预览，并理解部分成功会保留且不会自动回滚。"
+              : "我已审查计划哈希与路径预览，并理解文件移动可能需要恢复操作。"}
           </span>
         </label>
         <div className="button-row end">

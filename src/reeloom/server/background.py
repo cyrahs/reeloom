@@ -21,10 +21,19 @@ from reeloom.server.agent_worker import (
     InitialAgentWorker,
 )
 from reeloom.server.apply_service import ApplyCoordinator
-from reeloom.server.config import ApplyPolicy, ConfigRevision
+from reeloom.server.config import (
+    ApplyPolicy,
+    ConfigRevision,
+    ServerWorkType,
+)
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
+from reeloom.server.forward_execution_service import (
+    ForwardExecutionCoordinator,
+)
+from reeloom.server.forward_rescan import ForwardRescanWorker
+from reeloom.server.folder_housekeeping_v2 import FolderHousekeepingWorker
 from reeloom.server.notification_delivery import (
     ConfiguredNotificationDelivery,
 )
@@ -36,10 +45,23 @@ from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
 from reeloom.server.subtitle_successor import SubtitleSuccessorWorker
+from reeloom.server.subtitle_scan import SubtitleScanWorker
 
 _LOG = logging.getLogger(__name__)
 _MAX_FOLDER_FAILURE_RETRIES = 3
 _SUBTITLE_RECONCILE_INTERVAL_SECONDS = 30.0
+
+
+def _semantic_watch_v2_enabled(
+    config: ConfigRevision,
+    work_type: ServerWorkType,
+) -> bool:
+    del config
+    return work_type in {
+        ServerWorkType.ANIME,
+        ServerWorkType.TV,
+        ServerWorkType.MOVIE,
+    }
 
 
 @dataclass(slots=True)
@@ -55,6 +77,11 @@ class BackgroundServices:
     notifications: ConfiguredNotificationDelivery | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     subtitle_successors: SubtitleSuccessorWorker | None = None
+    subtitle_scans: SubtitleScanWorker | None = None
+    forward_execution: ForwardExecutionCoordinator | None = None
+    forward_rescans: ForwardRescanWorker | None = None
+    folder_housekeeping_v2: FolderHousekeepingWorker | None = None
+    legacy_effects_enabled: bool = True
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -134,6 +161,25 @@ class BackgroundServices:
                         )
                         is not None
                     ) or progressed
+                if self.subtitle_scans is not None:
+                    progressed = self.subtitle_scans.process_one(
+                        worker_id=self.boot_id,
+                        now=datetime.now(UTC),
+                    ) or progressed
+                if self.forward_execution is not None:
+                    progressed = (
+                        self.forward_execution.reconcile_one() is not None
+                    ) or progressed
+                if self.forward_rescans is not None:
+                    progressed = self.forward_rescans.process_one(
+                        worker_id=self.boot_id,
+                        now=datetime.now(UTC),
+                    ) or progressed
+                if self.folder_housekeeping_v2 is not None:
+                    progressed = self.folder_housekeeping_v2.process_one(
+                        worker_id=self.boot_id,
+                        now=datetime.now(UTC),
+                    ) or progressed
             except Exception as error:
                 _LOG.error(
                     "background_cycle_failed error_type=%s",
@@ -166,6 +212,9 @@ class BackgroundServices:
                 fence=config.revision,
                 work_type=watch.work_type,
                 settle_interval_seconds=watch.settle_interval_seconds,
+                semantic_v2=_semantic_watch_v2_enabled(
+                    config, watch.work_type
+                ),
             )
             self._next_poll.setdefault(watch.watch_id, 0.0)
         self._configured_revision = config.revision
@@ -292,16 +341,36 @@ class BackgroundServices:
                     job_already_settled = request.status == "published"
                 succeeded = True
                 return
+            config = self.configs.get(
+                context.registration.config_revision
+            )
+            forward_v2 = (
+                self.forward_execution is not None
+                and self.forward_execution.is_v2_plan(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                )
+            )
+            if forward_v2:
+                if config.apply_policy is ApplyPolicy.AUTOMATIC:
+                    self.forward_execution.execute_automatic(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                    )
+                succeeded = True
+                return
+            if not self.legacy_effects_enabled:
+                raise RuntimeError("legacy_effect_superseded")
             disposition = (
                 None
-                if self.folder_dispositions is None
+                if (
+                    self.folder_dispositions is None
+                    or config.apply_policy is ApplyPolicy.PLAN_ONLY
+                )
                 else self.folder_dispositions.prepare_success(
                     run_id=run_id,
                     media_plan_hash=plan_hash,
                 )
-            )
-            config = self.configs.get(
-                context.registration.config_revision
             )
             if config.apply_policy is ApplyPolicy.AUTOMATIC:
                 result = self.apply.approve_and_apply(
@@ -531,6 +600,14 @@ class BackgroundServices:
     def _prepare_terminal_failure(
         self, *, run_id: str, reason_code: str
     ) -> None:
+        if (
+            self.folder_housekeeping_v2 is not None
+            and self.folder_housekeeping_v2.enqueue_failure(
+                run_id=run_id,
+                reason_code=reason_code,
+            )
+        ):
+            return
         if self.folder_dispositions is None:
             raise RuntimeError("folder disposition service unavailable")
         plan = self.folder_dispositions.prepare_failure(

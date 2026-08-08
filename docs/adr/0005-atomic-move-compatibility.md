@@ -1,5 +1,10 @@
 # ADR 0005: Atomic move compatibility
 
+> M14 update (2026-08-07): accepted ADR 0008 supersedes this ADR for v2
+> execution. The exact-identity rollback/recovery rules below remain descriptive
+> only as read-only v1 history. M14.4 disables the production v1 write path;
+> physical code removal follows the deployment stability window.
+
 ## Status
 
 Accepted.

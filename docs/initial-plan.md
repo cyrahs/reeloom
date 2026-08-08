@@ -1,10 +1,11 @@
 # Reeloom 初步实施计划
 
-状态：Draft v0.8
+状态：Draft v0.9
 
-日期：2026-08-01
+日期：2026-08-07
 
-当前进度：M0-M13 已完成。
+当前进度：M0-M13、M14.0-M14.4 已完成。v1 effect 历史保留只读，生产写路径
+已关闭；其物理代码删除须等部署后的稳定观察窗口结束。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -688,6 +689,78 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 搜索 POST 的精确同源结果跳转；所有 pytest 保持离线。robots.txt 不属于运行时配置或控制面。边界见
 [M13 计划](m13-plan.md) 与
 [ADR 0007](adr/0007-m13-subtitle-acquisition-boundary.md)。
+
+### M14：基于当前状态的前向收敛执行器
+
+当前状态：M14.0-M14.4 已完成。除 v2 语义身份、plan、operation ledger、
+forward executor 与 server-owned execute/reconcile control plane 外，现已增加 canonical
+字幕 publication manifest、直接写 plan-owned 最终目录的 forward-only marker publisher，
+并让 watcher 只接纳 marker 与全部 member 当前 hash 一致的发布目录。现有 M13 publisher
+在迁移期间也会补写相同 marker，避免生成 watcher 不可见的已完成目录。ACG.RIP production
+现已切换到内容寻址缓存、journal-free marker executor 和普通 scan request；manual/automatic
+media manual/automatic production 现已切换到 v2；folder archive/fail 是独立的
+best-effort housekeeping，不再决定 media operation 终态。
+
+固定决策：
+
+- 视频持久身份只使用相对路径、regular-file 和 size；字幕、下载归档及解压 member
+  继续使用完整 SHA-256；`device/inode/mtime/ctime` 不进入 v2 snapshot、plan hash、
+  freshness 或恢复。
+- root 只绑定 config revision、watch ID 和 no-follow 绝对路径。当前路径状态是执行与
+  reconcile 的唯一事实。
+- 执行 forward-only；独立安全项继续，部分成功不 rollback。原生 no-replace 不可用时，
+  在全局 effect mutex 内做 checked rename，并接受与外部 writer 之间的极小竞态。
+- approval 只授权 operation 首次启动；后台重试收敛同一 operation。v2 不再向用户暴露
+  approval ID 或定向 recovery。
+- 字幕改为 plan-owned 目录逐 member 排他写入并以 complete marker 发布；folder
+  archive/fail 降为 non-blocking best-effort housekeeping。
+
+后续增量：
+
+- M14.1a（完成）：watcher 双 identity、完整字幕 hash、单次 namespace scan 与离线
+  scheduler semantic generation contract。
+- M14.1b（完成）：PostgreSQL discovery、runtime/store codec 与 episode production
+  plan-only 切换到语义 snapshot/plan v2；v1 manual/automatic、Movie 与 M13 写路径保持
+  隔离。
+- M14.2：统一 operation ledger/lease、forward executor、自动 rescan 和 v2 API/UI；先
+  使用 semantic fake filesystem 离线验收。
+  - M14.2a（完成）：增加单一 PostgreSQL `execution_operations_v2` ledger、严格 lease
+    CAS 与 approval/operation 互斥消费；尚未连接文件系统 effect、API 或 UI。
+  - M14.2b（完成）：实现 current-state filesystem adapter、forward executor、固定有界
+    重观察与 fresh-scan intent；覆盖 checked rename、延迟可见、rename 报错但已完成、
+    stat identity 不稳定和 fsync 不支持。durable rescan 投递随 M14.2c coordinator 接入。
+  - M14.2c（完成）：接入 server-owned execute/reconcile coordinator、原子终态结果与
+    fresh-scan outbox、后台 lease worker、v2 Run read model、strict `/execute` API 和
+    Web UI。浏览器不提交 automatic 或 approval ID，v2 UI 不显示定向 recovery；
+    manual/automatic production 切换仍等待 M14.3 housekeeping/marker 发布完成。
+- M14.3：字幕 marker 发布、普通 durable scan request 和非阻塞 folder housekeeping；
+  移除三套面向用户的 recovery 入口。
+  - M14.3a（完成）：增加 strict canonical publication manifest、逐 member `O_EXCL |
+    O_NOFOLLOW` 的 forward-only marker publisher、完整 marker/member watcher 校验；fsync
+    失败只记 warning，partial/corrupt publication 不进入 snapshot。v1 publisher 过渡性补写
+    同一 marker，production executor 切换留给 M14.3b。
+  - M14.3b（完成）：首次 planning 后把验证卷保存到媒体根外的 SHA-256 cache；执行优先
+    复用 cache，确实缺失才重新获取。production 已切换到 current-state marker executor，
+    新 settlement 只写语义 publication identity，并经 durable 普通 scan request 回到 watcher；
+    新任务不再创建 subtitle filesystem journal 或 subtitle-specific successor。旧 outbox 仅为
+    M14.4 迁移前已存在记录保留只读/排空能力。
+  - M14.3c（完成）：接入单一进程 effect mutex 下的 checked directory rename 与有界
+    当前状态重观察；archive/fail 只写独立 housekeeping warning，永不回滚或改变 media
+    operation 终态。terminal run 持久记录 handled semantic inventory；残留目录相同则不
+    重复建 run，inventory 改变才经过普通稳定窗口生成新 generation。episode manual、
+    automatic 与启用 ACG.RIP 的 production 均已切换到 v2。
+- M14.4（完成）：Movie 也切换到 semantic snapshot、`MovieRenamePlan v2` 与统一
+  forward executor。迁移 `0037` 将所有仍活跃的 v1 generation 及未结算 media、folder、
+  subtitle effect 标为 `superseded_v1`，只清除协调锁并把原 observation 放回普通稳定
+  扫描；文件、claim、settlement 与 journal 历史均不修改。生产 API/background 已关闭
+  v1 effect 写入口，Run API 不再暴露 legacy recovery ID；终态 v2 operation 可用同一
+  domain action 请求 durable rescan，也始终可删除。新增显式
+  `scripts/m14_filesystem_smoke.py --live-filesystem <空的绝对目录>`，只在用户指定的
+  throwaway 目录验证真实 rename、重观察与 fsync 诊断并保留现场。legacy executor 代码
+  仅作为只读历史兼容保留，等部署稳定观察窗口结束后物理删除。
+
+完整决策、已接受的完整性取舍与 M14.0 副作用边界见
+[ADR 0008](adr/0008-m14-forward-convergence.md)。
 
 ## 9. 第一条端到端验收测试
 

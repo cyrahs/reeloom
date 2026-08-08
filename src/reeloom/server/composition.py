@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from fastapi import FastAPI
 
 from reeloom.adapters.journal import FilesystemJournalStore
+from reeloom.adapters.forward_filesystem import PosixForwardFilesystem
 from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.adapters.telegram import TelegramHttpAdapter
@@ -24,16 +25,17 @@ from reeloom.adapters.approval import FilesystemApprovalStore
 from reeloom.adapters.subtitle_archive import (
     FilesystemSubtitleArchiveInspector,
 )
-from reeloom.adapters.subtitle_journal import (
-    FilesystemSubtitleAcquisitionJournalStore,
+from reeloom.adapters.subtitle_archive_cache import (
+    FilesystemSubtitleArchiveCache,
 )
 from reeloom.adapters.subtitle_plan_store import (
     FilesystemSubtitleAcquisitionPlanStore,
 )
 from reeloom.executor.apply import FilesystemExecutor
+from reeloom.executor.forward import ForwardExecutor
 from reeloom.executor.folder_disposition import FolderDispositionExecutor
-from reeloom.executor.subtitle_acquisition import (
-    SubtitleAcquisitionExecutor,
+from reeloom.executor.subtitle_marker_acquisition import (
+    SubtitleMarkerAcquisitionExecutor,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.server.api import ApiDependencies, create_api
@@ -58,6 +60,10 @@ from reeloom.server.subtitle_successor import (
 from reeloom.server.subtitle_successor_repository import (
     PostgresSubtitleSuccessorOutbox,
 )
+from reeloom.server.subtitle_publication_repository import (
+    PostgresSubtitlePublicationRepository,
+)
+from reeloom.server.subtitle_scan import SubtitleScanWorker
 from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
 from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.archive_directory import run_directory_io
@@ -72,6 +78,18 @@ from reeloom.server.folder_disposition import (
     FolderDispositionPlanner,
     PostgresFolderDispositionRepository,
 )
+from reeloom.server.forward_execution_service import (
+    ForwardExecutionCoordinator,
+)
+from reeloom.server.forward_operation_repository import (
+    PostgresForwardOperationRepository,
+)
+from reeloom.server.forward_rescan import ForwardRescanWorker
+from reeloom.server.folder_housekeeping_v2 import (
+    FolderHousekeepingWorker,
+    PostgresFolderHousekeepingRepository,
+)
+from reeloom.executor.folder_housekeeping_v2 import FolderHousekeepingExecutor
 from reeloom.server.database import PostgresControlPlane
 from reeloom.server.directory_browser import PodDirectoryBrowser
 from reeloom.server.instance_lock import ProcessLock
@@ -168,7 +186,7 @@ class _AcgripPlanningLease:
 @dataclass(frozen=True, slots=True)
 class _AcgripExecutorLease:
     fetcher: AcgripSubtitleArchiveFetcher
-    executor: SubtitleAcquisitionExecutor
+    executor: SubtitleMarkerAcquisitionExecutor
 
     async def close(self) -> None:
         await self.fetcher.aclose()
@@ -386,16 +404,22 @@ def build_application(
         subtitle_approval_root = _state_subdirectory(
             settings.state_root, "subtitle-approvals"
         )
-        subtitle_journal_root = _state_subdirectory(
-            settings.state_root, "subtitle-journals"
-        )
         subtitle_workspace = _state_subdirectory(
             settings.state_root, "subtitle-workspace"
+        )
+        subtitle_archive_cache_root = _state_subdirectory(
+            settings.state_root, "subtitle-archive-cache"
         )
         secrets = FilesystemSecretStore(secret_root)
         plans = FilesystemPlanStore(plan_root)
         journals = FilesystemJournalStore(journal_root)
         approvals = PostgresApprovalStore(database.pool)
+        forward_operations = PostgresForwardOperationRepository(database.pool)
+        folder_housekeeping_v2 = FolderHousekeepingWorker(
+            repository=PostgresFolderHousekeepingRepository(database.pool),
+            configs=PostgresConfigRepository(database.pool),
+            executor=FolderHousekeepingExecutor(),
+        )
         notification_outbox = PostgresNotificationOutbox(database.pool)
         notification_projector = PostgresNotificationProjector(
             plans=plans,
@@ -415,6 +439,14 @@ def build_application(
             approvals=approvals,
             executor=executor,
             completed_layouts=layouts,
+        )
+        forward_execution = ForwardExecutionCoordinator(
+            configs=PostgresConfigRepository(database.pool),
+            plans=plans,
+            approvals=approvals,
+            operations=forward_operations,
+            executor=ForwardExecutor(PosixForwardFilesystem()),
+            worker_id=boot_id,
         )
         folder_repository = PostgresFolderDispositionRepository(
             database.pool,
@@ -461,11 +493,14 @@ def build_application(
         subtitle_approvals = FilesystemApprovalStore(
             subtitle_approval_root
         )
-        subtitle_journals = FilesystemSubtitleAcquisitionJournalStore(
-            subtitle_journal_root
-        )
         subtitle_inspector = FilesystemSubtitleArchiveInspector()
+        subtitle_archive_cache = FilesystemSubtitleArchiveCache(
+            subtitle_archive_cache_root
+        )
         subtitle_successor_outbox = PostgresSubtitleSuccessorOutbox(
+            database.pool
+        )
+        subtitle_publications = PostgresSubtitlePublicationRepository(
             database.pool
         )
 
@@ -477,6 +512,7 @@ def build_application(
                     fetcher,
                     subtitle_inspector,
                     subtitle_plans,
+                    subtitle_archive_cache,
                 ),
             )
 
@@ -484,10 +520,10 @@ def build_application(
             fetcher = AcgripSubtitleArchiveFetcher(subtitle_workspace)
             return _AcgripExecutorLease(
                 fetcher,
-                SubtitleAcquisitionExecutor(
+                SubtitleMarkerAcquisitionExecutor(
                     subtitle_plans,
                     subtitle_approvals,
-                    subtitle_journals,
+                    subtitle_archive_cache,
                     fetcher,
                     subtitle_inspector,
                 ),
@@ -499,6 +535,7 @@ def build_application(
             approvals=subtitle_approvals,
             executor_factory=subtitle_executor_factory,
             successors=subtitle_successor_outbox,
+            publications=subtitle_publications,
         )
         subtitle_acquisitions.reconcile_approved()
         subtitle_successor_worker = SubtitleSuccessorWorker(
@@ -720,7 +757,7 @@ def build_application(
             ),
             subtitle_planning_factory=subtitle_planning_factory,
             subtitle_plan_sink=subtitle_acquisitions.register_plan,
-            subtitle_lineage_gate=subtitle_successor_outbox,
+            subtitle_lineage_gate=subtitle_publications,
         )
         background = BackgroundServices(
             boot_id=boot_id,
@@ -738,6 +775,17 @@ def build_application(
             ),
             subtitle_acquisitions=subtitle_acquisitions,
             subtitle_successors=subtitle_successor_worker,
+            subtitle_scans=SubtitleScanWorker(
+                publications=subtitle_publications,
+                scheduler=scheduler,
+            ),
+            forward_execution=forward_execution,
+            forward_rescans=ForwardRescanWorker(
+                operations=forward_operations,
+                scheduler=scheduler,
+            ),
+            folder_housekeeping_v2=folder_housekeeping_v2,
+            legacy_effects_enabled=False,
         )
 
         def health() -> object:
@@ -802,6 +850,7 @@ def build_application(
                 queries=PostgresQueries(database.pool, plans=plans),
                 interactions=interactions,
                 apply=apply,
+                forward_execution=forward_execution,
                 folder_dispositions=folder_dispositions,
                 subtitle_acquisitions=subtitle_acquisitions,
                 health=health,
@@ -816,6 +865,7 @@ def build_application(
                 run_delete_resolve=run_deletions.get,
                 attention_retry=retry_attention,
                 attention_fail=fail_attention,
+                legacy_effects_enabled=False,
                 sse_max_empty_polls=None,
                 sse_poll_seconds=0.5,
                 sse_heartbeat_seconds=15.0,

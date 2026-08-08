@@ -15,6 +15,7 @@ from agents import (
 )
 from reeloom.adapters.filesystem import (
     FilesystemPlanCompiler,
+    FilesystemPlanCompilerV2,
     FilesystemScanResult,
     FilesystemSubtitleSampleProvider,
 )
@@ -32,7 +33,7 @@ from reeloom.kernel.movie_amendment import (
 )
 from reeloom.kernel.plan_review import PlanReview
 from reeloom.kernel.rename_plan import compile_plan_draft
-from reeloom.kernel.scanner import ScannedFile, build_candidate_snapshot
+from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.runtime.budget import RunBudget
@@ -48,6 +49,7 @@ from reeloom.server.archive_directory import (
 )
 from reeloom.server.archive_report import archive_report_from_state
 from reeloom.server.agent_worker import (
+    InitialAgentWorker,
     ModelLeaseFactory,
     TmdbLease,
     TmdbLeaseFactory,
@@ -253,7 +255,9 @@ class AgentInteractionExecutor:
     ) -> InteractionExecution:
         work_type = self._work_type(job.registration.work_type)
         if request.reservation.kind is InteractionKind.REVISION:
-            scan, output_root = self._initial_scan(job, config)
+            scan, semantic_snapshot, output_root = self._initial_scan(
+                job, config
+            )
             excluded = frozenset()
             layout = None
         else:
@@ -265,10 +269,15 @@ class AgentInteractionExecutor:
                 Path(layout.root.path.as_posix())
             )
             scan = FilesystemScanResult(output_root, snapshot)
+            semantic_snapshot = None
             excluded = frozenset(
                 item.relative_path for item in layout.files
             )
-        source = SnapshotCandidateSource.from_scanned(scan.snapshot)
+        source = (
+            SnapshotCandidateSource.from_semantic(semantic_snapshot)
+            if semantic_snapshot is not None
+            else SnapshotCandidateSource.from_scanned(scan.snapshot)
+        )
         transient = InMemoryEventStore()
         context = create_organizer_context(
             run_id=job.registration.run_id,
@@ -280,7 +289,14 @@ class AgentInteractionExecutor:
                 root=output_root,
                 exclude_paths=excluded,
             ),
-            subtitle_provider=FilesystemSubtitleSampleProvider(scan),
+            subtitle_provider=FilesystemSubtitleSampleProvider(
+                scan,
+                snapshot_id_override=(
+                    semantic_snapshot.snapshot_id
+                    if semantic_snapshot is not None
+                    else None
+                ),
+            ),
             subtitle_acquisition_enabled=False,
             budget=request.reservation.budget,
             event_store=transient,
@@ -337,7 +353,17 @@ class AgentInteractionExecutor:
         plan_hash: str | None
         domain_events = ["mapping_submitted"]
         if request.reservation.kind is InteractionKind.REVISION:
-            compiler = FilesystemPlanCompiler(scan, output_root)
+            compiler = (
+                FilesystemPlanCompilerV2(
+                    scan=scan,
+                    semantic_snapshot=semantic_snapshot,
+                    output_root=output_root,
+                    config_revision=config.revision,
+                    watch_id=job.discovery.watch_id,
+                )
+                if semantic_snapshot is not None
+                else FilesystemPlanCompiler(scan, output_root)
+            )
             plan = (
                 compiler.compile_movie(
                     run_id=job.registration.run_id,
@@ -464,8 +490,11 @@ class AgentInteractionExecutor:
     def _initial_scan(
         job: AgentJobContext,
         config: ConfigRevision,
-    ) -> tuple[FilesystemScanResult, AuthorizedRoot]:
-        persisted = job.discovery.snapshot
+    ) -> tuple[
+        FilesystemScanResult,
+        SemanticCandidateSnapshot | None,
+        AuthorizedRoot,
+    ]:
         watch = next(
             (
                 item
@@ -475,28 +504,16 @@ class AgentInteractionExecutor:
             ),
             None,
         )
-        if persisted is None or watch is None:
+        if job.discovery.snapshot is None or watch is None:
             raise ValueError("exact run scope is unavailable")
-        snapshot = build_candidate_snapshot(
-            ScannedFile(
-                relative_path=item.relative_path,
-                kind=item.kind,
-                size_bytes=item.size_bytes,
-                device=item.device,
-                inode=item.inode,
-                mtime_ns=item.mtime_ns,
-                ctime_ns=item.ctime_ns,
-                sample_digest=item.sample_digest,
-            )
-            for item in persisted.files
+        source_root = AuthorizedRoot.create(watch.root)
+        snapshot, semantic_snapshot = InitialAgentWorker._resolve_snapshots(
+            job,
+            source_root,
         )
-        if snapshot.snapshot_id != persisted.snapshot_id:
-            raise ValueError("discovery snapshot identity mismatch")
         return (
-            FilesystemScanResult(
-                AuthorizedRoot.create(watch.root),
-                snapshot,
-            ),
+            FilesystemScanResult(source_root, snapshot),
+            semantic_snapshot,
             AuthorizedRoot.create(watch.library_root),
         )
 

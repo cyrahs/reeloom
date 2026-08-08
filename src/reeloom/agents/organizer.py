@@ -42,6 +42,7 @@ from reeloom.kernel.candidates import CandidateKind
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.initial_plan import InitialPlan
 from reeloom.kernel.movie_plan import MovieRenamePlan
+from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.plan_review import (
     MAX_REVIEW_BYTES,
     MAX_REVIEW_DETAIL_BYTES,
@@ -49,6 +50,7 @@ from reeloom.kernel.plan_review import (
     MAX_REVIEW_SUMMARY_BYTES,
     PlanReviewReason,
 )
+from reeloom.kernel.forward_execution import RenamePlanV2
 from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.kernel.tmdb import TmdbLanguage, TmdbWorkType
 from reeloom.ports.subtitles import SubtitleSampleProvider
@@ -1777,7 +1779,10 @@ async def _compile_plan_async(
             continue
         if isinstance(result, Exception):
             raise result
-        if not isinstance(result, (RenamePlan, MovieRenamePlan)):
+        if not isinstance(
+            result,
+            (RenamePlan, MovieRenamePlan, RenamePlanV2, MovieRenamePlanV2),
+        ):
             raise TypeError("PlanCompiler returned an invalid plan")
         return result
 
