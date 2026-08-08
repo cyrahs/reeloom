@@ -1443,6 +1443,7 @@ def create_api(
         if (
             kind is InteractionKind.REVISION
             and result.plan_hash is not None
+            and dependencies.legacy_effects_enabled
             and dependencies.folder_dispositions is not None
         ):
             await _shield_thread(

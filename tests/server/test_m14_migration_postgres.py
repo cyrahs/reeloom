@@ -6,6 +6,7 @@ import uuid
 import psycopg
 import pytest
 from psycopg import sql
+from psycopg.errors import CheckViolation
 
 from reeloom.server.migrations import MIGRATIONS
 
@@ -145,6 +146,65 @@ def test_m14_supersedes_unsettled_v1_without_filesystem_effect() -> None:
             WHERE watch_id = 'watch:1' AND folder_name = 'Waiting'
             """
         ).fetchone() == (None, "settling")
+    finally:
+        connection.execute(
+            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                sql.Identifier(schema)
+            )
+        )
+        connection.close()
+
+
+@pytest.mark.postgres
+def test_m14_semantic_observation_omits_only_v2_stat_identity() -> None:
+    schema = "m14_identity_" + uuid.uuid4().hex
+    connection = psycopg.connect(_dsn(), autocommit=True)
+    try:
+        connection.execute(
+            sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
+        )
+        connection.execute(
+            sql.SQL("SET search_path TO {}").format(sql.Identifier(schema))
+        )
+        for migration in MIGRATIONS:
+            connection.execute(migration.sql)
+        connection.execute(
+            """
+            INSERT INTO config_revisions
+                (revision_id, revision, payload, created_at)
+            VALUES ('config:identity', 1, '{}'::jsonb, clock_timestamp());
+            INSERT INTO watch_states
+                (watch_id, config_revision, fence, work_type,
+                 settle_interval_seconds, semantic_v2)
+            VALUES ('watch:identity', 1, 1, 'anime', 1, true);
+            INSERT INTO watch_folder_observations
+                (watch_id, folder_name, config_revision,
+                 folder_device, folder_inode, inventory_id,
+                 inventory_payload, snapshot_id, snapshot_payload,
+                 first_observed_at, status)
+            VALUES
+                ('watch:identity', 'Semantic', 1, NULL, NULL,
+                 'folder-inventory-v2:' || repeat('a', 64), '{}'::jsonb,
+                 'candidate-snapshot-v2:' || repeat('b', 64), '{}'::jsonb,
+                 clock_timestamp(), 'settling');
+            """
+        )
+
+        with pytest.raises(CheckViolation):
+            connection.execute(
+                """
+                INSERT INTO watch_folder_observations
+                    (watch_id, folder_name, config_revision,
+                     folder_device, folder_inode, inventory_id,
+                     inventory_payload, snapshot_id, snapshot_payload,
+                     first_observed_at, status)
+                VALUES
+                    ('watch:identity', 'Legacy', 1, NULL, NULL,
+                     'folder-inventory-v1:' || repeat('c', 64),
+                     '{}'::jsonb, 'candidate-snapshot-v1:' || repeat('d', 64),
+                     '{}'::jsonb, clock_timestamp(), 'settling')
+                """
+            )
     finally:
         connection.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(

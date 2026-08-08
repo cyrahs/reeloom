@@ -13,6 +13,9 @@ import pytest
 from agents import ModelSettings
 
 from reeloom.agents.scripted_model import ScriptedModel, ToolCallStep
+from reeloom.executor.folder_housekeeping_v2 import (
+    housekeeping_target_name,
+)
 from reeloom.kernel.specials import SpecialKind
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
@@ -23,8 +26,6 @@ from reeloom.kernel.tmdb import (
     TmdbSeriesDetails,
     TmdbWorkType,
 )
-from reeloom.runtime.event_codec import decode_event
-from reeloom.runtime.events import InteractionCompleted
 from reeloom.server.auth import AuthSettings
 from reeloom.server.composition import build_application
 from reeloom.server.settings import DeploymentSettings
@@ -238,7 +239,7 @@ def _movie_mapping_model() -> ScriptedModel:
 
 
 @pytest.mark.postgres
-def test_production_builder_manual_revision_apply_reapply_recover(
+def test_production_builder_manual_revision_executes_forward_operation(
     tmp_path: Path,
 ) -> None:
     state_root = tmp_path / "state"
@@ -255,10 +256,6 @@ def test_production_builder_manual_revision_apply_reapply_recover(
         (
             _mapping_model(1),
             _mapping_model(2),
-            _mapping_model(1),
-            _mapping_model(2),
-            _mapping_model(1),
-            _mapping_model(1),
         )
     )
     model_lock = threading.Lock()
@@ -473,175 +470,87 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                     f"/api/v1/runs/{run_id}",
                     headers=admin_auth,
                 )
-                disposition_hash = run_before_apply.json()[
-                    "folder_disposition"
-                ]["plan_hash"]
+                assert run_before_apply.json()["folder_disposition"] is None
+                assert run_before_apply.json()["recovery_approval_id"] is None
+                assert "execute" in run_before_apply.json()[
+                    "available_actions"
+                ]
                 applied = await client.post(
+                    f"/api/v1/runs/{run_id}/execute",
+                    headers={
+                        **admin_auth,
+                        "if-match": revised_hash,
+                    },
+                    json={},
+                )
+                assert applied.status_code == 200, applied.text
+                assert applied.json()["status"] == "completed"
+                operation_id = applied.json()["operation_id"]
+                replayed = await client.post(
+                    f"/api/v1/runs/{run_id}/execute",
+                    headers={
+                        **admin_auth,
+                        "if-match": revised_hash,
+                    },
+                    json={},
+                )
+                assert replayed.status_code == 200, replayed.text
+                assert replayed.json()["operation_id"] == operation_id
+                assert replayed.json()["status"] == "completed"
+
+                legacy_apply = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
                     headers={
                         **admin_auth,
-                        "idempotency-key": f"apply-revision-{journey_id}",
+                        "idempotency-key": f"legacy-apply-{journey_id}",
                         "if-match": revised_hash,
                     },
                     json={
                         "automatic": False,
-                        "folder_disposition_plan_hash": disposition_hash,
+                        "folder_disposition_plan_hash": None,
                     },
                 )
-                assert applied.status_code == 200, applied.text
-                assert applied.json()["status"] == "completed"
-                assert not source_folder.exists()
-
-                reapplied = await client.post(
-                    f"/api/v1/runs/{run_id}/reapply",
-                    headers={
-                        **admin_auth,
-                        "idempotency-key": f"reapply-{journey_id}",
-                        "if-match": revised_hash,
-                    },
-                    json={"message": "Map the complete set to episode 1."},
+                assert legacy_apply.status_code == 410
+                assert legacy_apply.json()["error"]["code"] == (
+                    "legacy_effect_superseded"
                 )
-                assert reapplied.status_code == 200, reapplied.text
-                amendment_hash = reapplied.json()["plan_hash"]
-                assert amendment_hash is not None
-
-                superseded = await client.post(
-                    f"/api/v1/runs/{run_id}/reapply",
-                    headers={
-                        **admin_auth,
-                        "idempotency-key": f"supersede-{journey_id}",
-                        "if-match": amendment_hash,
-                    },
-                    json={
-                        "message": (
-                            "Freshly restore the current complete episode 2 "
-                            "mapping."
-                        )
-                    },
-                )
-                assert superseded.status_code == 200, superseded.text
-                assert superseded.json()["no_op"] is True
-                assert superseded.json()["plan_hash"] is None
-                with application.database.pool.connection() as connection:
-                    projection = connection.execute(
-                        """
-                        SELECT h.plan_hash, s.phase, s.plan_hash, r.status
-                        FROM plan_heads AS h
-                        JOIN run_states AS s USING (run_id)
-                        JOIN runs AS r USING (run_id)
-                        WHERE h.run_id = %s
-                        """,
-                        (run_id,),
-                    ).fetchone()
-                    stored_event = connection.execute(
-                        """
-                        SELECT payload FROM run_events
-                        WHERE run_id = %s
-                        ORDER BY sequence DESC
-                        LIMIT 1
-                        """,
-                        (run_id,),
-                    ).fetchone()
-                assert tuple(str(item) for item in projection) == (
-                    revised_hash,
-                    "completed",
-                    revised_hash,
-                    "completed",
-                )
-                event = decode_event(bytes(stored_event[0]))
-                assert isinstance(event, InteractionCompleted)
-                assert event.plan_hash is None
-                assert event.final_plan_hash == revised_hash
-
-                reapplied = await client.post(
-                    f"/api/v1/runs/{run_id}/reapply",
-                    headers={
-                        **admin_auth,
-                        "idempotency-key": f"reapply-final-{journey_id}",
-                        "if-match": revised_hash,
-                    },
-                    json={"message": "Map the complete set to episode 1."},
-                )
-                assert reapplied.status_code == 200, reapplied.text
-                amendment_hash = reapplied.json()["plan_hash"]
-                assert amendment_hash is not None
-
-                pending_amendment = await client.get(
-                    f"/api/v1/runs/{run_id}",
-                    headers={
-                        "authorization": "Bearer admin-token-strong"
-                    },
-                )
-                assert pending_amendment.status_code == 200
-                assert pending_amendment.json()["plan_hash"] == amendment_hash
-                assert pending_amendment.json()["settlement"] is None
-
-                amendment = await client.post(
-                    f"/api/v1/runs/{run_id}/approve-and-apply",
-                    headers={
-                        **admin_auth,
-                        "idempotency-key": f"apply-amend-{journey_id}",
-                        "if-match": amendment_hash,
-                    },
-                    json={"automatic": False},
-                )
-                assert amendment.status_code == 200, amendment.text
-                assert amendment.json()["status"] == "completed"
-
-                recovered = await client.post(
+                legacy_recover = await client.post(
                     f"/api/v1/operations/runs/{run_id}/recover",
                     headers={
                         **admin_auth,
-                        "idempotency-key": f"recover-{journey_id}",
-                        "if-match": amendment_hash,
+                        "idempotency-key": f"legacy-recover-{journey_id}",
+                        "if-match": revised_hash,
                     },
-                    json={
-                        "approval_id": amendment.json()["approval_id"]
-                    },
+                    json={"approval_id": "approval:legacy"},
                 )
-                assert recovered.status_code == 200, recovered.text
-                assert (
-                    recovered.json()["transaction_id"]
-                    == amendment.json()["transaction_id"]
+                assert legacy_recover.status_code == 410
+                assert legacy_recover.json()["error"]["code"] == (
+                    "legacy_effect_superseded"
                 )
-                no_op = await client.post(
-                    f"/api/v1/runs/{run_id}/reapply",
-                    headers={
-                        **admin_auth,
-                        "idempotency-key": f"noop-{journey_id}",
-                        "if-match": amendment_hash,
-                    },
-                    json={"message": "Revalidate the current full mapping."},
-                )
-                assert no_op.status_code == 200, no_op.text
-                assert no_op.json()["no_op"] is True
-                assert no_op.json()["plan_hash"] is None
                 with application.database.pool.connection() as connection:
-                    counts = connection.execute(
+                    operation = connection.execute(
                         """
-                        SELECT
-                            (SELECT count(*) FROM plan_lineage
-                             WHERE run_id = %s),
-                            (SELECT count(*) FROM plan_reviews
-                             WHERE run_id = %s),
-                            (SELECT count(*) FROM approvals
-                             WHERE run_id = %s)
+                        SELECT o.status, o.attempt_count,
+                               (SELECT count(*) FROM approvals
+                                WHERE run_id = %s),
+                               (SELECT count(*) FROM approval_claims
+                                WHERE run_id = %s),
+                               (SELECT count(*) FROM approval_settlements
+                                WHERE approval_id IN (
+                                    SELECT approval_id FROM approvals
+                                    WHERE run_id = %s
+                                )),
+                               (SELECT count(*)
+                                FROM execution_operation_results_v2
+                                WHERE operation_id = o.operation_id)
+                        FROM execution_operations_v2 AS o
+                        WHERE o.operation_id = %s
                         """,
-                        (run_id, run_id, run_id),
+                        (run_id, run_id, run_id, operation_id),
                     ).fetchone()
-                    final_projection = connection.execute(
-                        """
-                        SELECT phase, plan_hash
-                        FROM run_states
-                        WHERE run_id = %s
-                        """,
-                        (run_id,),
-                    ).fetchone()
-                assert tuple(int(item) for item in counts) == (4, 4, 2)
-                assert tuple(str(item) for item in final_projection) == (
-                    "completed",
-                    amendment_hash,
-                )
+                assert operation is not None
+                assert tuple(operation) == ("completed", 1, 1, 0, 0, 1)
+                assert not (source_folder / "untrusted.mkv").exists()
                 final = await client.get(
                     f"/api/v1/runs/{run_id}",
                     headers={
@@ -650,11 +559,10 @@ def test_production_builder_manual_revision_apply_reapply_recover(
                 )
                 assert final.json()["status"] == "completed"
                 assert final.json()["phase"] == "completed"
-                assert final.json()["plan_hash"] == amendment_hash
-                assert final.json()["settlement"]["transaction_id"] == (
-                    amendment.json()["transaction_id"]
-                )
-                assert final.json()["settlement"]["status"] == "completed"
+                assert final.json()["plan_hash"] == revised_hash
+                assert final.json()["settlement"] is None
+                assert final.json()["recovery_approval_id"] is None
+                assert final.json()["execution"]["status"] == "completed"
                 assert not models
 
         asyncio.run(journey())
@@ -683,7 +591,7 @@ def test_production_builder_automatic_policy_uses_exact_approval(
     watch_id = f"automatic-watch-{journey_id}"
     models = deque(
         (
-            (_movie_mapping_model(), _movie_mapping_model())
+            (_movie_mapping_model(),)
             if movie
             else (_mapping_model(1),)
         )
@@ -763,8 +671,8 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                             """
                             SELECT r.run_id, r.status, h.plan_hash,
                                    count(a.approval_id),
-                                   count(c.approval_id),
-                                   count(s.approval_id)
+                                   count(o.operation_id),
+                                   count(result.operation_id)
                             FROM runs AS r
                             JOIN discoveries AS d
                               ON d.discovery_id = r.discovery_id
@@ -772,10 +680,11 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                               ON h.run_id = r.run_id
                             LEFT JOIN approvals AS a
                               ON a.run_id = r.run_id
-                            LEFT JOIN approval_claims AS c
-                              ON c.approval_id = a.approval_id
-                            LEFT JOIN approval_settlements AS s
-                              ON s.approval_id = a.approval_id
+                            LEFT JOIN execution_operations_v2 AS o
+                              ON o.run_id = r.run_id
+                             AND o.plan_hash = h.plan_hash
+                            LEFT JOIN execution_operation_results_v2 AS result
+                              ON result.operation_id = o.operation_id
                             WHERE d.watch_id = %s
                             GROUP BY r.run_id, r.status, h.plan_hash
                             """,
@@ -789,7 +698,9 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                             or (
                                 incoming
                                 / "archive"
-                                / "Journey"
+                                / housekeeping_target_name(
+                                    "Journey", str(row[0])
+                                )
                                 / "zz-extra.mkv"
                             ).exists()
                         )
@@ -805,7 +716,9 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                     assert (
                         incoming
                         / "archive"
-                        / "Journey"
+                        / housekeeping_target_name(
+                            "Journey", str(row[0])
+                        )
                         / "zz-extra.mkv"
                     ).exists()
                     movie_root = (
@@ -814,24 +727,6 @@ def test_production_builder_automatic_policy_uses_exact_approval(
                     )
                     target = movie_root / "旅程电影 (2025).mkv"
                     assert target.read_bytes() == b"automatic-video"
-                    later = movie_root / "later.mkv"
-                    later.write_bytes(b"later-file")
-                    reapplied = await client.post(
-                        f"/api/v1/runs/{row[0]}/reapply",
-                        headers={
-                            "authorization": (
-                                "Bearer admin-token-strong"
-                            ),
-                            "idempotency-key": (
-                                f"movie-reapply-{journey_id}"
-                            ),
-                            "if-match": str(row[2]),
-                        },
-                        json={"message": "Revalidate the exact layout."},
-                    )
-                    assert reapplied.status_code == 200, reapplied.text
-                    assert reapplied.json()["no_op"] is True
-                    assert later.read_bytes() == b"later-file"
                 assert not models
 
         asyncio.run(journey())

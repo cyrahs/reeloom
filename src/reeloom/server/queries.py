@@ -7,7 +7,10 @@ from psycopg_pool import ConnectionPool
 
 from reeloom.executor.manifest import ExecutionManifest
 from reeloom.kernel.amendment import verify_amendment_bytes
-from reeloom.kernel.initial_plan import verify_initial_plan_bytes
+from reeloom.kernel.initial_plan import (
+    parse_initial_plan,
+    verify_initial_plan_bytes,
+)
 from reeloom.kernel.movie_amendment import (
     verify_movie_amendment_bytes,
 )
@@ -655,6 +658,12 @@ class PostgresQueries:
         semantic_v2 = bool(row[60]) or (
             len(row) > 61 and bool(row[61])
         )
+        if (
+            semantic_v2
+            and forward_status is not None
+            and forward_status.terminal
+        ):
+            phase = "completed"
         busy = busy or forward_status is ExecutionOperationStatus.RUNNING
         attention_state = (
             stored_status in {"running", "failed"}
@@ -1298,25 +1307,37 @@ class PostgresQueries:
                 raise ServerError(
                     ServerErrorCode.INTERACTION_CONFLICT
                 )
-            manifest = ExecutionManifest.from_canonical_bytes(
-                canonical_bytes,
-                plan_hash=plan_hash,
-            )
+            if plan_kind == "initial":
+                initial_plan = parse_initial_plan(
+                    canonical_bytes,
+                    plan_hash=plan_hash,
+                )
+                plan_run_id = initial_plan.run_id
+                plan_sources = initial_plan.sources
+                plan_moves = initial_plan.draft.moves
+            else:
+                manifest = ExecutionManifest.from_canonical_bytes(
+                    canonical_bytes,
+                    plan_hash=plan_hash,
+                )
+                plan_run_id = manifest.run_id
+                plan_sources = manifest.sources
+                plan_moves = manifest.moves
         except ServerError:
             raise
         except Exception:
             raise ServerError(
                 ServerErrorCode.INTERACTION_CONFLICT
             ) from None
-        if manifest.run_id != run_id:
+        if plan_run_id != run_id:
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         sources = {
-            source.candidate_id: source for source in manifest.sources
+            source.candidate_id: source for source in plan_sources
         }
-        moved = {move.source_id for move in manifest.moves}
+        moved = {move.source_id for move in plan_moves}
         unmapped_ids = frozenset(
             source.candidate_id
-            for source in manifest.sources
+            for source in plan_sources
             if source.candidate_id not in moved
         )
         review_candidate_ids = (
@@ -1398,7 +1419,7 @@ class PostgresQueries:
                     else None
                 ),
             }
-            for source in manifest.sources
+            for source in plan_sources
             if source.candidate_id not in moved
         ]
         move_items = [
@@ -1410,7 +1431,7 @@ class PostgresQueries:
                 "destination": move.destination.as_posix(),
                 "explanation": None,
             }
-            for move in manifest.moves
+            for move in plan_moves
             for source in (sources[move.source_id],)
         ]
         items = (
@@ -1425,14 +1446,14 @@ class PostgresQueries:
         page = indexed[after : after + limit]
         next_after = after + len(page)
         counts = {
-            "move": len(manifest.moves),
+            "move": len(plan_moves),
             "unmapped": (
-                len(manifest.sources) - len(manifest.moves)
+                len(plan_sources) - len(plan_moves)
                 if plan_kind == "initial"
                 else 0
             ),
             "unchanged": (
-                len(manifest.sources) - len(manifest.moves)
+                len(plan_sources) - len(plan_moves)
                 if plan_kind == "amendment"
                 else 0
             ),

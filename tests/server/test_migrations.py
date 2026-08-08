@@ -42,6 +42,8 @@ def test_foundation_migration_is_versioned_and_immutable() -> None:
     assert "folder_housekeeping_v2" in by_version[36]
     assert "legacy_effect_supersessions_v2" in by_version[37]
     assert "legacy_v1_superseded" in by_version[37]
+    assert "watch_folder_observations_check" in by_version[38]
+    assert "folder-inventory-v2:" in by_version[38]
 
 
 def test_checksum_drift_fails_closed() -> None:
