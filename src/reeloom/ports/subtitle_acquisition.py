@@ -20,6 +20,7 @@ from reeloom.kernel.subtitle_acquisition import (
     SubtitleArchiveVolume,
     SubtitleArchiveSetCapability,
     SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     SubtitleSearchCursorId,
     SubtitleSearchDiagnostics,
     SubtitleSearchFailureStage,
@@ -383,6 +384,9 @@ class SubtitleArchiveInspector(Protocol):
 class SubtitleAcquisitionPlanStore(Protocol):
     """Content-addressed persistence isolated from media rename plans."""
 
-    def save(self, plan: SubtitleAcquisitionPlan) -> None: ...
+    def save(
+        self,
+        plan: SubtitleAcquisitionPlan | SubtitleAcquisitionPlanV2,
+    ) -> None: ...
 
     def load(self, plan_hash: str) -> bytes: ...

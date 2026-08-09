@@ -10,6 +10,11 @@ import pytest
 from reeloom.kernel.candidates import CandidateId, CandidateKind
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticRootBinding,
+    SemanticSourceIdentity,
+)
 from reeloom.kernel.subtitle_acquisition import (
     MAX_ARCHIVE_VOLUME_BYTES,
     MAX_COMPRESSION_RATIO,
@@ -24,6 +29,7 @@ from reeloom.kernel.subtitle_acquisition import (
     RejectedArchiveEntry,
     RejectedArchiveEntryReason,
     SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     SubtitleArchiveFormat,
     SubtitleArchiveSetCapability,
     SubtitleArchiveSetId,
@@ -126,6 +132,34 @@ def _plan(
                 reason=RejectedArchiveEntryReason.UNSUPPORTED_TYPE,
             ),
         ),
+    )
+
+
+def _plan_v2() -> SubtitleAcquisitionPlanV2:
+    snapshot = SemanticCandidateSnapshot.create(
+        (
+            SemanticSourceIdentity(
+                candidate_id=CandidateId(CandidateKind.VIDEO, 1),
+                kind=CandidateKind.VIDEO,
+                relative_path=PurePosixPath("episode.mkv"),
+                size_bytes=1_024,
+            ),
+        )
+    )
+    return SubtitleAcquisitionPlanV2.create(
+        run_id="run-m14-5",
+        config_revision=7,
+        config_revision_id="config-revision-7",
+        watch_id="watch-anime",
+        created_at=_NOW,
+        source_root=SemanticRootBinding(PurePosixPath("/watch")),
+        source_folder="release",
+        folder_generation_id="folder-generation-9",
+        inventory_id="folder-inventory-v2:" + "f" * 64,
+        candidate_snapshot=snapshot,
+        tmdb_id=777,
+        archives=(_archive(),),
+        inspected_members=(_member(),),
     )
 
 
@@ -439,6 +473,32 @@ def test_acquisition_plan_is_canonical_immutable_and_round_trips() -> None:
         "Show.S01E01.chs--a1-cccccccccccc.ass"
     )
     assert "forum.php" not in plan.canonical_bytes().decode("ascii")
+
+
+def test_acquisition_plan_v2_uses_only_semantic_source_identity() -> None:
+    plan = _plan_v2()
+
+    restored = SubtitleAcquisitionPlanV2.from_canonical_bytes(
+        plan.canonical_bytes(),
+        plan_hash=plan.plan_hash,
+    )
+    payload = json.loads(plan.canonical_bytes())
+
+    assert restored == plan
+    assert plan.verify_hash()
+    assert verify_subtitle_acquisition_plan_bytes(
+        plan.canonical_bytes(), plan.plan_hash
+    )
+    assert payload["schema_version"] == "subtitle-acquisition-plan-v2"
+    assert payload["source_root"] == {"path": "/watch"}
+    assert payload["source_folder"] == {
+        "folder_generation_id": "folder-generation-9",
+        "inventory_id": "folder-inventory-v2:" + "f" * 64,
+        "name": "release",
+    }
+    canonical = plan.canonical_bytes().decode("ascii")
+    for forbidden in ("device", "inode", "mtime", "ctime"):
+        assert f'"{forbidden}"' not in canonical
 
 
 def test_acquisition_plan_hash_binds_volume_and_member_content() -> None:

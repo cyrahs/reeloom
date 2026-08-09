@@ -219,6 +219,7 @@ def test_postgres_operation_ledger_authorizes_leases_and_settles() -> None:
             worker_id=f"worker-{suffix}",
             now=now + timedelta(seconds=2),
             lease_for=timedelta(seconds=30),
+            operation_id=operation.operation_id,
         )
         assert rescan is not None
         assert rescan.run_id == run_id

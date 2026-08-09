@@ -70,7 +70,6 @@ from reeloom.server.api_models import (
     RunsResponse,
     SessionResponse,
     SubtitleAcquisitionApprovalRequest,
-    SubtitleAcquisitionFailResponse,
     SubtitleAcquisitionResponse,
     TelegramTestRequest,
     TelegramTestResponse,
@@ -291,6 +290,7 @@ def _forward_execution_payload(
         counts[outcome.value] += 1
     return {
         "operation_id": view.operation.operation_id,
+        "operation_kind": view.operation_kind,
         "run_id": view.operation.run_id,
         "plan_hash": view.operation.plan_hash,
         "status": view.operation.status.value,
@@ -1152,10 +1152,6 @@ def create_api(
             del value["agent_budget"]
         if value["telegram"] is None:
             del value["telegram"]
-        if value["acgrip"] is None:
-            del value["acgrip"]
-        if value["subtitle_acquisition_policy"] is None:
-            del value["subtitle_acquisition_policy"]
 
         def execute() -> dict[str, object]:
             return dependencies.config_update(expected_revision, value)
@@ -1776,7 +1772,6 @@ def create_api(
                 "plan_hash": record.plan_hash,
                 "policy": record.policy.value,
                 "status": record.status,
-                "approval_id": record.approval_id,
                 "transaction_id": record.transaction_id,
                 "failure_code": record.failure_code,
                 "failure_diagnostic": record.failure_diagnostic,
@@ -1804,121 +1799,6 @@ def create_api(
         return await _shield_thread(
             lambda: dependencies.idempotency.run(
                 scope="approve_subtitle_acquisition",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={"plan_hash": plan_hash},
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.post(
-        "/api/v1/runs/{run_id}/subtitle-acquisition/retry",
-        response_model=SubtitleAcquisitionResponse,
-    )
-    async def retry_subtitle_acquisition(
-        run_id: str,
-        body: SubtitleAcquisitionApprovalRequest,
-        key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        del body
-        coordinator = dependencies.subtitle_acquisitions
-        if coordinator is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def payload(
-            record: SubtitleAcquisitionRequestRecord,
-        ) -> dict[str, object]:
-            return {
-                "run_id": record.run_id,
-                "plan_hash": record.plan_hash,
-                "policy": record.policy.value,
-                "status": record.status,
-                "approval_id": record.approval_id,
-                "transaction_id": record.transaction_id,
-                "failure_code": record.failure_code,
-                "failure_diagnostic": record.failure_diagnostic,
-                "successor_status": None,
-            }
-
-        def execute() -> dict[str, object]:
-            return payload(
-                coordinator.retry_blocked_and_execute(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                )
-            )
-
-        def resolve() -> dict[str, object] | None:
-            record = coordinator.resolve(
-                run_id=run_id,
-                plan_hash=plan_hash,
-            )
-            return None if record is None else payload(record)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="retry_subtitle_acquisition",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={"plan_hash": plan_hash},
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.post(
-        "/api/v1/runs/{run_id}/subtitle-acquisition/fail",
-        response_model=SubtitleAcquisitionFailResponse,
-    )
-    async def fail_subtitle_acquisition(
-        run_id: str,
-        body: SubtitleAcquisitionApprovalRequest,
-        key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        del body
-        coordinator = dependencies.subtitle_acquisitions
-        if coordinator is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def payload(
-            record: SubtitleAcquisitionRequestRecord,
-        ) -> dict[str, object]:
-            if record.failure_code is None:
-                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-            return {
-                "run_id": record.run_id,
-                "plan_hash": record.plan_hash,
-                "status": "failed",
-                "failure_code": record.failure_code,
-            }
-
-        def execute() -> dict[str, object]:
-            return payload(
-                coordinator.fail_blocked(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                )
-            )
-
-        def resolve() -> dict[str, object] | None:
-            record = coordinator.resolve_failed(
-                run_id=run_id,
-                plan_hash=plan_hash,
-            )
-            return None if record is None else payload(record)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="fail_subtitle_acquisition",
                 subject_id=run_id,
                 idempotency_key=key,
                 request={"plan_hash": plan_hash},

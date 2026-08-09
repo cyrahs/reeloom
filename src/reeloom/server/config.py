@@ -51,6 +51,39 @@ class SubtitleAcquisitionPolicy(StrEnum):
     AUTOMATIC = "automatic"
 
 
+class SubtitleProvider(StrEnum):
+    ACGRIP = "acgrip"
+
+
+SUBTITLE_PROVIDERS_BY_WORK_TYPE = {
+    ServerWorkType.ANIME: frozenset({SubtitleProvider.ACGRIP}),
+    ServerWorkType.TV: frozenset(),
+    ServerWorkType.MOVIE: frozenset(),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleAcquisitionConfig:
+    enabled: bool = False
+    provider: SubtitleProvider | None = None
+    policy: SubtitleAcquisitionPolicy = SubtitleAcquisitionPolicy.AUTOMATIC
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.enabled) is not bool
+            or (
+                self.provider is not None
+                and not isinstance(self.provider, SubtitleProvider)
+            )
+            or not isinstance(self.policy, SubtitleAcquisitionPolicy)
+            or (self.enabled and self.provider is None)
+        ):
+            raise ServerError(ServerErrorCode.INVALID_CONFIG)
+
+
+DEFAULT_SUBTITLE_ACQUISITION_CONFIG = SubtitleAcquisitionConfig()
+
+
 def _opaque(value: object) -> bool:
     return isinstance(value, str) and _OPAQUE_ID.fullmatch(value) is not None
 
@@ -72,6 +105,9 @@ class WatchConfig:
     work_type: ServerWorkType
     poll_interval_seconds: int
     settle_interval_seconds: int
+    subtitle_acquisition: SubtitleAcquisitionConfig = (
+        DEFAULT_SUBTITLE_ACQUISITION_CONFIG
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -83,6 +119,18 @@ class WatchConfig:
             or not self.poll_interval_seconds
             <= self.settle_interval_seconds
             <= 604_800
+            or not isinstance(
+                self.subtitle_acquisition, SubtitleAcquisitionConfig
+            )
+            or (
+                self.subtitle_acquisition.provider is not None
+                and self.subtitle_acquisition.provider
+                not in SUBTITLE_PROVIDERS_BY_WORK_TYPE[self.work_type]
+            )
+            or (
+                self.subtitle_acquisition.enabled
+                and not SUBTITLE_PROVIDERS_BY_WORK_TYPE[self.work_type]
+            )
         ):
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
         object.__setattr__(self, "root", _root(self.root))
@@ -175,16 +223,12 @@ DEFAULT_TELEGRAM_CONFIG = TelegramConfig()
 
 
 @dataclass(frozen=True, slots=True)
-class AcgripConfig:
+class _LegacyAcgripConfig:
     enabled: bool = False
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
             raise ServerError(ServerErrorCode.INVALID_CONFIG)
-
-
-DEFAULT_ACGRIP_CONFIG = AcgripConfig()
-DEFAULT_SUBTITLE_ACQUISITION_POLICY = SubtitleAcquisitionPolicy.AUTOMATIC
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,10 +238,6 @@ class ConfigDraft:
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
     telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
-    acgrip: AcgripConfig = DEFAULT_ACGRIP_CONFIG
-    subtitle_acquisition_policy: SubtitleAcquisitionPolicy = (
-        DEFAULT_SUBTITLE_ACQUISITION_POLICY
-    )
 
     def __post_init__(self) -> None:
         if (
@@ -208,11 +248,6 @@ class ConfigDraft:
             or not isinstance(self.apply_policy, ApplyPolicy)
             or not isinstance(self.agent_budget, RunBudget)
             or not isinstance(self.telegram, TelegramConfig)
-            or not isinstance(self.acgrip, AcgripConfig)
-            or not isinstance(
-                self.subtitle_acquisition_policy,
-                SubtitleAcquisitionPolicy,
-            )
             or self.agent_budget.max_model_turns > MAX_MODEL_TURNS
             or self.agent_budget.max_tool_calls > MAX_TOOL_CALLS
             or self.agent_budget.max_failures > MAX_FAILURES
@@ -238,10 +273,6 @@ class ConfigDraftInput:
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
     telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
-    acgrip: AcgripConfig = DEFAULT_ACGRIP_CONFIG
-    subtitle_acquisition_policy: SubtitleAcquisitionPolicy = (
-        DEFAULT_SUBTITLE_ACQUISITION_POLICY
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,10 +285,6 @@ class ConfigRevision:
     apply_policy: ApplyPolicy
     agent_budget: RunBudget = DEFAULT_AGENT_BUDGET
     telegram: TelegramConfig = DEFAULT_TELEGRAM_CONFIG
-    acgrip: AcgripConfig = DEFAULT_ACGRIP_CONFIG
-    subtitle_acquisition_policy: SubtitleAcquisitionPolicy = (
-        DEFAULT_SUBTITLE_ACQUISITION_POLICY
-    )
 
     def __post_init__(self) -> None:
         if (
@@ -274,8 +301,6 @@ class ConfigRevision:
             apply_policy=self.apply_policy,
             agent_budget=self.agent_budget,
             telegram=self.telegram,
-            acgrip=self.acgrip,
-            subtitle_acquisition_policy=self.subtitle_acquisition_policy,
         )
 
     @classmethod
@@ -296,10 +321,6 @@ class ConfigRevision:
             apply_policy=draft.apply_policy,
             agent_budget=draft.agent_budget,
             telegram=draft.telegram,
-            acgrip=draft.acgrip,
-            subtitle_acquisition_policy=(
-                draft.subtitle_acquisition_policy
-            ),
         )
 
     def to_json(self) -> str:
@@ -316,11 +337,7 @@ class ConfigRevision:
                 },
                 "revision": self.revision,
                 "revision_id": self.revision_id,
-                "schema_version": 5,
-                "acgrip": {"enabled": self.acgrip.enabled},
-                "subtitle_acquisition_policy": (
-                    self.subtitle_acquisition_policy.value
-                ),
+                "schema_version": 6,
                 "agent_budget": _budget_payload(self.agent_budget),
                 "telegram": {
                     "chat_id": self.telegram.chat_id,
@@ -339,6 +356,11 @@ class ConfigRevision:
                         "settle_interval_seconds": item.settle_interval_seconds,
                         "watch_id": item.watch_id,
                         "work_type": item.work_type.value,
+                        "subtitle_acquisition": (
+                            _subtitle_acquisition_payload(
+                                item.subtitle_acquisition
+                            )
+                        ),
                     }
                     for item in self.watches
                 ],
@@ -360,6 +382,11 @@ class ConfigRevision:
                     "settle_interval_seconds": item.settle_interval_seconds,
                     "root": str(item.root),
                     "library_root": str(item.library_root),
+                    "subtitle_acquisition": (
+                        _subtitle_acquisition_payload(
+                            item.subtitle_acquisition
+                        )
+                    ),
                 }
                 for item in self.watches
             ],
@@ -371,10 +398,6 @@ class ConfigRevision:
                 "api_key_configured": True,
             },
             "apply_policy": self.apply_policy.value,
-            "acgrip": {"enabled": self.acgrip.enabled},
-            "subtitle_acquisition_policy": (
-                self.subtitle_acquisition_policy.value
-            ),
             "agent_budget": _budget_payload(self.agent_budget),
             "telegram": {
                 "enabled": self.telegram.enabled,
@@ -412,10 +435,6 @@ class ConfigRevision:
             }
             budget = DEFAULT_AGENT_BUDGET
             telegram = DEFAULT_TELEGRAM_CONFIG
-            acgrip = DEFAULT_ACGRIP_CONFIG
-            subtitle_acquisition_policy = (
-                DEFAULT_SUBTITLE_ACQUISITION_POLICY
-            )
             if set(raw) == common | {"archive_routes"}:
                 watches = _legacy_watches(
                     raw["watches"],
@@ -461,10 +480,25 @@ class ConfigRevision:
                 watches = _v2_watches(raw["watches"])
                 budget = agent_budget_from_payload(raw["agent_budget"])
                 telegram = telegram_config_from_payload(raw["telegram"])
-                acgrip = acgrip_config_from_payload(raw["acgrip"])
-                subtitle_acquisition_policy = SubtitleAcquisitionPolicy(
+                acgrip = _legacy_acgrip_from_payload(raw["acgrip"])
+                policy = SubtitleAcquisitionPolicy(
                     raw["subtitle_acquisition_policy"]
                 )
+                watches = _migrate_v5_subtitle_acquisition(
+                    watches,
+                    acgrip=acgrip,
+                    policy=policy,
+                )
+            elif (
+                set(raw)
+                == common
+                | {"schema_version", "agent_budget", "telegram"}
+                and type(raw["schema_version"]) is int
+                and raw["schema_version"] == 6
+            ):
+                watches = _v6_watches(raw["watches"])
+                budget = agent_budget_from_payload(raw["agent_budget"])
+                telegram = telegram_config_from_payload(raw["telegram"])
             else:
                 raise ValueError
             return cls(
@@ -482,10 +516,6 @@ class ConfigRevision:
                 apply_policy=ApplyPolicy(raw["apply_policy"]),
                 agent_budget=budget,
                 telegram=telegram,
-                acgrip=acgrip,
-                subtitle_acquisition_policy=(
-                    subtitle_acquisition_policy
-                ),
             )
         except (KeyError, TypeError, ValueError, ServerError):
             raise ServerError(ServerErrorCode.INVALID_CONFIG) from None
@@ -551,12 +581,44 @@ def telegram_config_from_payload(value: object) -> TelegramConfig:
         raise ValueError from None
 
 
-def acgrip_config_from_payload(value: object) -> AcgripConfig:
+def _legacy_acgrip_from_payload(value: object) -> _LegacyAcgripConfig:
     if not isinstance(value, dict) or set(value) != {"enabled"}:
         raise ValueError
     try:
-        return AcgripConfig(enabled=value["enabled"])
+        return _LegacyAcgripConfig(enabled=value["enabled"])
     except ServerError:
+        raise ValueError from None
+
+
+def _subtitle_acquisition_payload(
+    value: SubtitleAcquisitionConfig,
+) -> dict[str, object]:
+    return {
+        "enabled": value.enabled,
+        "provider": None if value.provider is None else value.provider.value,
+        "policy": value.policy.value,
+    }
+
+
+def subtitle_acquisition_from_payload(
+    value: object,
+) -> SubtitleAcquisitionConfig:
+    if not isinstance(value, dict) or set(value) != {
+        "enabled",
+        "provider",
+        "policy",
+    }:
+        raise ValueError
+    provider = value["provider"]
+    try:
+        return SubtitleAcquisitionConfig(
+            enabled=value["enabled"],
+            provider=(
+                None if provider is None else SubtitleProvider(provider)
+            ),
+            policy=SubtitleAcquisitionPolicy(value["policy"]),
+        )
+    except (TypeError, ValueError, ServerError):
         raise ValueError from None
 
 
@@ -583,6 +645,64 @@ def _v2_watches(value: object) -> tuple[WatchConfig, ...]:
             settle_interval_seconds=item["settle_interval_seconds"],
         )
         for item in value
+    )
+
+
+def _v6_watches(value: object) -> tuple[WatchConfig, ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    fields = {
+        "library_root",
+        "poll_interval_seconds",
+        "root",
+        "settle_interval_seconds",
+        "subtitle_acquisition",
+        "watch_id",
+        "work_type",
+    }
+    if any(not isinstance(item, dict) or set(item) != fields for item in value):
+        raise ValueError
+    return tuple(
+        WatchConfig(
+            watch_id=item["watch_id"],
+            root=Path(item["root"]),
+            library_root=Path(item["library_root"]),
+            work_type=ServerWorkType(item["work_type"]),
+            poll_interval_seconds=item["poll_interval_seconds"],
+            settle_interval_seconds=item["settle_interval_seconds"],
+            subtitle_acquisition=subtitle_acquisition_from_payload(
+                item["subtitle_acquisition"]
+            ),
+        )
+        for item in value
+    )
+
+
+def _migrate_v5_subtitle_acquisition(
+    watches: tuple[WatchConfig, ...],
+    *,
+    acgrip: _LegacyAcgripConfig,
+    policy: SubtitleAcquisitionPolicy,
+) -> tuple[WatchConfig, ...]:
+    return tuple(
+        WatchConfig(
+            watch_id=item.watch_id,
+            root=item.root,
+            library_root=item.library_root,
+            work_type=item.work_type,
+            poll_interval_seconds=item.poll_interval_seconds,
+            settle_interval_seconds=item.settle_interval_seconds,
+            subtitle_acquisition=(
+                SubtitleAcquisitionConfig(
+                    enabled=acgrip.enabled,
+                    provider=SubtitleProvider.ACGRIP,
+                    policy=policy,
+                )
+                if item.work_type is ServerWorkType.ANIME
+                else DEFAULT_SUBTITLE_ACQUISITION_CONFIG
+            ),
+        )
+        for item in watches
     )
 
 

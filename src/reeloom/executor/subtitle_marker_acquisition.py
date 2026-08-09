@@ -9,7 +9,6 @@ from reeloom.executor.subtitle_publication import (
     SubtitleMarkerPublisher,
     SubtitlePublicationResult,
 )
-from reeloom.kernel.approval import ApprovalScope
 from reeloom.kernel.errors import DomainError
 from reeloom.kernel.naming import filesystem_name_key
 from reeloom.kernel.subtitle_acquisition import (
@@ -17,7 +16,7 @@ from reeloom.kernel.subtitle_acquisition import (
     CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
     CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION,
     PlannedSubtitleMember,
-    SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     SubtitleArchiveSetCapability,
 )
 from reeloom.kernel.subtitle_publication import (
@@ -25,7 +24,6 @@ from reeloom.kernel.subtitle_publication import (
     SubtitlePublicationMember,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
-from reeloom.ports.approvals import ApprovalStore
 from reeloom.ports.subtitle_acquisition import (
     DownloadedSubtitleArchiveSet,
     SubtitleAcquisitionPlanStore,
@@ -67,47 +65,25 @@ class SubtitleMarkerAcquisitionExecutor:
     """Journal-free subtitle acquisition that reconciles current bytes."""
 
     plans: SubtitleAcquisitionPlanStore
-    approvals: ApprovalStore
     cache: SubtitleArchiveCache
     fetcher: SubtitleArchiveFetcher
     inspector: SubtitleArchiveInspector
     publisher: SubtitleMarkerPublisher = SubtitleMarkerPublisher()
 
-    async def apply(
-        self,
-        *,
-        plan_hash: str,
-        approval_id: str,
+    async def execute_current(
+        self, *, plan_hash: str
     ) -> SubtitlePublicationResult:
-        plan = self._load(plan_hash)
-        self.approvals.claim(
-            approval_id=approval_id,
-            run_id=plan.run_id,
-            plan_hash=plan.plan_hash,
-            scope=ApprovalScope.SUBTITLE_ACQUIRE,
-        )
-        return await self._execute(plan)
+        """Execute under a server-owned v2 operation lease."""
 
-    async def reconcile(
-        self,
-        *,
-        plan_hash: str,
-        approval_id: str,
-    ) -> SubtitlePublicationResult:
-        plan = self._load(plan_hash)
-        self.approvals.require_claim(
-            approval_id=approval_id,
-            run_id=plan.run_id,
-            plan_hash=plan.plan_hash,
-            scope=ApprovalScope.SUBTITLE_ACQUIRE,
-        )
-        return await self._execute(plan)
+        return await self._execute(self._load(plan_hash))
 
-    def _load(self, plan_hash: str) -> SubtitleAcquisitionPlan:
+    def _load(
+        self, plan_hash: str
+    ) -> SubtitleAcquisitionPlanV2:
         try:
-            return SubtitleAcquisitionPlan.from_canonical_bytes(
-                self.plans.load(plan_hash),
-                plan_hash=plan_hash,
+            content = self.plans.load(plan_hash)
+            return SubtitleAcquisitionPlanV2.from_canonical_bytes(
+                content, plan_hash=plan_hash
             )
         except ExecutorError:
             raise
@@ -116,7 +92,7 @@ class SubtitleMarkerAcquisitionExecutor:
 
     async def _execute(
         self,
-        plan: SubtitleAcquisitionPlan,
+        plan: SubtitleAcquisitionPlanV2,
     ) -> SubtitlePublicationResult:
         if (
             self.fetcher.provider_version != plan.provider_version
@@ -151,7 +127,7 @@ class SubtitleMarkerAcquisitionExecutor:
 
     async def _load_archives(
         self,
-        plan: SubtitleAcquisitionPlan,
+        plan: SubtitleAcquisitionPlan | SubtitleAcquisitionPlanV2,
     ) -> tuple[DownloadedSubtitleArchiveSet, ...]:
         downloaded_sets: list[DownloadedSubtitleArchiveSet] = []
         planned_rejected = set(plan.rejected_entries)

@@ -12,16 +12,19 @@ from reeloom.runtime.budget import RunBudget
 from reeloom.server.agent_worker import InitialAgentWorker
 from reeloom.server.config import (
     ApplyPolicy,
-    AcgripConfig,
     ConfigDraft,
     ConfigRevision,
+    DEFAULT_SUBTITLE_ACQUISITION_CONFIG,
     ProviderConfig,
     ServerWorkType,
     TelegramConfig,
     SubtitleAcquisitionPolicy,
+    SubtitleAcquisitionConfig,
+    SubtitleProvider,
     WatchConfig,
 )
 from reeloom.server.notifications import NotificationType
+from reeloom.server.organizer_definition import organizer_definition
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.provider import (
     ControlledModelLease,
@@ -178,12 +181,8 @@ def test_legacy_config_maps_routes_to_each_watch(tmp_path: Path) -> None:
         library.resolve(),
         library.resolve(),
     ]
-    assert '"schema_version":5' in restored.to_json()
-    assert restored.acgrip == AcgripConfig(enabled=False)
-    assert (
-        restored.subtitle_acquisition_policy
-        is SubtitleAcquisitionPolicy.AUTOMATIC
-    )
+    assert '"schema_version":6' in restored.to_json()
+    assert not restored.watches[0].subtitle_acquisition.enabled
     assert restored.agent_budget.max_elapsed_seconds == 600
     assert "archive_routes" not in restored.public_payload()
 
@@ -243,8 +242,8 @@ def test_schema_v3_config_upgrades_with_telegram_disabled(
     payload = json.loads(revision.to_json())
     payload["schema_version"] = 3
     del payload["telegram"]
-    del payload["acgrip"]
-    del payload["subtitle_acquisition_policy"]
+    for watch in payload["watches"]:
+        del watch["subtitle_acquisition"]
 
     restored = ConfigRevision.from_json(json.dumps(payload))
 
@@ -252,41 +251,58 @@ def test_schema_v3_config_upgrades_with_telegram_disabled(
     assert not restored.public_payload()["telegram"][
         "destination_configured"
     ]
-    assert not restored.acgrip.enabled
-    assert (
-        restored.subtitle_acquisition_policy
-        is SubtitleAcquisitionPolicy.AUTOMATIC
-    )
+    assert not restored.watches[0].subtitle_acquisition.enabled
+    assert restored.watches[0].subtitle_acquisition.provider is None
 
 
-def test_acgrip_opt_in_and_independent_policy_round_trip(
+def test_schema_v5_global_subtitle_config_migrates_only_anime_watches(
     tmp_path: Path,
 ) -> None:
     draft = _draft(tmp_path)
+    movie_source = tmp_path / "movie-watch"
+    movie_library = tmp_path / "movie-library"
+    movie_source.mkdir()
+    movie_library.mkdir()
     revision = ConfigRevision.create(
         revision_id="cfg-acgrip",
         revision=4,
         created_at=datetime(2026, 8, 4, tzinfo=UTC),
         draft=ConfigDraft(
-            watches=draft.watches,
-            provider=draft.provider,
-            apply_policy=ApplyPolicy.PLAN_ONLY,
-            acgrip=AcgripConfig(enabled=True),
-            subtitle_acquisition_policy=(
-                SubtitleAcquisitionPolicy.MANUAL
+            watches=(
+                draft.watches[0],
+                WatchConfig(
+                    watch_id="watch-movie",
+                    root=movie_source,
+                    library_root=movie_library,
+                    work_type=ServerWorkType.MOVIE,
+                    poll_interval_seconds=30,
+                    settle_interval_seconds=120,
+                ),
             ),
+            provider=draft.provider,
+            apply_policy=draft.apply_policy,
         ),
     )
+    payload = json.loads(revision.to_json())
+    payload["schema_version"] = 5
+    payload["acgrip"] = {"enabled": True}
+    payload["subtitle_acquisition_policy"] = "manual"
+    for watch in payload["watches"]:
+        del watch["subtitle_acquisition"]
 
-    restored = ConfigRevision.from_json(revision.to_json())
+    restored = ConfigRevision.from_json(json.dumps(payload))
 
-    assert restored.acgrip.enabled
-    assert (
-        restored.subtitle_acquisition_policy
-        is SubtitleAcquisitionPolicy.MANUAL
+    assert restored.watches[0].subtitle_acquisition == (
+        SubtitleAcquisitionConfig(
+            enabled=True,
+            provider=SubtitleProvider.ACGRIP,
+            policy=SubtitleAcquisitionPolicy.MANUAL,
+        )
     )
-    assert restored.apply_policy is ApplyPolicy.PLAN_ONLY
-    assert restored.public_payload()["acgrip"] == {"enabled": True}
+    assert restored.watches[1].subtitle_acquisition == (
+        DEFAULT_SUBTITLE_ACQUISITION_CONFIG
+    )
+    assert "acgrip" not in restored.public_payload()
 
 
 def test_config_allows_explicit_shared_library_root(
@@ -338,6 +354,10 @@ def test_worker_resolves_library_root_by_exact_watch(
                     work_type=ServerWorkType.ANIME,
                     poll_interval_seconds=30,
                     settle_interval_seconds=120,
+                    subtitle_acquisition=SubtitleAcquisitionConfig(
+                        enabled=True,
+                        provider=SubtitleProvider.ACGRIP,
+                    ),
                 ),
                 WatchConfig(
                     watch_id="watch-b",
@@ -352,6 +372,7 @@ def test_worker_resolves_library_root_by_exact_watch(
             apply_policy=draft.apply_policy,
         ),
     )
+    revision = ConfigRevision.from_json(revision.to_json())
     job = AgentJobContext(
         registration=RunRegistration(
             run_id="run-b",
@@ -376,6 +397,53 @@ def test_worker_resolves_library_root_by_exact_watch(
     assert watch.watch_id == "watch-b"
     assert watch.library_root == library_b.resolve()
     assert work_type is TmdbWorkType.ANIME
+    disabled = InitialAgentWorker._subtitle_search_enabled(
+        watch,
+        work_type,
+        lineage_allows_acquisition=True,
+    )
+    enabled = InitialAgentWorker._subtitle_search_enabled(
+        revision.watches[0],
+        TmdbWorkType.ANIME,
+        lineage_allows_acquisition=True,
+    )
+    assert not disabled
+    assert enabled
+    assert "search_sub" not in organizer_definition(
+        work_type,
+        subtitle_acquisition_enabled=disabled,
+    ).tools
+    assert "search_sub" in organizer_definition(
+        TmdbWorkType.ANIME,
+        subtitle_acquisition_enabled=enabled,
+    ).tools
+
+
+@pytest.mark.parametrize("work_type", [ServerWorkType.TV, ServerWorkType.MOVIE])
+def test_non_anime_watch_rejects_acgrip_provider(
+    tmp_path: Path,
+    work_type: ServerWorkType,
+) -> None:
+    source = tmp_path / f"{work_type.value}-source"
+    library = tmp_path / f"{work_type.value}-library"
+    source.mkdir()
+    library.mkdir()
+
+    with pytest.raises(ServerError) as raised:
+        WatchConfig(
+            watch_id=f"watch-{work_type.value}",
+            root=source,
+            library_root=library,
+            work_type=work_type,
+            poll_interval_seconds=30,
+            settle_interval_seconds=120,
+            subtitle_acquisition=SubtitleAcquisitionConfig(
+                enabled=False,
+                provider=SubtitleProvider.ACGRIP,
+            ),
+        )
+
+    assert raised.value.code is ServerErrorCode.INVALID_CONFIG
 
 
 @pytest.mark.parametrize(

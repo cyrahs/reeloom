@@ -215,6 +215,34 @@ inventory 的 v2 terminal run 不再被旧 claim/observation 阻止删除。
 实现仅为部署稳定观察和历史读取暂留，生产开关固定关闭；观察窗口结束后再物理删除，
 避免把代码删除与不可逆 schema/data 迁移放进同一次上线。
 
+## M14.5 字幕垂直链收口
+
+M14.4 的首次实现只升级了 semantic watcher/media 主链，生产字幕 consumer 仍要求
+M13 的 folder device/inode 并编译 `SubtitleAcquisitionPlan v1`。这使 Agent 正确执行
+`select_subtitle_release` 后在 deterministic planner 边界失败；内存 scheduler 和手工构造
+v1 request 的测试又提供了生产中不存在的 stat 字段，因此没有发现断口。
+
+M14.5 将 active 字幕链纳入同一个 v2 contract：planner 只接受 semantic root/watch/folder/
+inventory/snapshot，输出 `SubtitleAcquisitionPlan v2`；`SUBTITLE_ACQUIRE` 保留独立 plan
+family 和 approval scope，但 authorization、lease、terminal result 与普通 rescan 使用统一
+operation ledger。marker publisher 以当前 path/hash 状态幂等收敛，不创建 subtitle recovery
+claim、filesystem journal 或专用 successor。
+
+普通 `execution_rescan_outbox_v2` 在 successor 注册时传播 acquisition lineage，并以
+`successor_run_id` 唯一结算；active scheduler 不再读取或更新 legacy
+`subtitle_scan_requests_v2`。因此新 snapshot 会进入普通 run，但不会再次暴露字幕获取工具。
+
+worker 与 background 之间使用 closed typed failure envelope。只有明确的 current-state 变化
+可以请求 fresh scan；provider、planner、Agent budget 与未知内部错误均保留来源并终结当前
+run，不能推导 folder generation retry 或 fail housekeeping。lease 重领有固定上限，耗尽后
+原子写入 unavailable result、handled inventory 和 rescan intent，保证不存在
+`operation terminal + request approved` 的裂分状态。
+
+测试边界也改为 producer-to-consumer 纵向验收：至少一条 mandatory PostgreSQL 测试必须从
+真实 semantic watcher 和 Agents SDK scripted model 开始，经过字幕工具选择、v2 planning、
+approval、共享 operation、marker 发布与 read model/API schema；禁止用手工 v1 RootBinding
+替代这条测试。InMemory/PostgreSQL semantic discovery 必须遵守相同契约。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

@@ -93,7 +93,7 @@ def _completed_run_row(
     layout_matches_current_plan: bool,
     interaction_budget_available: bool = True,
 ) -> tuple[object, ...]:
-    row: list[object] = [None] * 61
+    row: list[object] = [None] * 63
     row[:14] = (
         "run-1",
         "completed",
@@ -117,6 +117,8 @@ def _completed_run_row(
     row[47] = False
     row[48] = "completed"
     row[60] = False
+    row[61] = False
+    row[62] = "media_move"
     return tuple(row)
 
 
@@ -157,6 +159,7 @@ def test_v2_run_uses_operation_actions_and_hides_legacy_recovery() -> None:
     assert "rescan" in run["available_actions"]
     assert run["execution"] == {
         "operation_id": "operation:m14",
+        "operation_kind": "media_move",
         "plan_hash": "sha256:" + "a" * 64,
         "status": "partial",
         "attempt_count": 1,
@@ -268,7 +271,6 @@ def test_manual_subtitle_acquisition_exposes_only_independent_action() -> None:
         "plan_hash": "sha256:" + "b" * 64,
         "policy": "manual",
         "status": "planned",
-        "approval_id": None,
         "transaction_id": None,
         "failure_code": None,
         "failure_diagnostic": None,
@@ -300,7 +302,7 @@ def test_nonmanual_subtitle_acquisition_has_no_browser_action(
     assert "approve_subtitle_acquisition" not in run["available_actions"]
 
 
-def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
+def test_legacy_blocked_subtitle_acquisition_has_no_recovery_action() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "running"
     row[3] = "build_subtitle_acquisition_plan"
@@ -327,15 +329,12 @@ def test_blocked_subtitle_acquisition_has_terminal_attention_action() -> None:
     run = queries.get_run("run-1")
 
     assert run is not None
-    assert run["status"] == "needs_attention"
-    assert run["available_actions"] == [
-        "retry_subtitle_acquisition",
-        "fail_subtitle_acquisition",
-    ]
+    assert run["status"] == "running"
+    assert run["available_actions"] == []
     assert run["subtitle_acquisition"]["failure_diagnostic"] == row[49]
 
 
-def test_subtitle_recovery_does_not_require_active_watch_observation() -> None:
+def test_legacy_subtitle_recovery_is_not_reopened_without_observation() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "running"
     row[3] = "build_subtitle_acquisition_plan"
@@ -355,14 +354,11 @@ def test_subtitle_recovery_does_not_require_active_watch_observation() -> None:
     run = queries.get_run("run-1")
 
     assert run is not None
-    assert run["status"] == "needs_attention"
-    assert run["available_actions"] == [
-        "retry_subtitle_acquisition",
-        "fail_subtitle_acquisition",
-    ]
+    assert run["status"] == "running"
+    assert run["available_actions"] == []
 
 
-def test_noncollision_subtitle_failure_is_not_retryable() -> None:
+def test_legacy_noncollision_subtitle_failure_has_no_command() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "running"
     row[3] = "build_subtitle_acquisition_plan"
@@ -382,7 +378,7 @@ def test_noncollision_subtitle_failure_is_not_retryable() -> None:
     run = queries.get_run("run-1")
 
     assert run is not None
-    assert run["available_actions"] == ["fail_subtitle_acquisition"]
+    assert run["available_actions"] == []
 
 
 def test_pending_job_hides_manual_subtitle_action() -> None:

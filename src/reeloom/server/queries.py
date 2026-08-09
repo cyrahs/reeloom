@@ -498,7 +498,8 @@ class PostgresQueries:
                            forward.rescan_state,
                            forward.successor_run_id,
                            d.snapshot_id LIKE 'candidate-snapshot-v2:%%',
-                           legacy.run_id IS NOT NULL
+                           legacy.run_id IS NOT NULL,
+                           forward.operation_kind
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -590,7 +591,7 @@ class PostgresQueries:
                       ON observation.discovery_id = d.discovery_id
                     LEFT JOIN LATERAL (
                         SELECT o.operation_id, o.plan_hash, o.status,
-                               o.attempt_count, o.outcomes,
+                               o.attempt_count, o.outcomes, o.operation_kind,
                                result.items, result.warnings,
                                result.fresh_scan_required,
                                rescan.state AS rescan_state,
@@ -620,7 +621,7 @@ class PostgresQueries:
                         LEFT JOIN execution_rescan_outbox_v2 AS rescan
                           ON rescan.operation_id = o.operation_id
                         WHERE o.run_id = r.run_id
-                          AND o.plan_hash = s.plan_hash
+                        ORDER BY o.authorized_at DESC, o.operation_id DESC
                         LIMIT 1
                     ) AS forward ON true
                     WHERE r.run_id = %s
@@ -663,7 +664,11 @@ class PostgresQueries:
             and forward_status is not None
             and forward_status.terminal
         ):
-            phase = "completed"
+            phase = (
+                "completed"
+                if forward_status is ExecutionOperationStatus.COMPLETED
+                else "failed"
+            )
         busy = busy or forward_status is ExecutionOperationStatus.RUNNING
         attention_state = (
             stored_status in {"running", "failed"}
@@ -671,11 +676,7 @@ class PostgresQueries:
             and plan_hash is None
             and row[44] == "needs_attention"
         )
-        acquisition_attention = (
-            stored_status == "running"
-            and acquisition_plan_hash is not None
-            and acquisition_status == "blocked"
-        )
+        acquisition_attention = False
         needs_attention = (
             attention_state and stored_status == "running"
         ) or acquisition_attention
@@ -684,18 +685,6 @@ class PostgresQueries:
         if not busy and needs_attention:
             if interaction_budget_available and not acquisition_attention:
                 actions.append("question")
-            if (
-                acquisition_attention
-                and row[40] is not None
-                and row[42]
-                in {
-                    "destination_collision",
-                    "atomic_move_unsupported",
-                }
-            ):
-                actions.append("retry_subtitle_acquisition")
-            if acquisition_attention:
-                actions.append("fail_subtitle_acquisition")
             if bool(row[45]) and bool(row[47]) and row[48] == "completed":
                 if not acquisition_attention:
                     if int(row[46]) < 3:
@@ -710,7 +699,11 @@ class PostgresQueries:
             and row[23] is None
         ):
             actions.append("fail_run")
-        if not busy and plan_hash is not None and semantic_v2:
+        if (
+            not busy
+            and semantic_v2
+            and (plan_hash is not None or forward_status is not None)
+        ):
             actions.extend(
                 item.value
                 for item in forward_available_actions(
@@ -767,9 +760,11 @@ class PostgresQueries:
             actions.append("recover_folder_disposition")
         if (
             not busy
+            and stored_status == "running"
             and acquisition_plan_hash is not None
             and acquisition_policy == "manual"
             and acquisition_status in {"planned", "approved"}
+            and forward_status is None
         ):
             actions.append("approve_subtitle_acquisition")
         if bool(row[32]):
@@ -850,9 +845,6 @@ class PostgresQueries:
                     "plan_hash": str(acquisition_plan_hash),
                     "policy": acquisition_policy,
                     "status": acquisition_status,
-                    "approval_id": (
-                        None if row[40] is None else str(row[40])
-                    ),
                     "transaction_id": (
                         None if row[41] is None else str(row[41])
                     ),
@@ -886,6 +878,7 @@ class PostgresQueries:
         }
         return {
             "operation_id": str(row[50]),
+            "operation_kind": str(row[62]),
             "plan_hash": str(row[51]),
             "status": str(row[52]),
             "attempt_count": int(row[53]),

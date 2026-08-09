@@ -96,7 +96,6 @@ type FolderAttempt = {
 type SubtitleAttempt = {
   planHash: string;
   key: string;
-  mode?: "approve" | "retry" | "fail";
 };
 type AttentionAttempt = {
   kind: "retry" | "fail";
@@ -530,9 +529,9 @@ export function RunPage({ runId }: { runId: string }) {
   });
 
   const subtitleAcquisition = useMutation({
-    mutationFn: async ({ planHash, key, mode }: SubtitleAttempt) =>
+    mutationFn: async ({ planHash, key }: SubtitleAttempt) =>
       api.request(
-        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/${mode ?? "approve"}`,
+        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/approve`,
         subtitleAcquisitionActionResultSchema,
         {
           method: "POST",
@@ -543,11 +542,8 @@ export function RunPage({ runId }: { runId: string }) {
           body: {},
         },
       ),
-    onSuccess: async (result) => {
+    onSuccess: async () => {
       setUncertainAttempt(null);
-      if (result.status === "failed") {
-        setActionNotice("已结束此运行；原字幕获取失败诊断仍保留供审计。");
-      }
       await invalidateRun();
     },
     onError: async (error, attempt) => {
@@ -694,7 +690,12 @@ export function RunPage({ runId }: { runId: string }) {
       {run.data.execution ? (
         <section className="settlement" aria-live="polite">
           <div>
-            <h2>前向执行：{forwardStatusLabel(run.data.execution.status)}</h2>
+            <h2>
+              {run.data.execution.operation_kind === "subtitle_acquire"
+                ? "字幕发布"
+                : "前向执行"}
+              ：{forwardStatusLabel(run.data.execution.status)}
+            </h2>
           </div>
           <dl>
             <div>
@@ -716,7 +717,7 @@ export function RunPage({ runId }: { runId: string }) {
           </dl>
           {run.data.execution.fresh_scan_required ? (
             <p className="notice" role="status">
-              已保留成功项；重新扫描状态：
+              当前结果已终结；重新扫描状态：
               {run.data.execution.rescan_state ?? "等待投递"}。
             </p>
           ) : null}
@@ -991,40 +992,6 @@ export function RunPage({ runId }: { runId: string }) {
                     {attentionControl.isPending
                       ? "正在安排重试…"
                       : "重新尝试"}
-                  </button>
-                ) : null}
-                {available.has("retry_subtitle_acquisition") &&
-                run.data.subtitle_acquisition ? (
-                  <button
-                    className="primary wide"
-                    disabled={blocked || subtitleAcquisition.isPending}
-                    onClick={() =>
-                      subtitleAcquisition.mutate({
-                        planHash: run.data.subtitle_acquisition!.plan_hash,
-                        key: idempotencyKey(),
-                        mode: "retry",
-                      })
-                    }
-                  >
-                    {subtitleAcquisition.isPending
-                      ? "正在恢复并发布字幕…"
-                      : "重试字幕获取"}
-                  </button>
-                ) : null}
-                {available.has("fail_subtitle_acquisition") &&
-                run.data.subtitle_acquisition ? (
-                  <button
-                    className="danger-button wide"
-                    disabled={blocked || subtitleAcquisition.isPending}
-                    onClick={() =>
-                      subtitleAcquisition.mutate({
-                        planHash: run.data.subtitle_acquisition!.plan_hash,
-                        key: idempotencyKey(),
-                        mode: "fail",
-                      })
-                    }
-                  >
-                    结束此运行
                   </button>
                 ) : null}
                 {available.has("fail_run") ? (

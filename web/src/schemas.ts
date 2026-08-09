@@ -137,6 +137,7 @@ const anySubtitleFailureDiagnosticSchema = z.union([
 const forwardExecutionSchema = z
   .object({
     operation_id: z.string(),
+    operation_kind: z.enum(["media_move", "subtitle_acquire"]),
     plan_hash: z.string(),
     status: z.enum([
       "authorized",
@@ -224,8 +225,6 @@ export const runSchema = z
         "dispose_failed_folder",
         "recover_folder_disposition",
         "approve_subtitle_acquisition",
-        "retry_subtitle_acquisition",
-        "fail_subtitle_acquisition",
         "retry_run",
         "fail_run",
         "delete_run",
@@ -304,7 +303,6 @@ export const runSchema = z
         plan_hash: z.string(),
         policy: z.enum(["plan_only", "manual", "automatic"]),
         status: z.enum(["planned", "approved", "published", "blocked"]),
-        approval_id: z.string().nullable(),
         transaction_id: z.string().nullable(),
         failure_code: z.string().nullable(),
         failure_diagnostic: anySubtitleFailureDiagnosticSchema
@@ -463,6 +461,13 @@ const watchSchema = z
     settle_interval_seconds: z.number().int(),
     root: z.string(),
     library_root: z.string(),
+    subtitle_acquisition: z
+      .object({
+        enabled: z.boolean(),
+        provider: z.literal("acgrip").nullable(),
+        policy: z.enum(["plan_only", "manual", "automatic"]),
+      })
+      .strict(),
   })
   .strict();
 
@@ -503,14 +508,7 @@ export const configSchema = z
         destination_configured: z.boolean(),
       })
       .strict(),
-    acgrip: z
-      .object({ enabled: z.boolean() })
-      .strict()
-      .default({ enabled: false }),
     apply_policy: z.enum(["plan_only", "manual", "automatic"]),
-    subtitle_acquisition_policy: z
-      .enum(["plan_only", "manual", "automatic"])
-      .default("automatic"),
     agent_budget: agentBudgetSchema,
   })
   .strict();
@@ -622,7 +620,6 @@ export const subtitleAcquisitionResultSchema = z
     plan_hash: z.string(),
     policy: z.enum(["plan_only", "manual", "automatic"]),
     status: z.enum(["planned", "approved", "published", "blocked"]),
-    approval_id: z.string().nullable(),
     transaction_id: z.string().nullable(),
     failure_code: z.string().nullable(),
     failure_diagnostic: anySubtitleFailureDiagnosticSchema
@@ -635,17 +632,8 @@ export const subtitleAcquisitionResultSchema = z
   })
   .strict();
 
-export const subtitleAcquisitionActionResultSchema = z.union([
-  subtitleAcquisitionResultSchema,
-  z
-    .object({
-      run_id: z.string(),
-      plan_hash: z.string(),
-      status: z.literal("failed"),
-      failure_code: z.string(),
-    })
-    .strict(),
-]);
+export const subtitleAcquisitionActionResultSchema =
+  subtitleAcquisitionResultSchema;
 
 export const folderDispositionResultSchema = z
   .object({

@@ -35,7 +35,8 @@ Reeloom 是一个 agent-native 动画剧集整理器。Codex 应按
 - `tools/`：类型化、受 phase 和 capability 限制的 Agent 工具。
 - `kernel/`：纯领域模型、扫描快照、mapping 校验、命名和 plan compiler。
 - `policy/`：路径、symlink、文件类型、工具授权和预算策略。
-- `executor/`：审批验证、preflight、journal、rename 和 rollback。
+- `executor/`：审批验证、current-state preflight 与 forward-only effect；v1
+  journal/rollback 只能保留为历史读取兼容。
 - `adapters/`：OpenAI、TMDB、文件系统和持久化实现。
 - `observability/`：脱敏 trace、指标和离线 eval 数据。
 
@@ -80,18 +81,21 @@ M13 仅为 Anime run 增加以下范围；它们必须按 M13 小步骤逐个落
 ## 4. Plan、审批与执行
 
 - `RenamePlan` 必须是 canonical、不可变、带版本的快照。
-- `SubtitleAcquisitionPlan` 必须使用独立的 canonical plan family、审批 scope、
-  journal 和 executor，不得进入现有 media plan store/executor。
+- `SubtitleAcquisitionPlan` 必须使用独立的 canonical plan family、plan store 与
+  审批 scope；v2 字幕发布与 media move 共用 operation ledger/lease，但不得进入
+  media plan union 或让 Agent 控制 effect。
 - `plan_hash` 必须绑定授权根、candidate snapshot、源文件 identity、全部
   moves、未映射文件和策略版本。
 - 字幕获取的 `plan_hash` 还必须绑定 provider/parser/policy 版本、稳定论坛
   identity、全部归档卷和字幕 member 的 size/hash、manifest digest、目标名和
   资源上限；动态下载 URL 不得持久化。
 - 审批必须绑定 `run_id + plan_hash + scope + expiry + one-time nonce`。
-- Executor 只接受持久化的 `plan_hash` 和审批 ID，不接受自然语言。
-- apply 前必须重新验证 hash、审批、root containment、symlink、source
-  identity、collision 和目标不存在。
-- 先写 rollback/journal，再执行移动；每一步都要可审计并支持幂等恢复。
+- Executor 只接受持久化的 `plan_hash`；首次 operation 必须消费精确审批，后续
+  reconcile 只能收敛同一 operation，不接受自然语言或浏览器传入的审批模式。
+- apply 前必须重新验证 hash、审批、root containment、symlink 与 source/destination
+  当前语义状态。v2 跨调用不得依赖持久 `device/inode/mtime/ctime`。
+- v2 effect 必须 forward-only、逐项可审计且幂等；不得 rollback 已完成项，也不得向
+  用户暴露定向 recovery。任一执行必须在有界重试后进入 terminal 并允许 rescan/delete。
 
 ## 5. 编码与测试
 

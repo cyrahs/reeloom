@@ -75,6 +75,15 @@ def test_production_builder_enforces_single_instance_and_closes(
     )
     first = build_application(settings, auth=auth)
     try:
+        assert first.background.legacy_effects_enabled is False
+        assert first.background.subtitle_acquisitions is not None
+        assert first.background.forward_execution is not None
+        assert (
+            first.background.subtitle_acquisitions._operations
+            is first.background.forward_execution._operations
+        )
+        assert not hasattr(first.background, "subtitle_successors")
+        assert not hasattr(first.background, "subtitle_scans")
         with pytest.raises(ServerError) as raised:
             build_application(settings, auth=auth)
         assert raised.value.code is ServerErrorCode.INSTANCE_ALREADY_RUNNING

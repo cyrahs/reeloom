@@ -1,8 +1,9 @@
 # ADR 0007：M13 动漫字幕探测与获取边界
 
-> M14 更新（2026-08-07）：ADR 0008 在 v2 中取代本 ADR 的 staging-directory
+> M14/M14.5 更新（2026-08-08）：ADR 0008 在 v2 中取代本 ADR 的 staging-directory
 > rename、持久 folder/inode identity、独立 subtitle recovery 和专用 successor
-> 状态机；M14.4 已关闭生产 v1 effect 写路径。论坛搜索、归档校验、完整 hash、独立
+> 状态机；M14.5 将 active planning/approval/publication 垂直链全部切到
+> `SubtitleAcquisitionPlan v2` 和共享 operation ledger。论坛搜索、归档校验、完整 hash、独立
 > approval scope 与 Agent 边界不变。
 
 状态：Accepted
@@ -116,9 +117,10 @@ content-addressed、no-follow、write-once store。M13.3 不签发审批、不�
 
 ## M13.4a 配置、审批与 journal 边界
 
-配置 schema v5 将 ACG.RIP opt-in 与现有 media apply policy 分离：升级 v1-v4 配置时
-`acgrip.enabled=false`，`subtitle_acquisition_policy=automatic` 仅作为未启用时无效的
-默认值。配置不接受 ACG.RIP base URL、Cookie、proxy 或登录信息。
+配置 schema v6 将字幕获取配置放入每个 watch：
+`subtitle_acquisition {enabled, provider, policy}`。来源是受内容类型约束的闭集；当前仅
+Anime 允许 `acgrip`，TV/Movie 保留同一配置入口但不能启用。schema v5 的全局开关与策略
+在读取时只迁移到 Anime watch。配置不接受 ACG.RIP base URL、Cookie、proxy 或登录信息。
 
 字幕获取使用 `ApprovalScope.SUBTITLE_ACQUIRE`；其 canonical approval 仍精确绑定
 `run_id + plan_hash + scope + expiry + nonce`，但不能被现有 media `APPLY` executor
@@ -163,8 +165,8 @@ projection 暴露为 needs-attention。
 
 ## M13.4d production composition 与控制面边界
 
-production worker 只有在 immutable config revision 明确
-`acgrip.enabled=true`、Anime work type 且 lineage 尚未消费时才构造 ACG.RIP search
+production worker 只有在 immutable config revision 中 run 绑定的 exact watch 明确启用
+`provider=acgrip`、work type 为 Anime 且 lineage 尚未消费时才构造 ACG.RIP search
 lease。Agent 选择后，planning lease 在媒体根外生成并持久化 exact acquisition plan；
 schema 28 的独立 request 记录固定 plan-only/manual/automatic policy。字幕 coordinator
 使用独立 filesystem approval store、`SUBTITLE_ACQUIRE` scope、effect mutex 和 executor，

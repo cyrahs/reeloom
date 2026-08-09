@@ -14,6 +14,7 @@ from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
 from reeloom.kernel.rename_plan import is_valid_plan_hash
 from reeloom.kernel.subtitle_acquisition import (
     SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     verify_subtitle_acquisition_plan_bytes,
 )
 from reeloom.policy.path_policy import AuthorizedRoot
@@ -27,8 +28,13 @@ class FilesystemSubtitleAcquisitionPlanStore:
 
     root: AuthorizedRoot
 
-    def save(self, plan: SubtitleAcquisitionPlan) -> None:
-        if not isinstance(plan, SubtitleAcquisitionPlan) or not plan.verify_hash():
+    def save(
+        self,
+        plan: SubtitleAcquisitionPlan | SubtitleAcquisitionPlanV2,
+    ) -> None:
+        if not isinstance(
+            plan, (SubtitleAcquisitionPlan, SubtitleAcquisitionPlanV2)
+        ) or not plan.verify_hash():
             raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         content = plan.canonical_bytes()
         if not 0 < len(content) <= _MAX_PLAN_BYTES:
@@ -37,7 +43,7 @@ class FilesystemSubtitleAcquisitionPlanStore:
         try:
             write_once_at(
                 root_fd,
-                self._name(plan.plan_hash),
+                self._name(plan.plan_hash, schema_version=plan.schema_version),
                 content,
                 limit=_MAX_PLAN_BYTES,
             )
@@ -53,11 +59,25 @@ class FilesystemSubtitleAcquisitionPlanStore:
     def load(self, plan_hash: str) -> bytes:
         root_fd = self._open_root()
         try:
-            content = read_at(
-                root_fd,
-                self._name(plan_hash),
-                limit=_MAX_PLAN_BYTES,
-            )
+            content: bytes | None = None
+            for schema_version in (
+                "subtitle-acquisition-plan-v2",
+                "subtitle-acquisition-plan-v1",
+            ):
+                try:
+                    content = read_at(
+                        root_fd,
+                        self._name(
+                            plan_hash, schema_version=schema_version
+                        ),
+                        limit=_MAX_PLAN_BYTES,
+                    )
+                    break
+                except ImmutableFileError as error:
+                    if error.code is not ImmutableFileErrorCode.NOT_FOUND:
+                        raise
+            if content is None:
+                raise ImmutableFileError(ImmutableFileErrorCode.NOT_FOUND)
             if not verify_subtitle_acquisition_plan_bytes(content, plan_hash):
                 raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
             return content
@@ -77,10 +97,15 @@ class FilesystemSubtitleAcquisitionPlanStore:
             raise ExecutorError(ExecutorErrorCode.PLAN_STORE_FAILURE) from None
 
     @staticmethod
-    def _name(plan_hash: object) -> str:
+    def _name(plan_hash: object, *, schema_version: str) -> str:
         if not is_valid_plan_hash(plan_hash):
             raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
+        if schema_version not in {
+            "subtitle-acquisition-plan-v1",
+            "subtitle-acquisition-plan-v2",
+        }:
+            raise ExecutorError(ExecutorErrorCode.INVALID_PLAN)
         return (
-            "subtitle-acquisition-v1-"
+            f"subtitle-acquisition-{schema_version.rsplit('-', 1)[-1]}-"
             f"{plan_hash.removeprefix('sha256:')}.json"
         )

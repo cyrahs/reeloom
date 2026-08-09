@@ -14,6 +14,7 @@ from reeloom.kernel.subtitle_acquisition import (
     MAX_SUBTITLE_MEMBER_BYTES,
     MAX_TOTAL_SUBTITLE_BYTES,
     SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
 )
 
 CURRENT_SUBTITLE_PUBLICATION_SCHEMA_VERSION = "1"
@@ -148,9 +149,11 @@ class SubtitlePublicationManifest:
     @classmethod
     def from_plan(
         cls,
-        plan: SubtitleAcquisitionPlan,
+        plan: SubtitleAcquisitionPlan | SubtitleAcquisitionPlanV2,
     ) -> SubtitlePublicationManifest:
-        if not isinstance(plan, SubtitleAcquisitionPlan) or not plan.verify_hash():
+        if not isinstance(
+            plan, (SubtitleAcquisitionPlan, SubtitleAcquisitionPlanV2)
+        ) or not plan.verify_hash():
             raise _invalid()
         return cls.create(
             plan_hash=plan.plan_hash,

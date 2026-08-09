@@ -12,6 +12,9 @@ test("round-trips existing capabilities through explicit retain modes", () => {
         rootPath: "",
         libraryRootMode: "retain",
         libraryRootPath: "",
+        subtitleEnabled: true,
+        subtitleProvider: "acgrip",
+        subtitlePolicy: "automatic",
       },
     ],
     base_url: "https://api.openai.com/v1",
@@ -26,8 +29,6 @@ test("round-trips existing capabilities through explicit retain modes", () => {
     telegramBotToken: "",
     telegramChatId: "",
     apply_policy: "manual",
-    acgripEnabled: false,
-    subtitle_acquisition_policy: "automatic",
     agent_budget: {
       max_model_turns: 64,
       max_tool_calls: 64,
@@ -38,6 +39,11 @@ test("round-trips existing capabilities through explicit retain modes", () => {
   });
   expect(payload.watches[0]?.root).toEqual({ mode: "retain" });
   expect(payload.watches[0]?.library_root).toEqual({ mode: "retain" });
+  expect(payload.watches[0]?.subtitle_acquisition).toEqual({
+    enabled: true,
+    provider: "acgrip",
+    policy: "automatic",
+  });
   expect(payload.provider.credential).toEqual({ mode: "retain" });
   expect(JSON.stringify(payload)).not.toContain("api_key");
 });
@@ -54,6 +60,9 @@ test("includes replacement values only after an explicit replace choice", () => 
         rootPath: "/media/incoming",
         libraryRootMode: "replace",
         libraryRootPath: "/media/archive",
+        subtitleEnabled: false,
+        subtitleProvider: null,
+        subtitlePolicy: "manual",
       },
     ],
     base_url: "https://provider.example/v1",
@@ -68,8 +77,6 @@ test("includes replacement values only after an explicit replace choice", () => 
     telegramBotToken: "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
     telegramChatId: "-1001234567890",
     apply_policy: "plan_only",
-    acgripEnabled: true,
-    subtitle_acquisition_policy: "manual",
     agent_budget: {
       max_model_turns: 32,
       max_tool_calls: 48,
@@ -106,6 +113,11 @@ test("includes replacement values only after an explicit replace choice", () => 
       chat_id: "-1001234567890",
     },
   });
+  expect(payload.watches[0]?.subtitle_acquisition).toEqual({
+    enabled: false,
+    provider: null,
+    policy: "manual",
+  });
 });
 
 test("cannot retain a capability after changing its exact identity", () => {
@@ -121,6 +133,9 @@ test("cannot retain a capability after changing its exact identity", () => {
           rootPath: "/media/new-incoming",
           libraryRootMode: "retain",
           libraryRootPath: "/media/new-archive",
+          subtitleEnabled: false,
+          subtitleProvider: "acgrip",
+          subtitlePolicy: "automatic",
         },
       ],
       base_url: "https://api.openai.com/v1",
@@ -135,8 +150,6 @@ test("cannot retain a capability after changing its exact identity", () => {
       telegramBotToken: "",
       telegramChatId: "",
       apply_policy: "manual",
-      acgripEnabled: false,
-      subtitle_acquisition_policy: "automatic",
       agent_budget: {
         max_model_turns: 64,
         max_tool_calls: 64,
@@ -156,6 +169,11 @@ test("cannot retain a capability after changing its exact identity", () => {
           settle_interval_seconds: 120,
           root: "/media/incoming",
           library_root: "/media/library",
+          subtitle_acquisition: {
+            enabled: false,
+            provider: "acgrip",
+            policy: "automatic",
+          },
         },
       ],
       provider: {
@@ -171,8 +189,6 @@ test("cannot retain a capability after changing its exact identity", () => {
         destination_configured: false,
       },
       apply_policy: "manual",
-      acgrip: { enabled: false },
-      subtitle_acquisition_policy: "automatic",
       agent_budget: {
         max_model_turns: 64,
         max_tool_calls: 64,

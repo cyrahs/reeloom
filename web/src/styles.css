@@ -947,6 +947,12 @@ button:disabled {
   align-items: end;
 }
 
+.watch-subtitle-config {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px dashed var(--line-soft);
+}
+
 .subtitle-feature-button {
   width: 100%;
   min-height: 46px;

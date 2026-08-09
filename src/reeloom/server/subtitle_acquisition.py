@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import os
-import stat
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from reeloom.kernel.errors import DomainError, ErrorCode
 from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
-from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticRootBinding,
+)
 from reeloom.kernel.subtitle_acquisition import (
     CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION,
     CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
     CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION,
-    SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     SubtitleArchiveSetCapability,
     SubtitleSelectionDecision,
     SubtitleSelectionStatus,
 )
+from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.subtitle_acquisition import (
     SubtitleAcquisitionPlanStore,
     SubtitleArchiveCache,
@@ -26,6 +29,7 @@ from reeloom.ports.subtitle_acquisition import (
     SubtitleArchiveFetcher,
     SubtitleArchiveInspector,
 )
+from reeloom.server.watcher import NoFollowWatcher
 
 
 def _capability_error() -> SubtitleArchiveError:
@@ -38,14 +42,15 @@ def _capability_error() -> SubtitleArchiveError:
 @dataclass(frozen=True, slots=True)
 class SubtitleAcquisitionPlanningRequest:
     run_id: str
+    config_revision: int
     config_revision_id: str
+    watch_id: str
     created_at: datetime
-    source_root: RootBinding
+    source_root: SemanticRootBinding
     source_folder: str
-    source_folder_device: int
-    source_folder_inode: int
     folder_generation_id: str
-    candidate_snapshot_id: str
+    inventory_id: str
+    candidate_snapshot: SemanticCandidateSnapshot
     tmdb_id: int
     decision: SubtitleSelectionDecision
     capabilities: tuple[SubtitleArchiveSetCapability, ...]
@@ -61,6 +66,14 @@ class SubtitleAcquisitionPlanningRequest:
             )
             or len({item.archive_set_id for item in self.capabilities})
             != len(self.capabilities)
+            or type(self.config_revision) is not int
+            or self.config_revision < 1
+            or not isinstance(self.watch_id, str)
+            or not self.watch_id
+            or not isinstance(self.source_root, SemanticRootBinding)
+            or not isinstance(
+                self.candidate_snapshot, SemanticCandidateSnapshot
+            )
         ):
             raise DomainError(ErrorCode.INVALID_SUBTITLE_SELECTION)
         available = {item.archive_set_id for item in self.capabilities}
@@ -81,7 +94,7 @@ class SubtitleAcquisitionPlanner:
     async def build(
         self,
         request: SubtitleAcquisitionPlanningRequest,
-    ) -> SubtitleAcquisitionPlan:
+    ) -> SubtitleAcquisitionPlanV2:
         if not isinstance(request, SubtitleAcquisitionPlanningRequest):
             raise _capability_error()
         if (
@@ -137,16 +150,17 @@ class SubtitleAcquisitionPlanner:
                 raise _capability_error()
             inspected.append(result)
 
-        plan = SubtitleAcquisitionPlan.create(
+        plan = SubtitleAcquisitionPlanV2.create(
             run_id=request.run_id,
+            config_revision=request.config_revision,
             config_revision_id=request.config_revision_id,
+            watch_id=request.watch_id,
             created_at=request.created_at,
             source_root=request.source_root,
             source_folder=request.source_folder,
-            source_folder_device=request.source_folder_device,
-            source_folder_inode=request.source_folder_inode,
             folder_generation_id=request.folder_generation_id,
-            candidate_snapshot_id=request.candidate_snapshot_id,
+            inventory_id=request.inventory_id,
+            candidate_snapshot=request.candidate_snapshot,
             tmdb_id=request.tmdb_id,
             archives=tuple(item.source for item in inspected),
             inspected_members=tuple(
@@ -171,42 +185,22 @@ class SubtitleAcquisitionPlanner:
     def _require_source_identity(
         request: SubtitleAcquisitionPlanningRequest,
     ) -> None:
-        no_follow = getattr(os, "O_NOFOLLOW", None)
-        if no_follow is None:
-            raise _capability_error()
-        root_fd: int | None = None
-        folder_fd: int | None = None
         try:
-            root_fd = os.open(
-                request.source_root.path.as_posix(),
-                os.O_RDONLY
-                | os.O_DIRECTORY
-                | no_follow
-                | getattr(os, "O_CLOEXEC", 0),
+            current = NoFollowWatcher().scan_folder(
+                AuthorizedRoot.create(
+                    Path(request.source_root.path.as_posix())
+                ),
+                PurePosixPath(request.source_folder),
+                logical_name=request.source_folder,
             )
-            root_metadata = os.fstat(root_fd)
-            if not stat.S_ISDIR(root_metadata.st_mode):
-                raise _capability_error()
-            folder_fd = os.open(
-                request.source_folder,
-                os.O_RDONLY
-                | os.O_DIRECTORY
-                | no_follow
-                | getattr(os, "O_CLOEXEC", 0),
-                dir_fd=root_fd,
-            )
-            folder_metadata = os.fstat(folder_fd)
-            if not stat.S_ISDIR(folder_metadata.st_mode):
-                raise _capability_error()
-        except SubtitleArchiveError:
-            raise
-        except OSError:
+        except Exception:
             raise _capability_error() from None
-        finally:
-            if folder_fd is not None:
-                os.close(folder_fd)
-            if root_fd is not None:
-                os.close(root_fd)
+        if (
+            current.semantic_inventory_id != request.inventory_id
+            or current.candidates.semantic_snapshot
+            != request.candidate_snapshot
+        ):
+            raise _capability_error()
 
     @staticmethod
     def _require_disjoint_workspace(source_root: Path, workspace_root: Path) -> None:

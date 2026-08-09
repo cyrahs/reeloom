@@ -16,10 +16,17 @@ from reeloom.kernel.file_types import SUBTITLE_EXTENSIONS
 from reeloom.kernel.naming import filesystem_name_key
 from reeloom.kernel.rename_plan import RootBinding
 from reeloom.kernel.schema import check_fields
+from reeloom.kernel.semantic_identity import (
+    SemanticCandidateSnapshot,
+    SemanticRootBinding,
+)
 from reeloom.kernel.tmdb import TmdbWorkType
 
 CURRENT_SUBTITLE_ACQUISITION_SCHEMA_VERSION = (
     "subtitle-acquisition-plan-v1"
+)
+CURRENT_SUBTITLE_ACQUISITION_SCHEMA_VERSION_V2 = (
+    "subtitle-acquisition-plan-v2"
 )
 CURRENT_SUBTITLE_ACQUISITION_POLICY_VERSION = "m13-acquisition-v1"
 CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION = "acgrip-discuz-v3"
@@ -55,6 +62,12 @@ _MAX_TARGET_NAME_BYTES = 255
 _MAX_ORDINAL = (1 << 63) - 1
 _OPAQUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SNAPSHOT_ID = re.compile(r"^candidate-snapshot-v1:[0-9a-f]{64}$")
+_SEMANTIC_SNAPSHOT_ID = re.compile(
+    r"^candidate-snapshot-v2:[0-9a-f]{64}$"
+)
+_SEMANTIC_INVENTORY_ID = re.compile(
+    r"^folder-inventory-v2:[0-9a-f]{64}$"
+)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _PLAN_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _URL_TOKEN = re.compile(r"(?i)(?:https?://|www\.|magnet:\?)")
@@ -93,6 +106,36 @@ _PLAN_FIELDS = frozenset(
 _ROOT_FIELDS = frozenset({"device", "inode", "path"})
 _FOLDER_FIELDS = frozenset(
     {"device", "folder_generation_id", "inode", "name"}
+)
+_PLAN_V2_FIELDS = frozenset(
+    {
+        "archives",
+        "candidate_snapshot",
+        "config_revision",
+        "config_revision_id",
+        "created_at",
+        "limits",
+        "members",
+        "parser_version",
+        "inspector_version",
+        "policy_version",
+        "provider_version",
+        "rejected_entries",
+        "run_id",
+        "schema_version",
+        "source_folder",
+        "source_root",
+        "tmdb_id",
+        "watch_id",
+        "work_type",
+    }
+)
+_ROOT_V2_FIELDS = frozenset({"path"})
+_FOLDER_V2_FIELDS = frozenset(
+    {"folder_generation_id", "inventory_id", "name"}
+)
+_CANDIDATE_SNAPSHOT_V2_FIELDS = frozenset(
+    {"schema_version", "snapshot_id", "sources"}
 )
 _ARCHIVE_FIELDS = frozenset(
     {
@@ -1451,7 +1494,9 @@ class SubtitleAcquisitionPlan:
             )
             rejected = tuple(
                 _parse_rejected(item, index=index)
-                for index, item in enumerate(_require_list(raw["rejected_entries"]))
+                for index, item in enumerate(
+                    _require_list(raw["rejected_entries"])
+                )
             )
             if (
                 raw["schema_version"]
@@ -1469,7 +1514,9 @@ class SubtitleAcquisitionPlan:
                 raise _invalid()
             plan = cls.create(
                 run_id=raw["run_id"],  # type: ignore[arg-type]
-                config_revision_id=raw["config_revision_id"],  # type: ignore[arg-type]
+                config_revision_id=raw[
+                    "config_revision_id"
+                ],  # type: ignore[arg-type]
                 created_at=_parse_timestamp(raw["created_at"]),
                 source_root=_parse_root(raw["source_root"]),
                 source_folder=folder["name"],  # type: ignore[arg-type]
@@ -1511,6 +1558,446 @@ class SubtitleAcquisitionPlan:
             raise _invalid()
         return plan
 
+
+@dataclass(frozen=True, slots=True, init=False)
+class SubtitleAcquisitionPlanV2:
+    """Canonical M14.5 subtitle plan bound only to semantic identity."""
+
+    schema_version: str
+    policy_version: str
+    provider_version: str
+    parser_version: str
+    inspector_version: str
+    run_id: str
+    config_revision: int
+    config_revision_id: str
+    watch_id: str
+    created_at: str
+    source_root: SemanticRootBinding
+    source_folder: str
+    folder_generation_id: str
+    inventory_id: str
+    candidate_snapshot: SemanticCandidateSnapshot
+    work_type: TmdbWorkType
+    tmdb_id: int
+    archives: tuple[SubtitleArchiveSource, ...]
+    members: tuple[PlannedSubtitleMember, ...]
+    rejected_entries: tuple[RejectedArchiveEntry, ...]
+    plan_hash: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        run_id: str,
+        config_revision: int,
+        config_revision_id: str,
+        watch_id: str,
+        created_at: datetime,
+        source_root: SemanticRootBinding,
+        source_folder: str,
+        folder_generation_id: str,
+        inventory_id: str,
+        candidate_snapshot: SemanticCandidateSnapshot,
+        tmdb_id: int,
+        archives: tuple[SubtitleArchiveSource, ...],
+        inspected_members: tuple[InspectedSubtitleMember, ...],
+        rejected_entries: tuple[RejectedArchiveEntry, ...] = (),
+    ) -> SubtitleAcquisitionPlanV2:
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or len(run_id.encode("utf-8")) > _MAX_RUN_ID_BYTES
+            or any(unicodedata.category(char).startswith("C") for char in run_id)
+            or type(config_revision) is not int
+            or config_revision < 1
+            or not isinstance(source_root, SemanticRootBinding)
+            or not isinstance(inventory_id, str)
+            or _SEMANTIC_INVENTORY_ID.fullmatch(inventory_id) is None
+            or not isinstance(candidate_snapshot, SemanticCandidateSnapshot)
+            or _SEMANTIC_SNAPSHOT_ID.fullmatch(candidate_snapshot.snapshot_id)
+            is None
+            or not candidate_snapshot.sources
+            or not any(
+                item.kind is CandidateKind.VIDEO
+                for item in candidate_snapshot.sources
+            )
+            or type(tmdb_id) is not int
+            or tmdb_id < 1
+            or not isinstance(archives, tuple)
+            or not 1 <= len(archives) <= MAX_ARCHIVE_SETS
+            or any(not isinstance(item, SubtitleArchiveSource) for item in archives)
+            or not isinstance(inspected_members, tuple)
+            or not 1 <= len(inspected_members) <= MAX_ARCHIVE_ENTRIES
+            or any(
+                not isinstance(item, InspectedSubtitleMember)
+                for item in inspected_members
+            )
+            or not isinstance(rejected_entries, tuple)
+            or any(
+                not isinstance(item, RejectedArchiveEntry)
+                for item in rejected_entries
+            )
+            or len(inspected_members) + len(rejected_entries)
+            > MAX_ARCHIVE_ENTRIES
+        ):
+            raise _invalid()
+        config_revision_id = _opaque(config_revision_id)
+        watch_id = _opaque(watch_id)
+        folder_generation_id = _opaque(folder_generation_id)
+        source_folder = _component(source_folder)
+        canonical_archives = tuple(
+            sorted(archives, key=lambda item: item.archive_set_id)
+        )
+        archive_ids = tuple(item.archive_set_id for item in canonical_archives)
+        seasons = tuple(
+            season
+            for archive in canonical_archives
+            for season in archive.season_numbers
+        )
+        if (
+            len(set(archive_ids)) != len(archive_ids)
+            or len(set(seasons)) != len(seasons)
+            or sum(
+                volume.size_bytes
+                for archive in canonical_archives
+                for volume in archive.volumes
+            )
+            > MAX_TOTAL_ARCHIVE_BYTES
+        ):
+            raise _invalid()
+        archive_id_set = set(archive_ids)
+        canonical_inspected = tuple(
+            sorted(
+                inspected_members,
+                key=lambda item: (
+                    item.archive_set_id,
+                    filesystem_name_key(item.source_path.as_posix()),
+                    item.source_path.as_posix(),
+                ),
+            )
+        )
+        members = tuple(
+            PlannedSubtitleMember.from_inspected(item)
+            for item in canonical_inspected
+        )
+        if (
+            any(item.archive_set_id not in archive_id_set for item in members)
+            or set(item.archive_set_id for item in members) != archive_id_set
+            or len(
+                {(item.archive_set_id, item.source_path) for item in members}
+            )
+            != len(members)
+            or len(
+                {filesystem_name_key(item.destination_name) for item in members}
+            )
+            != len(members)
+        ):
+            raise _invalid(ErrorCode.SUBTITLE_ACQUISITION_COLLISION)
+        total_member_bytes = sum(item.size_bytes for item in members)
+        total_archive_bytes = sum(
+            volume.size_bytes
+            for archive in canonical_archives
+            for volume in archive.volumes
+        )
+        if (
+            total_member_bytes > MAX_TOTAL_SUBTITLE_BYTES
+            or total_member_bytes
+            > total_archive_bytes * MAX_COMPRESSION_RATIO
+        ):
+            raise _invalid()
+        canonical_rejected = tuple(sorted(rejected_entries))
+        if (
+            any(
+                item.archive_set_id not in archive_id_set
+                for item in canonical_rejected
+            )
+            or len(set(canonical_rejected)) != len(canonical_rejected)
+        ):
+            raise _invalid()
+
+        plan = object.__new__(cls)
+        object.__setattr__(
+            plan,
+            "schema_version",
+            CURRENT_SUBTITLE_ACQUISITION_SCHEMA_VERSION_V2,
+        )
+        object.__setattr__(
+            plan,
+            "policy_version",
+            CURRENT_SUBTITLE_ACQUISITION_POLICY_VERSION,
+        )
+        object.__setattr__(
+            plan,
+            "provider_version",
+            CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION,
+        )
+        object.__setattr__(
+            plan,
+            "parser_version",
+            CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
+        )
+        object.__setattr__(
+            plan,
+            "inspector_version",
+            CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION,
+        )
+        object.__setattr__(plan, "run_id", run_id)
+        object.__setattr__(plan, "config_revision", config_revision)
+        object.__setattr__(plan, "config_revision_id", config_revision_id)
+        object.__setattr__(plan, "watch_id", watch_id)
+        object.__setattr__(plan, "created_at", _canonical_timestamp(created_at))
+        object.__setattr__(plan, "source_root", source_root)
+        object.__setattr__(plan, "source_folder", source_folder)
+        object.__setattr__(plan, "folder_generation_id", folder_generation_id)
+        object.__setattr__(plan, "inventory_id", inventory_id)
+        object.__setattr__(plan, "candidate_snapshot", candidate_snapshot)
+        object.__setattr__(plan, "work_type", TmdbWorkType.ANIME)
+        object.__setattr__(plan, "tmdb_id", tmdb_id)
+        object.__setattr__(plan, "archives", canonical_archives)
+        object.__setattr__(plan, "members", members)
+        object.__setattr__(plan, "rejected_entries", canonical_rejected)
+        object.__setattr__(plan, "plan_hash", "")
+        object.__setattr__(
+            plan,
+            "plan_hash",
+            "sha256:" + hashlib.sha256(plan.canonical_bytes()).hexdigest(),
+        )
+        return plan
+
+    @property
+    def candidate_snapshot_id(self) -> str:
+        return self.candidate_snapshot.snapshot_id
+
+    @property
+    def destination_directory(self) -> PurePosixPath:
+        return PurePosixPath(
+            f"reeloom-acquired-{self.plan_hash.removeprefix('sha256:')}"
+        )
+
+    def canonical_bytes(self) -> bytes:
+        payload = {
+            "archives": [
+                {
+                    "archive_set_id": str(archive.archive_set_id),
+                    "format": archive.format.value,
+                    "manifest_digest": archive.manifest_digest,
+                    "post_id": archive.post_id,
+                    "release_id": str(archive.release_id),
+                    "season_numbers": list(archive.season_numbers),
+                    "thread_id": archive.thread_id,
+                    "volumes": [
+                        {
+                            "attachment_id": volume.attachment_id,
+                            "index": volume.index,
+                            "sha256": volume.sha256,
+                            "size_bytes": volume.size_bytes,
+                        }
+                        for volume in archive.volumes
+                    ],
+                }
+                for archive in self.archives
+            ],
+            "candidate_snapshot": {
+                "schema_version": self.candidate_snapshot.schema_version,
+                "snapshot_id": self.candidate_snapshot.snapshot_id,
+                "sources": self.candidate_snapshot.payload(),
+            },
+            "config_revision": self.config_revision,
+            "config_revision_id": self.config_revision_id,
+            "created_at": self.created_at,
+            "limits": {
+                "max_archive_entries": MAX_ARCHIVE_ENTRIES,
+                "max_archive_sets": MAX_ARCHIVE_SETS,
+                "max_archive_volume_bytes": MAX_ARCHIVE_VOLUME_BYTES,
+                "max_archive_volumes": MAX_ARCHIVE_VOLUMES,
+                "max_compression_ratio": MAX_COMPRESSION_RATIO,
+                "max_subtitle_member_bytes": MAX_SUBTITLE_MEMBER_BYTES,
+                "max_total_archive_bytes": MAX_TOTAL_ARCHIVE_BYTES,
+                "max_total_subtitle_bytes": MAX_TOTAL_SUBTITLE_BYTES,
+            },
+            "members": [
+                {
+                    "archive_set_id": str(member.archive_set_id),
+                    "destination_name": member.destination_name,
+                    "sha256": member.sha256,
+                    "size_bytes": member.size_bytes,
+                    "source_path": member.source_path.as_posix(),
+                }
+                for member in self.members
+            ],
+            "parser_version": self.parser_version,
+            "inspector_version": self.inspector_version,
+            "policy_version": self.policy_version,
+            "provider_version": self.provider_version,
+            "rejected_entries": [
+                {
+                    "archive_set_id": str(item.archive_set_id),
+                    "member_name_digest": item.member_name_digest,
+                    "reason": item.reason.value,
+                }
+                for item in self.rejected_entries
+            ],
+            "run_id": self.run_id,
+            "schema_version": self.schema_version,
+            "source_folder": {
+                "folder_generation_id": self.folder_generation_id,
+                "inventory_id": self.inventory_id,
+                "name": self.source_folder,
+            },
+            "source_root": self.source_root.payload(),
+            "tmdb_id": self.tmdb_id,
+            "watch_id": self.watch_id,
+            "work_type": self.work_type.value,
+        }
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+
+    def verify_hash(self) -> bool:
+        expected = "sha256:" + hashlib.sha256(
+            self.canonical_bytes()
+        ).hexdigest()
+        return (
+            _PLAN_HASH.fullmatch(self.plan_hash) is not None
+            and hmac.compare_digest(self.plan_hash, expected)
+        )
+
+    @classmethod
+    def from_canonical_bytes(
+        cls,
+        content: bytes,
+        *,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionPlanV2:
+        if (
+            not isinstance(content, bytes)
+            or not 0 < len(content) <= _MAX_CANONICAL_BYTES
+            or not isinstance(plan_hash, str)
+            or _PLAN_HASH.fullmatch(plan_hash) is None
+            or not hmac.compare_digest(
+                plan_hash,
+                "sha256:" + hashlib.sha256(content).hexdigest(),
+            )
+        ):
+            raise _invalid()
+        try:
+            raw = check_fields(
+                json.loads(content, object_pairs_hook=_duplicate_pairs),
+                _PLAN_V2_FIELDS,
+                field="subtitle_acquisition_plan_v2",
+            )
+            if (
+                raw["schema_version"]
+                != CURRENT_SUBTITLE_ACQUISITION_SCHEMA_VERSION_V2
+                or raw["policy_version"]
+                != CURRENT_SUBTITLE_ACQUISITION_POLICY_VERSION
+                or raw["provider_version"]
+                != CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION
+                or raw["parser_version"]
+                != CURRENT_SUBTITLE_SEARCH_PARSER_VERSION
+                or raw["inspector_version"]
+                != CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION
+                or raw["work_type"] != TmdbWorkType.ANIME.value
+            ):
+                raise _invalid()
+            limits = check_fields(raw["limits"], _LIMIT_FIELDS, field="limits")
+            if limits != {
+                "max_archive_entries": MAX_ARCHIVE_ENTRIES,
+                "max_archive_sets": MAX_ARCHIVE_SETS,
+                "max_archive_volume_bytes": MAX_ARCHIVE_VOLUME_BYTES,
+                "max_archive_volumes": MAX_ARCHIVE_VOLUMES,
+                "max_compression_ratio": MAX_COMPRESSION_RATIO,
+                "max_subtitle_member_bytes": MAX_SUBTITLE_MEMBER_BYTES,
+                "max_total_archive_bytes": MAX_TOTAL_ARCHIVE_BYTES,
+                "max_total_subtitle_bytes": MAX_TOTAL_SUBTITLE_BYTES,
+            }:
+                raise _invalid()
+            root = check_fields(
+                raw["source_root"], _ROOT_V2_FIELDS, field="source_root"
+            )
+            folder = check_fields(
+                raw["source_folder"],
+                _FOLDER_V2_FIELDS,
+                field="source_folder",
+            )
+            snapshot = check_fields(
+                raw["candidate_snapshot"],
+                _CANDIDATE_SNAPSHOT_V2_FIELDS,
+                field="candidate_snapshot",
+            )
+            if snapshot["schema_version"] != "2":
+                raise _invalid()
+            candidate_snapshot = SemanticCandidateSnapshot.from_payload(
+                snapshot["sources"],
+                snapshot_id=snapshot["snapshot_id"],
+            )
+            archives = tuple(
+                _parse_archive(item, index=index)
+                for index, item in enumerate(_require_list(raw["archives"]))
+            )
+            parsed_members = tuple(
+                _parse_member(item, index=index)
+                for index, item in enumerate(_require_list(raw["members"]))
+            )
+            rejected = tuple(
+                _parse_rejected(item, index=index)
+                for index, item in enumerate(
+                    _require_list(raw["rejected_entries"])
+                )
+            )
+            path = root["path"]
+            if not isinstance(path, str):
+                raise _invalid()
+            plan = cls.create(
+                run_id=raw["run_id"],  # type: ignore[arg-type]
+                config_revision=_require_int(
+                    raw["config_revision"], minimum=1
+                ),
+                config_revision_id=raw[
+                    "config_revision_id"
+                ],  # type: ignore[arg-type]
+                watch_id=raw["watch_id"],  # type: ignore[arg-type]
+                created_at=_parse_timestamp(raw["created_at"]),
+                source_root=SemanticRootBinding(PurePosixPath(path)),
+                source_folder=folder["name"],  # type: ignore[arg-type]
+                folder_generation_id=folder[
+                    "folder_generation_id"
+                ],  # type: ignore[arg-type]
+                inventory_id=folder["inventory_id"],  # type: ignore[arg-type]
+                candidate_snapshot=candidate_snapshot,
+                tmdb_id=raw["tmdb_id"],  # type: ignore[arg-type]
+                archives=archives,
+                inspected_members=tuple(
+                    InspectedSubtitleMember(
+                        archive_set_id=item.archive_set_id,
+                        source_path=item.source_path,
+                        size_bytes=item.size_bytes,
+                        sha256=item.sha256,
+                    )
+                    for item in parsed_members
+                ),
+                rejected_entries=rejected,
+            )
+        except (
+            DomainError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ):
+            raise _invalid() from None
+        if (
+            plan.plan_hash != plan_hash
+            or plan.canonical_bytes() != content
+            or tuple(item.destination_name for item in parsed_members)
+            != tuple(item.destination_name for item in plan.members)
+        ):
+            raise _invalid()
+        return plan
 
 def _require_list(value: object) -> list[object]:
     if not isinstance(value, list):
@@ -1594,11 +2081,10 @@ def verify_subtitle_acquisition_plan_bytes(
     content: bytes,
     plan_hash: str,
 ) -> bool:
-    try:
-        SubtitleAcquisitionPlan.from_canonical_bytes(
-            content,
-            plan_hash=plan_hash,
-        )
-    except (DomainError, ValueError):
-        return False
-    return True
+    for plan_type in (SubtitleAcquisitionPlanV2, SubtitleAcquisitionPlan):
+        try:
+            plan_type.from_canonical_bytes(content, plan_hash=plan_hash)
+        except (DomainError, ValueError):
+            continue
+        return True
+    return False

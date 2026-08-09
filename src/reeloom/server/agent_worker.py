@@ -31,7 +31,10 @@ from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.archive_directory import ArchiveDirectoryError
 from reeloom.ports.plans import PlanCompiler, PlanStore
 from reeloom.ports.tmdb import TmdbProvider
-from reeloom.ports.subtitle_acquisition import SubtitleSearchProvider
+from reeloom.ports.subtitle_acquisition import (
+    SubtitleSearchProvider,
+    VideoSubtitleInspector,
+)
 from reeloom.runtime.errors import BudgetExceeded
 from reeloom.runtime.events import (
     ApprovalRequested,
@@ -49,11 +52,17 @@ from reeloom.server.config import (
     ConfigRevision,
     ServerWorkType,
     SubtitleAcquisitionPolicy,
+    SubtitleProvider,
     WatchConfig,
 )
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.organizer_definition import organizer_definition
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.job_outcome import (
+    AgentWorkFailure,
+    FailureEnvelope,
+    FailureStage,
+)
 from reeloom.server.provider import ModelLease
 from reeloom.server.runtime_store import PostgresEventStore
 from reeloom.server.notification_projector import (
@@ -73,7 +82,7 @@ from reeloom.server.subtitle_acquisition import (
     SubtitleAcquisitionPlanningRequest,
 )
 from reeloom.server.watcher import NoFollowWatcher
-from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlan
+from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlanV2
 from reeloom.tools.candidates import SnapshotCandidateSource
 
 _INITIAL_PROMPT = (
@@ -125,11 +134,19 @@ class SubtitlePlanningLeaseFactory(Protocol):
 
 
 class SubtitlePlanSink(Protocol):
-    def __call__(self, plan: SubtitleAcquisitionPlan) -> object: ...
+    def __call__(self, plan: SubtitleAcquisitionPlanV2) -> object: ...
 
 
 class SubtitleLineageGate(Protocol):
     def lineage_allows_automatic_acquisition(self, run_id: str) -> bool: ...
+
+
+class VideoSubtitleInspectorFactory(Protocol):
+    def __call__(
+        self,
+        scan: FilesystemScanResult,
+        snapshot_id: str | None,
+    ) -> VideoSubtitleInspector: ...
 
 
 class AgentWorkKind(StrEnum):
@@ -160,6 +177,9 @@ class InitialAgentWorker:
     subtitle_planning_factory: SubtitlePlanningLeaseFactory | None = None
     subtitle_plan_sink: SubtitlePlanSink | None = None
     subtitle_lineage_gate: SubtitleLineageGate | None = None
+    video_subtitle_inspector_factory: (
+        VideoSubtitleInspectorFactory | None
+    ) = None
 
     async def run(self, *, run_id: str) -> str:
         result = await self.run_result(run_id=run_id)
@@ -238,7 +258,7 @@ class InitialAgentWorker:
                 state=state,
             )
             if (
-                config.subtitle_acquisition_policy
+                watch.subtitle_acquisition.policy
                 is SubtitleAcquisitionPolicy.PLAN_ONLY
             ):
                 event_store.append(
@@ -250,14 +270,15 @@ class InitialAgentWorker:
             )
         if state is not None and state.stop_reason is StopReason.NEEDS_ATTENTION:
             return AgentWorkResult(AgentWorkKind.NEEDS_ATTENTION)
-        search_enabled = (
-            work_type is TmdbWorkType.ANIME
-            and config.acgrip.enabled
-            and (
-                self.subtitle_lineage_gate is None
-                or self.subtitle_lineage_gate
-                .lineage_allows_automatic_acquisition(run_id)
-            )
+        lineage_allows_acquisition = (
+            self.subtitle_lineage_gate is None
+            or self.subtitle_lineage_gate
+            .lineage_allows_automatic_acquisition(run_id)
+        )
+        search_enabled = self._subtitle_search_enabled(
+            watch,
+            work_type,
+            lineage_allows_acquisition=lineage_allows_acquisition,
         )
         current_definition = organizer_definition(
             work_type,
@@ -281,7 +302,12 @@ class InitialAgentWorker:
             definition != current_definition
             or bound_session_id != session_id
         ):
-            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            raise AgentWorkFailure(
+                FailureEnvelope(
+                    code="subtitle_plan_context_unavailable",
+                    stage=FailureStage.SUBTITLE_PLAN,
+                )
+            )
         session = RepositoryAgentSession(
             repository=self.sessions,
             run_id=run_id,
@@ -308,9 +334,15 @@ class InitialAgentWorker:
                 ),
                 subtitle_provider=subtitle_provider,
                 video_subtitle_inspector=(
-                    FilesystemVideoSubtitleInspector(
-                        scan,
-                        snapshot_id_override=snapshot_id_override,
+                    (
+                        self.video_subtitle_inspector_factory(
+                            scan, snapshot_id_override
+                        )
+                        if self.video_subtitle_inspector_factory is not None
+                        else FilesystemVideoSubtitleInspector(
+                            scan,
+                            snapshot_id_override=snapshot_id_override,
+                        )
                     )
                     if search_enabled
                     else None
@@ -359,7 +391,7 @@ class InitialAgentWorker:
                     state=result.state,
                 )
                 if (
-                    config.subtitle_acquisition_policy
+                    watch.subtitle_acquisition.policy
                     is SubtitleAcquisitionPolicy.PLAN_ONLY
                 ):
                     event_store.append(
@@ -397,7 +429,7 @@ class InitialAgentWorker:
         config: ConfigRevision,
         compiler: PlanCompiler,
         state: object,
-    ) -> SubtitleAcquisitionPlan:
+    ) -> SubtitleAcquisitionPlanV2:
         decision = getattr(state, "subtitle_selection_decision", None)
         selected = getattr(state, "selected_series", None)
         capabilities = getattr(state, "subtitle_archive_capabilities", None)
@@ -408,35 +440,51 @@ class InitialAgentWorker:
             or decision is None
             or selected is None
             or not isinstance(capabilities, tuple)
+            or not isinstance(compiler, FilesystemPlanCompilerV2)
             or discovery.source_folder is None
             or discovery.folder_generation_id is None
-            or discovery.source_folder_device is None
-            or discovery.source_folder_inode is None
+            or discovery.inventory_id is None
         ):
             raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
         lease = self.subtitle_planning_factory()
         try:
-            plan = await lease.planner.build(
-                SubtitleAcquisitionPlanningRequest(
-                    run_id=job.registration.run_id,
-                    config_revision_id=config.revision_id,
-                    created_at=discovery.discovered_at,
-                    source_root=(
-                        compiler.legacy_source_root_binding
-                        if isinstance(compiler, FilesystemPlanCompilerV2)
-                        else compiler.source_root_binding
-                    ),
-                    source_folder=discovery.source_folder,
-                    source_folder_device=discovery.source_folder_device,
-                    source_folder_inode=discovery.source_folder_inode,
-                    folder_generation_id=discovery.folder_generation_id,
-                    candidate_snapshot_id=discovery.snapshot_id,
-                    tmdb_id=selected.tmdb_id,
-                    decision=decision,
-                    capabilities=capabilities,
+            try:
+                plan = await lease.planner.build(
+                    SubtitleAcquisitionPlanningRequest(
+                        run_id=job.registration.run_id,
+                        config_revision=config.revision,
+                        config_revision_id=config.revision_id,
+                        watch_id=job.discovery.watch_id,
+                        created_at=discovery.discovered_at,
+                        source_root=compiler.source_root_binding,
+                        source_folder=discovery.source_folder,
+                        folder_generation_id=discovery.folder_generation_id,
+                        inventory_id=discovery.inventory_id,
+                        candidate_snapshot=compiler.semantic_snapshot,
+                        tmdb_id=selected.tmdb_id,
+                        decision=decision,
+                        capabilities=capabilities,
+                    )
                 )
-            )
-            self.subtitle_plan_sink(plan)
+                self.subtitle_plan_sink(plan)
+            except ServerError as error:
+                if error.code is ServerErrorCode.DATABASE_UNAVAILABLE:
+                    raise
+                raise AgentWorkFailure(
+                    FailureEnvelope(
+                        code=error.code.value,
+                        stage=FailureStage.SUBTITLE_PLAN,
+                    )
+                ) from error
+            except AgentWorkFailure:
+                raise
+            except Exception as error:
+                raise AgentWorkFailure(
+                    FailureEnvelope(
+                        code="subtitle_plan_failed",
+                        stage=FailureStage.SUBTITLE_PLAN,
+                    )
+                ) from error
             return plan
         finally:
             try:
@@ -467,6 +515,22 @@ class InitialAgentWorker:
             ServerWorkType.MOVIE: TmdbWorkType.MOVIE,
         }[watch.work_type]
         return watch, work_type
+
+    @staticmethod
+    def _subtitle_search_enabled(
+        watch: WatchConfig,
+        work_type: TmdbWorkType,
+        *,
+        lineage_allows_acquisition: bool,
+    ) -> bool:
+        return (
+            work_type is TmdbWorkType.ANIME
+            and watch.work_type is ServerWorkType.ANIME
+            and watch.subtitle_acquisition.enabled
+            and watch.subtitle_acquisition.provider
+            is SubtitleProvider.ACGRIP
+            and lineage_allows_acquisition
+        )
 
     @staticmethod
     def _reconstruct_snapshot(job: AgentJobContext):

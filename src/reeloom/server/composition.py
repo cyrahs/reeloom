@@ -7,8 +7,7 @@ import stat
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -21,7 +20,6 @@ from reeloom.adapters.acgrip import (
     AcgripSubtitleArchiveFetcher,
     AcgripSubtitleSearchProvider,
 )
-from reeloom.adapters.approval import FilesystemApprovalStore
 from reeloom.adapters.subtitle_archive import (
     FilesystemSubtitleArchiveInspector,
 )
@@ -51,19 +49,6 @@ from reeloom.server.subtitle_acquisition import SubtitleAcquisitionPlanner
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
-from reeloom.server.subtitle_successor import (
-    SubtitleFreshScan,
-    SubtitleFreshScanError,
-    SubtitleSuccessorClaim,
-    SubtitleSuccessorWorker,
-)
-from reeloom.server.subtitle_successor_repository import (
-    PostgresSubtitleSuccessorOutbox,
-)
-from reeloom.server.subtitle_publication_repository import (
-    PostgresSubtitlePublicationRepository,
-)
-from reeloom.server.subtitle_scan import SubtitleScanWorker
 from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
 from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.archive_directory import run_directory_io
@@ -84,6 +69,7 @@ from reeloom.server.forward_execution_service import (
 from reeloom.server.forward_operation_repository import (
     PostgresForwardOperationRepository,
 )
+from reeloom.server.subtitle_lineage import PostgresSubtitleLineageGate
 from reeloom.server.forward_rescan import ForwardRescanWorker
 from reeloom.server.folder_housekeeping_v2 import (
     FolderHousekeepingWorker,
@@ -190,47 +176,6 @@ class _AcgripExecutorLease:
 
     async def close(self) -> None:
         await self.fetcher.aclose()
-
-
-@dataclass(frozen=True, slots=True)
-class _ConfiguredSubtitleFreshScanner:
-    configs: PostgresConfigRepository
-    watcher: NoFollowWatcher = NoFollowWatcher()
-
-    def scan(self, claim: SubtitleSuccessorClaim) -> SubtitleFreshScan:
-        try:
-            config = self.configs.get(claim.config_revision)
-            watch = next(
-                (
-                    item
-                    for item in config.watches
-                    if item.watch_id == claim.watch_id
-                    and item.work_type is ServerWorkType.ANIME
-                ),
-                None,
-            )
-            if watch is None:
-                raise SubtitleFreshScanError(retryable=False)
-            return SubtitleFreshScan(
-                snapshot=self.watcher.scan_folder(
-                    AuthorizedRoot.create(watch.root),
-                    PurePosixPath(claim.settlement.source_folder),
-                    logical_name=claim.settlement.source_folder,
-                ),
-                settle_for=timedelta(
-                    seconds=watch.settle_interval_seconds
-                ),
-            )
-        except SubtitleFreshScanError:
-            raise
-        except ServerError as error:
-            raise SubtitleFreshScanError(
-                retryable=(
-                    error.code is ServerErrorCode.DATABASE_UNAVAILABLE
-                )
-            ) from None
-        except Exception:
-            raise SubtitleFreshScanError(retryable=True) from None
 
 
 def _state_subdirectory(root: Path, name: str) -> AuthorizedRoot:
@@ -401,9 +346,6 @@ def build_application(
         subtitle_plan_root = _state_subdirectory(
             settings.state_root, "subtitle-plans"
         )
-        subtitle_approval_root = _state_subdirectory(
-            settings.state_root, "subtitle-approvals"
-        )
         subtitle_workspace = _state_subdirectory(
             settings.state_root, "subtitle-workspace"
         )
@@ -412,6 +354,9 @@ def build_application(
         )
         secrets = FilesystemSecretStore(secret_root)
         plans = FilesystemPlanStore(plan_root)
+        subtitle_plans = FilesystemSubtitleAcquisitionPlanStore(
+            subtitle_plan_root
+        )
         journals = FilesystemJournalStore(journal_root)
         approvals = PostgresApprovalStore(database.pool)
         forward_operations = PostgresForwardOperationRepository(database.pool)
@@ -447,6 +392,7 @@ def build_application(
             operations=forward_operations,
             executor=ForwardExecutor(PosixForwardFilesystem()),
             worker_id=boot_id,
+            subtitle_plans=subtitle_plans,
         )
         folder_repository = PostgresFolderDispositionRepository(
             database.pool,
@@ -487,21 +433,9 @@ def build_application(
             scheduler=scheduler,
         )
         config_repository = PostgresConfigRepository(database.pool)
-        subtitle_plans = FilesystemSubtitleAcquisitionPlanStore(
-            subtitle_plan_root
-        )
-        subtitle_approvals = FilesystemApprovalStore(
-            subtitle_approval_root
-        )
         subtitle_inspector = FilesystemSubtitleArchiveInspector()
         subtitle_archive_cache = FilesystemSubtitleArchiveCache(
             subtitle_archive_cache_root
-        )
-        subtitle_successor_outbox = PostgresSubtitleSuccessorOutbox(
-            database.pool
-        )
-        subtitle_publications = PostgresSubtitlePublicationRepository(
-            database.pool
         )
 
         def subtitle_planning_factory() -> _AcgripPlanningLease:
@@ -522,7 +456,6 @@ def build_application(
                 fetcher,
                 SubtitleMarkerAcquisitionExecutor(
                     subtitle_plans,
-                    subtitle_approvals,
                     subtitle_archive_cache,
                     fetcher,
                     subtitle_inspector,
@@ -532,16 +465,12 @@ def build_application(
         subtitle_acquisitions = SubtitleAcquisitionCoordinator(
             pool=database.pool,
             plans=subtitle_plans,
-            approvals=subtitle_approvals,
             executor_factory=subtitle_executor_factory,
-            successors=subtitle_successor_outbox,
-            publications=subtitle_publications,
+            operation_approvals=approvals,
+            operations=forward_operations,
+            worker_id=boot_id,
         )
         subtitle_acquisitions.reconcile_approved()
-        subtitle_successor_worker = SubtitleSuccessorWorker(
-            outbox=subtitle_successor_outbox,
-            scanner=_ConfiguredSubtitleFreshScanner(config_repository),
-        )
         config_service = ConfigService(
             configs=config_repository,
             secrets=secrets,
@@ -613,9 +542,6 @@ def build_application(
                     )
                 )
                 or telegram.enabled != expected.draft.telegram.enabled
-                or revision.acgrip != expected.draft.acgrip
-                or revision.subtitle_acquisition_policy
-                is not expected.draft.subtitle_acquisition_policy
                 or telegram.notification_types
                 != expected.draft.telegram.notification_types
                 or telegram.chat_id != expected.draft.telegram.chat_id
@@ -757,7 +683,7 @@ def build_application(
             ),
             subtitle_planning_factory=subtitle_planning_factory,
             subtitle_plan_sink=subtitle_acquisitions.register_plan,
-            subtitle_lineage_gate=subtitle_publications,
+            subtitle_lineage_gate=PostgresSubtitleLineageGate(database.pool),
         )
         background = BackgroundServices(
             boot_id=boot_id,
@@ -774,11 +700,6 @@ def build_application(
                 worker_id=boot_id,
             ),
             subtitle_acquisitions=subtitle_acquisitions,
-            subtitle_successors=subtitle_successor_worker,
-            subtitle_scans=SubtitleScanWorker(
-                publications=subtitle_publications,
-                scheduler=scheduler,
-            ),
             forward_execution=forward_execution,
             forward_rescans=ForwardRescanWorker(
                 operations=forward_operations,

@@ -2,10 +2,10 @@
 
 状态：Draft v0.9
 
-日期：2026-08-07
+日期：2026-08-08
 
-当前进度：M0-M13、M14.0-M14.4 已完成。v1 effect 历史保留只读，生产写路径
-已关闭；其物理代码删除须等部署后的稳定观察窗口结束。
+当前进度：M0-M13、M14.0-M14.5 已完成。M14.5 已收口字幕垂直链和跨层测试。
+v1 effect 历史保留只读，生产写路径已关闭；其物理代码删除须等部署后的稳定观察窗口结束。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
 candidate snapshot 和 path capability table；M3 建立 provider-neutral TMDB
@@ -676,8 +676,8 @@ snapshot/successor，后继字幕重新成为普通 `subtitle:N` 且 lineage 闸
 - M13.3（完成）：受限下载、ZIP/7z/RAR/多卷 RAR inspector、独立 durable store 与
   acquisition plan compiler；
 - M13.4：独立审批、journal、no-replace/FUSE checked-rename 发布、durable successor 和 lineage
-  循环闸门。其中 M13.4a 已完成 config schema v5、显式 ACG.RIP opt-in、独立
-  acquisition policy、`SUBTITLE_ACQUIRE` scope，以及 deterministic transaction/
+  循环闸门。其中 M13.4a 已完成显式 ACG.RIP opt-in、独立 acquisition policy、
+  `SUBTITLE_ACQUIRE` scope，以及 deterministic transaction/
   write-once journal；M13.4b 已完成 re-fetch、逐 member 安全写入、native 优先且仅限
   已确认 FUSE 的 checked-rename 兼容发布与 crash recovery executor；M13.4c 已完成
   durable successor outbox、fresh scan
@@ -689,6 +689,13 @@ ACG.RIP 是唯一新增 fixed-purpose origin；不得接受自定义 URL、通�
 搜索 POST 的精确同源结果跳转；所有 pytest 保持离线。robots.txt 不属于运行时配置或控制面。边界见
 [M13 计划](m13-plan.md) 与
 [ADR 0007](adr/0007-m13-subtitle-acquisition-boundary.md)。
+
+配置 schema v6 将字幕获取改为每个 watch 独立的
+`subtitle_acquisition {enabled, provider, policy}`。控制面统一显示“字幕自动获取”，并按
+watch 的内容类型给出允许来源；当前只有 Anime 可选择 ACG.RIP，TV/Movie 保留同一入口但
+没有可启用来源。读取 schema v5 时，原全局开关与策略只迁移到 Anime watch，其他类型保持
+禁用。Agent tool surface、planning、automatic approval 与 executor gate 全部使用 run 绑定的
+exact `watch_id`，不能借用同一 revision 中其他 watch 的配置。
 
 ### M14：基于当前状态的前向收敛执行器
 
@@ -758,6 +765,26 @@ best-effort housekeeping，不再决定 media operation 终态。
   `scripts/m14_filesystem_smoke.py --live-filesystem <空的绝对目录>`，只在用户指定的
   throwaway 目录验证真实 rename、重观察与 fsync 诊断并保留现场。legacy executor 代码
   仅作为只读历史兼容保留，等部署稳定观察窗口结束后物理删除。
+- M14.5（完成）：修复 M14 semantic producer 与 M13 subtitle consumer 的跨层断口。
+  active 字幕链改为无 stat identity 的 `SubtitleAcquisitionPlan v2`，并把 exact
+  `SUBTITLE_ACQUIRE` approval、bounded lease、marker publication、terminal result 和
+  普通 rescan 统一写入 `execution_operations_v2`。未知 Agent/provider/planner 故障默认
+  preserve source 且终结当前 run，不再重跑整个 folder generation 或自动移入 fail。
+  semantic v2 不再开放字幕 retry/fail/recovery action；终态 read model 必须通过同一
+  API schema 并至少提供 delete/rescan 逃生路径。
+  - 强制验收一：canonical plan/request 构造器不存在持久 stat 字段，stat churn 不改变 hash。
+  - 强制验收二：真实 PostgreSQL semantic watcher + Agents SDK scripted tool loop 必须完成
+    `check_sub_from_video -> search_sub -> select_subtitle_release -> plan v2`，测试不得手工造
+    discovery、request 或 plan。
+  - 强制验收三：同一 production slice 必须继续完成 exact approval、共享 operation、cache/
+    marker 发布、runtime/run/job 同步终结、durable rescan，并验证不产生 legacy recovery、
+    generation retry 或 fail housekeeping。
+  - failure/crash 测试覆盖 selection、plan register、approval/lease、member/marker、settlement/
+    outbox 边界；重启只 reconcile 同一 operation，所有重试有上限，终态不可回到 running。
+  - 统一 rescan outbox 负责把 acquisition lineage 绑定到唯一 successor；active scheduler 不再
+    消费 legacy subtitle scan outbox，successor 不会再次开放字幕获取工具。
+  - API/Web contract 对每种 `available_action` 做 schema 和命令准入验证；自动模式无待审批或
+    recovery UI，terminal subtitle operation 显示具体 outcome、successor、rescan/delete。
 
 完整决策、已接受的完整性取舍与 M14.0 副作用边界见
 [ADR 0008](adr/0008-m14-forward-convergence.md)。

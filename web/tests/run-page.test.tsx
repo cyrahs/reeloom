@@ -17,6 +17,7 @@ test("executes a v2 plan without browser policy or recovery controls", async () 
   let rescanned = false;
   const execution = {
     operation_id: "operation:m14",
+    operation_kind: "media_move",
     plan_hash: planHash,
     status: "partial",
     attempt_count: 1,
@@ -285,7 +286,6 @@ test("executes only the independently authorized subtitle action", async () => {
           plan_hash: subtitlePlanHash,
           policy: "manual",
           status: published ? "published" : "planned",
-          approval_id: published ? "approval-subtitle-1" : null,
           transaction_id: published
             ? `subtitle-txn-v1-${"c".repeat(64)}`
             : null,
@@ -320,7 +320,6 @@ test("executes only the independently authorized subtitle action", async () => {
         plan_hash: subtitlePlanHash,
         policy: "manual",
         status: "published",
-        approval_id: "approval-subtitle-1",
         transaction_id: `subtitle-txn-v1-${"c".repeat(64)}`,
         failure_code: null,
         failure_diagnostic: null,
@@ -345,8 +344,9 @@ test("executes only the independently authorized subtitle action", async () => {
   })).toBeNull();
 });
 
-test("shows bounded subtitle collision diagnostics", async () => {
+test("shows subtitle operation terminal actions without recovery controls", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
+  const subtitlePlanHash = `sha256:${"b".repeat(64)}`;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const path = String(input);
     if (path === "/api/v1/session") {
@@ -355,200 +355,76 @@ test("shows bounded subtitle collision diagnostics", async () => {
     if (path === `/api/v1/runs/${encodedRunId}`) {
       return jsonResponse({
         ...runResponse(),
-        status: "needs_attention",
-        phase: "build_subtitle_acquisition_plan",
-        plan_hash: null,
-        available_actions: ["fail_subtitle_acquisition"],
-        subtitle_acquisition: {
-          plan_hash: `sha256:${"b".repeat(64)}`,
-          policy: "automatic",
-          status: "blocked",
-          approval_id: "approval-subtitle-1",
-          transaction_id: null,
-          failure_code: "destination_collision",
-          failure_diagnostic: {
-            schema_version: 1,
-            stage: "staging_validate",
-            reason: "unsafe_permissions",
-            actual_mode: 0o775,
-            expected_policy: "owner_rwx_no_group_or_other_write",
-          },
-          successor_status: null,
-        },
-      });
-    }
-    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
-      return jsonResponse({ items: [] });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
-      return jsonResponse({ items: [] });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
-      return new Response(": keepalive\n\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    }
-    throw new Error(`unexpected request: ${path}`);
-  });
-
-  renderRunPage();
-
-  expect(
-    await screen.findByText(
-      "临时目录校验：目录权限允许非 owner 写入（实际权限 0775）",
-    ),
-  ).toBeVisible();
-});
-
-test("retries the same blocked subtitle acquisition plan", async () => {
-  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
-  const subtitlePlanHash = `sha256:${"b".repeat(64)}`;
-  let published = false;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const path = String(input);
-    if (path === "/api/v1/session") {
-      return jsonResponse({ api_version: "1.0.0", role: "admin" });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}`) {
-      return jsonResponse({
-        ...runResponse(),
-        status: published ? "superseded" : "needs_attention",
-        phase: "build_subtitle_acquisition_plan",
-        plan_hash: null,
-        available_actions: published
-          ? []
-          : [
-              "retry_subtitle_acquisition",
-              "fail_subtitle_acquisition",
-            ],
-        subtitle_acquisition: {
-          plan_hash: subtitlePlanHash,
-          policy: "automatic",
-          status: published ? "published" : "blocked",
-          approval_id: "approval-subtitle-1",
-          transaction_id: published
-            ? `subtitle-txn-v1-${"c".repeat(64)}`
-            : null,
-          failure_code: published ? null : "destination_collision",
-          failure_diagnostic: null,
-          successor_status: published ? "queued" : null,
-        },
-      });
-    }
-    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
-      return jsonResponse({ items: [] });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
-      return jsonResponse({ items: [] });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
-      return new Response(": keepalive\n\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    }
-    if (
-      path === `/api/v1/runs/${encodedRunId}/subtitle-acquisition/retry` &&
-      init?.method === "POST"
-    ) {
-      expect(init.headers).toMatchObject({ "If-Match": subtitlePlanHash });
-      expect(JSON.parse(String(init.body))).toEqual({});
-      published = true;
-      return jsonResponse({
-        run_id: runId,
-        plan_hash: subtitlePlanHash,
-        policy: "automatic",
-        status: "published",
-        approval_id: "approval-subtitle-1",
-        transaction_id: `subtitle-txn-v1-${"c".repeat(64)}`,
-        failure_code: null,
-        failure_diagnostic: null,
-        successor_status: "queued",
-      });
-    }
-    throw new Error(`unexpected request: ${path}`);
-  });
-
-  renderRunPage();
-  await userEvent.click(
-    await screen.findByRole("button", { name: "重试字幕获取" }),
-  );
-
-  expect(
-    await screen.findByRole("heading", { name: "字幕获取：published" }),
-  ).toBeVisible();
-});
-
-test("ends a terminal blocked subtitle acquisition without folder actions", async () => {
-  window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
-  const subtitlePlanHash = `sha256:${"b".repeat(64)}`;
-  let ended = false;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const path = String(input);
-    if (path === "/api/v1/session") {
-      return jsonResponse({ api_version: "1.0.0", role: "admin" });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}`) {
-      return jsonResponse({
-        ...runResponse(),
-        status: ended ? "failed" : "needs_attention",
-        phase: "build_subtitle_acquisition_plan",
-        plan_hash: null,
-        available_actions: ended ? [] : ["fail_subtitle_acquisition"],
-        subtitle_acquisition: {
-          plan_hash: subtitlePlanHash,
-          policy: "automatic",
-          status: "blocked",
-          approval_id: "approval-subtitle-1",
-          transaction_id: null,
-          failure_code: "source_drift",
-          failure_diagnostic: null,
-          successor_status: null,
-        },
-      });
-    }
-    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
-      return jsonResponse({ items: [] });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
-      return jsonResponse({ items: [] });
-    }
-    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
-      return new Response(": keepalive\n\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    }
-    if (
-      path === `/api/v1/runs/${encodedRunId}/subtitle-acquisition/fail` &&
-      init?.method === "POST"
-    ) {
-      expect(init.headers).toMatchObject({ "If-Match": subtitlePlanHash });
-      expect(JSON.parse(String(init.body))).toEqual({});
-      ended = true;
-      return jsonResponse({
-        run_id: runId,
-        plan_hash: subtitlePlanHash,
         status: "failed",
-        failure_code: "source_drift",
+        phase: "failed",
+        runtime_status: "failed",
+        plan_hash: subtitlePlanHash,
+        available_actions: ["rescan", "delete_run"],
+        execution: {
+          operation_id: "operation:subtitle",
+          operation_kind: "subtitle_acquire",
+          plan_hash: subtitlePlanHash,
+          status: "collision",
+          attempt_count: 1,
+          counts: {
+            satisfied: 0,
+            stale: 0,
+            collision: 1,
+            unsafe: 0,
+            unavailable: 0,
+          },
+          items: [{
+            source_id: "subtitle-publication",
+            outcome: "collision",
+            diagnostic: "collision",
+          }],
+          warnings: [],
+          fresh_scan_required: true,
+          rescan_state: "queued",
+          successor_run_id: null,
+        },
+        subtitle_acquisition: {
+          plan_hash: subtitlePlanHash,
+          policy: "automatic",
+          status: "blocked",
+          transaction_id: "operation:subtitle",
+          failure_code: "destination_collision",
+          failure_diagnostic: null,
+          successor_status: null,
+        },
+      });
+    }
+    if (path.startsWith(`/api/v1/runs/${encodedRunId}/interactions?`)) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events?after=0&limit=100`) {
+      return jsonResponse({ items: [] });
+    }
+    if (path === `/api/v1/runs/${encodedRunId}/events/stream`) {
+      return new Response(": keepalive\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
       });
     }
     throw new Error(`unexpected request: ${path}`);
   });
 
   renderRunPage();
-  await userEvent.click(
-    await screen.findByRole("button", { name: "结束此运行" }),
-  );
 
   expect(
-    await screen.findByText(
-      "已结束此运行；原字幕获取失败诊断仍保留供审计。",
-    ),
+    await screen.findByRole("heading", { name: "字幕发布：目标碰撞" }),
   ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "重试字幕获取" })).toBeNull();
   expect(screen.queryByRole("button", { name: "结束此运行" })).toBeNull();
+  expect(screen.queryByText("执行定向恢复")).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "重新扫描当前目录" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "删除记录" }),
+  ).toBeVisible();
 });
+
 
 test("offers event-bound controls for a planless needs-attention run", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");

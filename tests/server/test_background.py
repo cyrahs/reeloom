@@ -16,6 +16,7 @@ from reeloom.server.config import (
     ApplyPolicy,
     ServerWorkType,
     SubtitleAcquisitionPolicy,
+    SubtitleProvider,
 )
 from reeloom.server.agent_worker import AgentWorkKind, AgentWorkResult
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -27,7 +28,7 @@ class _UnavailableConfigs:
 
 
 @pytest.mark.parametrize(
-    ("policy", "work_type", "acgrip", "expected"),
+    ("policy", "work_type", "subtitle_enabled", "expected"),
     (
         (ApplyPolicy.PLAN_ONLY, ServerWorkType.ANIME, False, True),
         (ApplyPolicy.PLAN_ONLY, ServerWorkType.TV, False, True),
@@ -40,12 +41,12 @@ class _UnavailableConfigs:
 def test_semantic_watch_enabled_for_all_work_types_and_policies(
     policy: ApplyPolicy,
     work_type: ServerWorkType,
-    acgrip: bool,
+    subtitle_enabled: bool,
     expected: bool,
 ) -> None:
     config = SimpleNamespace(
         apply_policy=policy,
-        acgrip=SimpleNamespace(enabled=acgrip),
+        subtitle_enabled=subtitle_enabled,
     )
 
     assert _semantic_watch_v2_enabled(  # type: ignore[arg-type]
@@ -80,7 +81,11 @@ class _SettlingScheduler:
     def get_job_context(self, *, run_id: str) -> object:
         del run_id
         return SimpleNamespace(
-            registration=SimpleNamespace(config_revision=1)
+            registration=SimpleNamespace(config_revision=1),
+            discovery=SimpleNamespace(
+                watch_id="watch-1",
+                folder_generation_id=None,
+            ),
         )
 
     def settle_job(
@@ -296,7 +301,29 @@ class _SubtitleConfigs:
         del revision
         return SimpleNamespace(
             apply_policy=ApplyPolicy.PLAN_ONLY,
-            subtitle_acquisition_policy=self.policy,
+            watches=(
+                SimpleNamespace(
+                    watch_id="other-watch",
+                    subtitle_acquisition=SimpleNamespace(
+                        enabled=True,
+                        provider=SubtitleProvider.ACGRIP,
+                        policy=(
+                            SubtitleAcquisitionPolicy.MANUAL
+                            if self.policy
+                            is SubtitleAcquisitionPolicy.AUTOMATIC
+                            else SubtitleAcquisitionPolicy.AUTOMATIC
+                        ),
+                    ),
+                ),
+                SimpleNamespace(
+                    watch_id="watch-1",
+                    subtitle_acquisition=SimpleNamespace(
+                        enabled=True,
+                        provider=SubtitleProvider.ACGRIP,
+                        policy=self.policy,
+                    ),
+                ),
+            ),
         )
 
 
@@ -410,7 +437,7 @@ def test_executor_failure_does_not_restart_folder_generation(
 
     assert scheduler.settled == [True]
     assert scheduler.restarted == 0
-    assert scheduler.failed == 0
+    assert scheduler.failed == 1
 
 
 def test_only_source_drift_restarts_folder_generation() -> None:
@@ -449,7 +476,7 @@ def test_settled_preflight_source_drift_restarts_without_recovery() -> None:
     assert scheduler.failed == 0
 
 
-def test_unclassified_failure_retries_folder_generation() -> None:
+def test_unclassified_failure_terminates_and_preserves_folder() -> None:
     scheduler = _FolderScheduler(retry_results=[1])
     background = BackgroundServices(
         boot_id="boot-test",
@@ -461,13 +488,13 @@ def test_unclassified_failure_retries_folder_generation() -> None:
 
     background._execute_job("job-test", "run-test")
 
-    assert scheduler.settled == []
+    assert scheduler.settled == [True]
     assert scheduler.restarted == 0
-    assert scheduler.retry_calls == [("run-test", 3)]
-    assert scheduler.failed == 0
+    assert scheduler.retry_calls == []
+    assert scheduler.failed == 1
 
 
-def test_unclassified_failure_moves_to_fail_after_three_retries() -> None:
+def test_unclassified_failure_never_moves_source_to_fail() -> None:
     scheduler = _FolderScheduler(retry_results=[None])
     dispositions = _FolderDispositions()
     background = BackgroundServices(
@@ -481,9 +508,7 @@ def test_unclassified_failure_moves_to_fail_after_three_retries() -> None:
 
     background._execute_job("job-test", "run-test")
 
-    assert scheduler.retry_calls == [("run-test", 3)]
-    assert dispositions.failures == [
-        ("run-test", "agent_retry_exhausted")
-    ]
+    assert scheduler.retry_calls == []
+    assert dispositions.failures == []
     assert scheduler.failed == 1
     assert scheduler.settled == [True]

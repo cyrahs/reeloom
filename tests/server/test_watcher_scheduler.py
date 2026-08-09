@@ -541,6 +541,8 @@ def test_semantic_scheduler_does_not_restart_for_metadata_or_equal_size_replacem
         observed_at=started + timedelta(seconds=1),
         scan=watcher.scan_folders(root),
     ).discoveries[0]
+    assert first.source_folder_device is None
+    assert first.source_folder_inode is None
 
     os.utime(video, ns=(2_000_000_000, 2_000_000_000))
     metadata_only = repository.reconcile_folders(

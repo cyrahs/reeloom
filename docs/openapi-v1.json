@@ -1,20 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AcgripConfigRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "AcgripConfigRequest",
-        "type": "object"
-      },
       "ApplyResponse": {
         "additionalProperties": false,
         "properties": {
@@ -308,20 +294,6 @@
         "title": "AttentionRetryResponse",
         "type": "object"
       },
-      "ConfigAcgripResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "ConfigAcgripResponse",
-        "type": "object"
-      },
       "ConfigAgentBudget": {
         "additionalProperties": false,
         "properties": {
@@ -417,9 +389,6 @@
       "ConfigResponse": {
         "additionalProperties": false,
         "properties": {
-          "acgrip": {
-            "$ref": "#/components/schemas/ConfigAcgripResponse"
-          },
           "agent_budget": {
             "$ref": "#/components/schemas/ConfigAgentBudget"
           },
@@ -444,15 +413,6 @@
             "title": "Revision Id",
             "type": "string"
           },
-          "subtitle_acquisition_policy": {
-            "enum": [
-              "plan_only",
-              "manual",
-              "automatic"
-            ],
-            "title": "Subtitle Acquisition Policy",
-            "type": "string"
-          },
           "telegram": {
             "$ref": "#/components/schemas/ConfigTelegramResponse"
           },
@@ -470,9 +430,7 @@
           "watches",
           "provider",
           "telegram",
-          "acgrip",
           "apply_policy",
-          "subtitle_acquisition_policy",
           "agent_budget"
         ],
         "title": "ConfigResponse",
@@ -513,16 +471,6 @@
       "ConfigUpdateRequest": {
         "additionalProperties": false,
         "properties": {
-          "acgrip": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AcgripConfigRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "agent_budget": {
             "anyOf": [
               {
@@ -552,22 +500,6 @@
               }
             ],
             "title": "Provider"
-          },
-          "subtitle_acquisition_policy": {
-            "anyOf": [
-              {
-                "enum": [
-                  "plan_only",
-                  "manual",
-                  "automatic"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subtitle Acquisition Policy"
           },
           "telegram": {
             "anyOf": [
@@ -634,6 +566,16 @@
             "title": "Settle Interval Seconds",
             "type": "integer"
           },
+          "subtitle_acquisition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchSubtitleAcquisition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "watch_id": {
             "title": "Watch Id",
             "type": "string"
@@ -678,6 +620,9 @@
             "title": "Settle Interval Seconds",
             "type": "integer"
           },
+          "subtitle_acquisition": {
+            "$ref": "#/components/schemas/WatchSubtitleAcquisition"
+          },
           "watch_id": {
             "title": "Watch Id",
             "type": "string"
@@ -698,7 +643,8 @@
           "poll_interval_seconds",
           "settle_interval_seconds",
           "root",
-          "library_root"
+          "library_root",
+          "subtitle_acquisition"
         ],
         "title": "ConfigWatchResponse",
         "type": "object"
@@ -1298,6 +1244,14 @@
             "title": "Operation Id",
             "type": "string"
           },
+          "operation_kind": {
+            "enum": [
+              "media_move",
+              "subtitle_acquire"
+            ],
+            "title": "Operation Kind",
+            "type": "string"
+          },
           "plan_hash": {
             "title": "Plan Hash",
             "type": "string"
@@ -1361,6 +1315,7 @@
         },
         "required": [
           "operation_id",
+          "operation_kind",
           "plan_hash",
           "status",
           "attempt_count",
@@ -1490,6 +1445,14 @@
             "title": "Operation Id",
             "type": "string"
           },
+          "operation_kind": {
+            "enum": [
+              "media_move",
+              "subtitle_acquire"
+            ],
+            "title": "Operation Kind",
+            "type": "string"
+          },
           "plan_hash": {
             "title": "Plan Hash",
             "type": "string"
@@ -1549,6 +1512,7 @@
         },
         "required": [
           "operation_id",
+          "operation_kind",
           "plan_hash",
           "status",
           "attempt_count",
@@ -2491,14 +2455,13 @@
                 "revision",
                 "approve_apply",
                 "execute",
+                "rescan",
                 "reapply",
                 "recover",
                 "settle_folder",
                 "dispose_failed_folder",
                 "recover_folder_disposition",
                 "approve_subtitle_acquisition",
-                "retry_subtitle_acquisition",
-                "fail_subtitle_acquisition",
                 "retry_run",
                 "fail_run",
                 "delete_run"
@@ -2892,50 +2855,9 @@
         "title": "SubtitleAcquisitionApprovalRequest",
         "type": "object"
       },
-      "SubtitleAcquisitionFailResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "failure_code": {
-            "title": "Failure Code",
-            "type": "string"
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "status": {
-            "const": "failed",
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_id",
-          "plan_hash",
-          "status",
-          "failure_code"
-        ],
-        "title": "SubtitleAcquisitionFailResponse",
-        "type": "object"
-      },
       "SubtitleAcquisitionResponse": {
         "additionalProperties": false,
         "properties": {
-          "approval_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Approval Id"
-          },
           "failure_code": {
             "anyOf": [
               {
@@ -3023,7 +2945,6 @@
           "plan_hash",
           "policy",
           "status",
-          "approval_id",
           "transaction_id",
           "failure_code",
           "run_id"
@@ -3034,17 +2955,6 @@
       "SubtitleAcquisitionView": {
         "additionalProperties": false,
         "properties": {
-          "approval_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Approval Id"
-          },
           "failure_code": {
             "anyOf": [
               {
@@ -3128,7 +3038,6 @@
           "plan_hash",
           "policy",
           "status",
-          "approval_id",
           "transaction_id",
           "failure_code"
         ],
@@ -3519,6 +3428,43 @@
           "explanation"
         ],
         "title": "UnmappedPreviewItem",
+        "type": "object"
+      },
+      "WatchSubtitleAcquisition": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "policy": {
+            "enum": [
+              "plan_only",
+              "manual",
+              "automatic"
+            ],
+            "title": "Policy",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "const": "acgrip",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "enabled",
+          "provider",
+          "policy"
+        ],
+        "title": "WatchSubtitleAcquisition",
         "type": "object"
       }
     },
@@ -6836,286 +6782,6 @@
           }
         ],
         "summary": "Approve Subtitle Acquisition"
-      }
-    },
-    "/api/v1/runs/{run_id}/subtitle-acquisition/fail": {
-      "post": {
-        "operationId": "fail_subtitle_acquisition_api_v1_runs__run_id__subtitle_acquisition_fail_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SubtitleAcquisitionApprovalRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubtitleAcquisitionFailResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Fail Subtitle Acquisition"
-      }
-    },
-    "/api/v1/runs/{run_id}/subtitle-acquisition/retry": {
-      "post": {
-        "operationId": "retry_subtitle_acquisition_api_v1_runs__run_id__subtitle_acquisition_retry_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SubtitleAcquisitionApprovalRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubtitleAcquisitionResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Retry Subtitle Acquisition"
       }
     },
     "/api/v1/session": {

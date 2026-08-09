@@ -14,7 +14,7 @@ from reeloom.adapters.subtitle_plan_store import (
 from reeloom.adapters.subtitle_archive_cache import (
     FilesystemSubtitleArchiveCache,
 )
-from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION,
     CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
@@ -41,6 +41,7 @@ from reeloom.server.subtitle_acquisition import (
     SubtitleAcquisitionPlanner,
     SubtitleAcquisitionPlanningRequest,
 )
+from reeloom.server.watcher import NoFollowWatcher
 
 
 def _capability() -> SubtitleArchiveSetCapability:
@@ -128,23 +129,25 @@ class _Inspector:
 
 
 def _request(source: Path, capability: SubtitleArchiveSetCapability):
-    metadata = source.stat()
     folder = source / "release"
-    folder_metadata = folder.stat()
+    if not (folder / "episode.mkv").exists():
+        (folder / "episode.mkv").write_bytes(b"video")
+    current = NoFollowWatcher().scan_folder(
+        AuthorizedRoot.create(source),
+        PurePosixPath("release"),
+        logical_name="release",
+    )
     return SubtitleAcquisitionPlanningRequest(
         run_id="run-m13-planner",
+        config_revision=1,
         config_revision_id="config-1",
+        watch_id="watch-anime",
         created_at=datetime(2026, 8, 3, tzinfo=UTC),
-        source_root=RootBinding(
-            PurePosixPath(source.as_posix()),
-            metadata.st_dev,
-            metadata.st_ino,
-        ),
+        source_root=SemanticRootBinding(PurePosixPath(source.as_posix())),
         source_folder="release",
-        source_folder_device=folder_metadata.st_dev,
-        source_folder_inode=folder_metadata.st_ino,
         folder_generation_id="generation-1",
-        candidate_snapshot_id="candidate-snapshot-v1:" + "a" * 64,
+        inventory_id=current.semantic_inventory_id,
+        candidate_snapshot=current.candidates.semantic_snapshot,
         tmdb_id=123,
         decision=SubtitleSelectionDecision.selected(
             (
@@ -260,7 +263,7 @@ def test_planner_rejects_provider_or_inspector_version_drift(tmp_path) -> None:
     assert fetcher.calls == 0
 
 
-def test_planner_uses_current_directory_instead_of_persisted_stat_identity(
+def test_planner_ignores_metadata_churn_when_semantic_identity_is_unchanged(
     tmp_path,
 ) -> None:
     source = tmp_path / "media"
@@ -273,11 +276,7 @@ def test_planner_uses_current_directory_instead_of_persisted_stat_identity(
     capability = _capability()
     fetcher = _Fetcher(workspace, capability)
     request = _request(source, capability)
-    object.__setattr__(
-        request,
-        "source_folder_inode",
-        request.source_folder_inode + 1,
-    )
+    (source / "release" / "episode.mkv").touch()
     planner = SubtitleAcquisitionPlanner(
         fetcher,
         _Inspector(),
@@ -288,5 +287,6 @@ def test_planner_uses_current_directory_instead_of_persisted_stat_identity(
 
     plan = asyncio.run(planner.build(request))
 
-    assert plan.source_folder_inode == request.source_folder_inode
+    assert plan.candidate_snapshot == request.candidate_snapshot
+    assert b'"inode"' not in plan.canonical_bytes()
     assert fetcher.calls == 1

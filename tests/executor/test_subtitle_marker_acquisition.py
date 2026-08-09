@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from reeloom.adapters.approval import FilesystemApprovalStore
 from reeloom.adapters.subtitle_archive_cache import (
     FilesystemSubtitleArchiveCache,
 )
@@ -17,14 +16,13 @@ from reeloom.executor.subtitle_marker_acquisition import (
     SubtitleMarkerAcquisitionExecutor,
 )
 from reeloom.executor.subtitle_publication import SubtitlePublicationState
-from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
-from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION,
     CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
     CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION,
     InspectedSubtitleMember,
-    SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     SubtitleArchiveFormat,
     SubtitleArchiveSetCapability,
     SubtitleArchiveSetId,
@@ -108,8 +106,7 @@ class _Inspector:
 class _Environment:
     media: Path
     source_folder: Path
-    plan: SubtitleAcquisitionPlan
-    approval: ApprovalRecord
+    plan: SubtitleAcquisitionPlanV2
     cache: FilesystemSubtitleArchiveCache
     fetcher: _Fetcher
     inspector: _Inspector
@@ -122,13 +119,11 @@ def _environment(tmp_path: Path, *, seed_cache: bool) -> _Environment:
     workspace = tmp_path / "workspace"
     cache_root = tmp_path / "cache"
     plan_root = tmp_path / "plans"
-    approval_root = tmp_path / "approvals"
     for path in (
         source_folder,
         workspace,
         cache_root,
         plan_root,
-        approval_root,
     ):
         path.mkdir(parents=True, exist_ok=True)
     (source_folder / "episode.mkv").write_bytes(b"video")
@@ -155,20 +150,22 @@ def _environment(tmp_path: Path, *, seed_cache: bool) -> _Environment:
         len(_SUBTITLE),
         hashlib.sha256(_SUBTITLE).hexdigest(),
     )
-    plan = SubtitleAcquisitionPlan.create(
+    current = NoFollowWatcher().scan_folder(
+        AuthorizedRoot.create(media),
+        PurePosixPath(source_folder.name),
+        logical_name=source_folder.name,
+    )
+    plan = SubtitleAcquisitionPlanV2.create(
         run_id="run-m14-marker-acquisition",
+        config_revision=1,
         config_revision_id="config-1",
+        watch_id="watch-anime",
         created_at=_NOW,
-        source_root=RootBinding(
-            PurePosixPath(media.as_posix()),
-            999,
-            999,
-        ),
+        source_root=SemanticRootBinding(PurePosixPath(media.as_posix())),
         source_folder=source_folder.name,
-        source_folder_device=999,
-        source_folder_inode=999,
         folder_generation_id="generation-1",
-        candidate_snapshot_id="candidate-snapshot-v1:" + "a" * 64,
+        inventory_id=current.semantic_inventory_id,
+        candidate_snapshot=current.candidates.semantic_snapshot,
         tmdb_id=123,
         archives=(source,),
         inspected_members=(member,),
@@ -177,18 +174,6 @@ def _environment(tmp_path: Path, *, seed_cache: bool) -> _Environment:
         AuthorizedRoot.create(plan_root)
     )
     plans.save(plan)
-    approvals = FilesystemApprovalStore(
-        AuthorizedRoot.create(approval_root),
-        clock=lambda: _NOW,
-    )
-    approval = ApprovalRecord.create(
-        run_id=plan.run_id,
-        plan_hash=plan.plan_hash,
-        scope=ApprovalScope.SUBTITLE_ACQUIRE,
-        expires_at=_NOW + timedelta(minutes=15),
-        nonce="n" * 32,
-    )
-    approvals.issue(approval)
     cache = FilesystemSubtitleArchiveCache(
         AuthorizedRoot.create(cache_root)
     )
@@ -209,7 +194,6 @@ def _environment(tmp_path: Path, *, seed_cache: bool) -> _Environment:
         fetcher.calls = 0
     executor = SubtitleMarkerAcquisitionExecutor(
         plans,
-        approvals,
         cache,
         fetcher,
         inspector,
@@ -218,7 +202,6 @@ def _environment(tmp_path: Path, *, seed_cache: bool) -> _Environment:
         media,
         source_folder,
         plan,
-        approval,
         cache,
         fetcher,
         inspector,
@@ -232,9 +215,8 @@ def test_marker_executor_reuses_cache_and_ignores_persisted_stat_identity(
     environment = _environment(tmp_path, seed_cache=True)
 
     result = asyncio.run(
-        environment.executor.apply(
-            plan_hash=environment.plan.plan_hash,
-            approval_id=environment.approval.approval_id,
+        environment.executor.execute_current(
+            plan_hash=environment.plan.plan_hash
         )
     )
 
@@ -260,9 +242,8 @@ def test_marker_executor_refetches_only_when_cache_is_missing(
     environment = _environment(tmp_path, seed_cache=False)
 
     result = asyncio.run(
-        environment.executor.apply(
-            plan_hash=environment.plan.plan_hash,
-            approval_id=environment.approval.approval_id,
+        environment.executor.execute_current(
+            plan_hash=environment.plan.plan_hash
         )
     )
 
@@ -291,17 +272,15 @@ def test_marker_executor_refetches_only_when_cache_is_missing(
 def test_marker_executor_internal_reconcile_is_idempotent(tmp_path: Path) -> None:
     environment = _environment(tmp_path, seed_cache=True)
     asyncio.run(
-        environment.executor.apply(
-            plan_hash=environment.plan.plan_hash,
-            approval_id=environment.approval.approval_id,
+        environment.executor.execute_current(
+            plan_hash=environment.plan.plan_hash
         )
     )
     environment.inspector.extract_calls = 0
 
     result = asyncio.run(
-        environment.executor.reconcile(
-            plan_hash=environment.plan.plan_hash,
-            approval_id=environment.approval.approval_id,
+        environment.executor.execute_current(
+            plan_hash=environment.plan.plan_hash
         )
     )
 
@@ -320,9 +299,8 @@ def test_marker_executor_preserves_destination_collision(tmp_path: Path) -> None
     collision.write_bytes(b"foreign")
 
     result = asyncio.run(
-        environment.executor.apply(
-            plan_hash=environment.plan.plan_hash,
-            approval_id=environment.approval.approval_id,
+        environment.executor.execute_current(
+            plan_hash=environment.plan.plan_hash
         )
     )
 

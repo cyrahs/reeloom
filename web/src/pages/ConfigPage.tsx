@@ -26,6 +26,7 @@ type TelegramNotificationType =
   | "plan_ready"
   | "archive_completed"
   | "attention_required";
+type SubtitleAcquisitionPolicy = "plan_only" | "manual" | "automatic";
 type WatchForm = {
   watch_id: string;
   work_type: WorkType;
@@ -35,6 +36,9 @@ type WatchForm = {
   rootPath: string;
   libraryRootMode: RootMode;
   libraryRootPath: string;
+  subtitleEnabled: boolean;
+  subtitleProvider: "acgrip" | null;
+  subtitlePolicy: SubtitleAcquisitionPolicy;
 };
 type FormState = {
   watches: WatchForm[];
@@ -50,8 +54,6 @@ type FormState = {
   telegramBotToken: string;
   telegramChatId: string;
   apply_policy: "plan_only" | "manual" | "automatic";
-  acgripEnabled: boolean;
-  subtitle_acquisition_policy: "plan_only" | "manual" | "automatic";
   agent_budget: {
     max_model_turns: number;
     max_tool_calls: number;
@@ -71,6 +73,17 @@ type DirectoryTarget = {
   select: (path: string) => void;
 };
 
+const subtitleSourceOptions = {
+  anime: [
+    { value: "acgrip" as const, label: "ACG.RIP 动漫字幕论坛" },
+  ],
+  tv: [],
+  movie: [],
+} satisfies Record<WorkType, readonly { value: "acgrip"; label: string }[]>;
+
+const subtitleSources = (workType: WorkType) =>
+  subtitleSourceOptions[workType];
+
 const newWatch = (): WatchForm => ({
   watch_id: `watch-${globalThis.crypto.randomUUID()}`,
   work_type: "anime",
@@ -80,6 +93,9 @@ const newWatch = (): WatchForm => ({
   rootPath: "",
   libraryRootMode: "replace",
   libraryRootPath: "",
+  subtitleEnabled: false,
+  subtitleProvider: "acgrip",
+  subtitlePolicy: "automatic",
 });
 
 const emptyState = (): FormState => ({
@@ -100,8 +116,6 @@ const emptyState = (): FormState => ({
   telegramBotToken: "",
   telegramChatId: "",
   apply_policy: "plan_only",
-  acgripEnabled: false,
-  subtitle_acquisition_policy: "automatic",
   agent_budget: {
     max_model_turns: 64,
     max_tool_calls: 64,
@@ -122,6 +136,9 @@ function fromConfig(config: Config): FormState {
       rootPath: "",
       libraryRootMode: "retain",
       libraryRootPath: "",
+      subtitleEnabled: item.subtitle_acquisition.enabled,
+      subtitleProvider: item.subtitle_acquisition.provider,
+      subtitlePolicy: item.subtitle_acquisition.policy,
     })),
     base_url: config.provider.base_url,
     model: config.provider.model,
@@ -137,8 +154,6 @@ function fromConfig(config: Config): FormState {
     telegramBotToken: "",
     telegramChatId: "",
     apply_policy: config.apply_policy,
-    acgripEnabled: config.acgrip.enabled,
-    subtitle_acquisition_policy: config.subtitle_acquisition_policy,
     agent_budget: config.agent_budget,
   };
 }
@@ -344,9 +359,8 @@ export function ConfigPage() {
                   <select
                     value={watch.work_type}
                     onChange={(event) =>
-                      updateWatch(
+                      updateWatchType(
                         index,
-                        "work_type",
                         event.target.value as WorkType,
                       )
                     }
@@ -424,6 +438,97 @@ export function ConfigPage() {
                 }
                 placeholder="/media/library/anime"
               />
+              <fieldset className="secret-choice watch-subtitle-config">
+                <legend>字幕自动获取</legend>
+                <div className="subtitle-provider-row">
+                  <div className="field">
+                    <span>自动获取</span>
+                    <button
+                      type="button"
+                      className={`subtitle-feature-button${
+                        watch.subtitleEnabled ? " enabled" : ""
+                      }`}
+                      aria-pressed={watch.subtitleEnabled}
+                      disabled={subtitleSources(watch.work_type).length === 0}
+                      onClick={() =>
+                        updateWatchSubtitle(index, {
+                          subtitleEnabled: !watch.subtitleEnabled,
+                          subtitleProvider:
+                            watch.subtitleProvider ??
+                            subtitleSources(watch.work_type)[0]?.value ??
+                            null,
+                        })
+                      }
+                    >
+                      {watch.subtitleEnabled ? "已启用" : "启用"}
+                    </button>
+                  </div>
+                  <Field label="字幕来源">
+                    <select
+                      value={watch.subtitleProvider ?? ""}
+                      disabled={
+                        !watch.subtitleEnabled ||
+                        subtitleSources(watch.work_type).length === 0
+                      }
+                      aria-label={`监听 ${index + 1} 字幕来源`}
+                      onChange={(event) =>
+                        updateWatch(
+                          index,
+                          "subtitleProvider",
+                          event.target.value === "acgrip"
+                            ? "acgrip"
+                            : null,
+                        )
+                      }
+                    >
+                      {subtitleSources(watch.work_type).length === 0 ? (
+                        <option value="">当前类型暂无可用来源</option>
+                      ) : (
+                        subtitleSources(watch.work_type).map((source) => (
+                          <option value={source.value} key={source.value}>
+                            {source.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </Field>
+                </div>
+                <fieldset
+                  className="subtitle-policy-choice"
+                  disabled={!watch.subtitleEnabled}
+                >
+                  <legend>字幕获取审批策略</legend>
+                  <div className="segmented-choice">
+                    {[
+                      ["plan_only", "仅生成计划"],
+                      ["manual", "人工审批"],
+                      ["automatic", "自动审批"],
+                    ].map(([value, label]) => (
+                      <label className="segmented-option" key={value}>
+                        <input
+                          type="radio"
+                          name={`subtitle-acquisition-policy-${watch.watch_id}`}
+                          value={value}
+                          checked={watch.subtitlePolicy === value}
+                          onChange={() =>
+                            updateWatch(
+                              index,
+                              "subtitlePolicy",
+                              value as SubtitleAcquisitionPolicy,
+                            )
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                {subtitleSources(watch.work_type).length === 0 ? (
+                  <p className="muted">
+                    当前内容类型暂未配置字幕来源；后续来源会显示在同一入口。
+                  </p>
+                ) : null}
+              </fieldset>
               <button
                 type="button"
                 className="secondary"
@@ -714,78 +819,6 @@ export function ConfigPage() {
         </ConfigSection>
 
         <ConfigSection
-          title="动漫字幕自动获取"
-          hint={
-            <>
-              启用后仅对动漫运行访问固定的 ACG.RIP 字幕版块。站点搜索、帖子和
-              原生附件是唯一允许的网络范围；不使用登录、验证码绕过、外链或代理。
-              字幕选择由 Agent 完成，下载与发布始终经过独立不可变计划和审批。
-            </>
-          }
-        >
-          <div className="subtitle-provider-row">
-            <div className="field">
-              <span>自动字幕获取</span>
-              <button
-                type="button"
-                className={`subtitle-feature-button${
-                  form.acgripEnabled ? " enabled" : ""
-                }`}
-                aria-pressed={form.acgripEnabled}
-                onClick={() =>
-                  setForm({
-                    ...form,
-                    acgripEnabled: !form.acgripEnabled,
-                  })
-                }
-              >
-                {form.acgripEnabled ? "已启用" : "启用"}
-              </button>
-            </div>
-            <Field label="字幕来源">
-              <select
-                value="acgrip"
-                disabled={!form.acgripEnabled}
-                aria-label="字幕来源"
-                onChange={() => undefined}
-              >
-                <option value="acgrip">ACG.RIP 动漫字幕论坛</option>
-              </select>
-            </Field>
-          </div>
-          <fieldset
-            className="subtitle-policy-choice"
-            disabled={!form.acgripEnabled}
-          >
-            <legend>字幕获取审批策略</legend>
-            <div className="segmented-choice">
-              {[
-                ["plan_only", "仅生成计划"],
-                ["manual", "人工审批"],
-                ["automatic", "自动审批"],
-              ].map(([value, label]) => (
-                <label className="segmented-option" key={value}>
-                  <input
-                    type="radio"
-                    name="subtitle-acquisition-policy"
-                    value={value}
-                    checked={form.subtitle_acquisition_policy === value}
-                    onChange={() =>
-                      setForm({
-                        ...form,
-                        subtitle_acquisition_policy:
-                          value as FormState["subtitle_acquisition_policy"],
-                      })
-                    }
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-        </ConfigSection>
-
-        <ConfigSection
           title="Agent 预算"
           hint={
             <>
@@ -926,6 +959,35 @@ export function ConfigPage() {
     }));
   }
 
+  function updateWatchType(index: number, work_type: WorkType) {
+    setForm((current) => ({
+      ...current,
+      watches: current.watches.map((item, itemIndex) =>
+        itemIndex === index
+          ? {
+              ...item,
+              work_type,
+              subtitleEnabled: false,
+              subtitleProvider:
+                subtitleSources(work_type)[0]?.value ?? null,
+            }
+          : item,
+      ),
+    }));
+  }
+
+  function updateWatchSubtitle(
+    index: number,
+    value: Pick<WatchForm, "subtitleEnabled" | "subtitleProvider">,
+  ) {
+    setForm((current) => ({
+      ...current,
+      watches: current.watches.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...value } : item,
+      ),
+    }));
+  }
+
   function existingWatch(watch: WatchForm) {
     return query.data?.watches.find(
       (item) =>
@@ -951,14 +1013,17 @@ export function toPayload(state: FormState, current?: Config) {
       : { mode: "replace" as const, path };
   return {
     apply_policy: state.apply_policy,
-    acgrip: { enabled: state.acgripEnabled },
-    subtitle_acquisition_policy: state.subtitle_acquisition_policy,
     agent_budget: state.agent_budget,
     watches: state.watches.map((item) => ({
       watch_id: item.watch_id,
       work_type: item.work_type,
       poll_interval_seconds: item.poll_interval_seconds,
       settle_interval_seconds: item.settle_interval_seconds,
+      subtitle_acquisition: {
+        enabled: item.subtitleEnabled,
+        provider: item.subtitleProvider,
+        policy: item.subtitlePolicy,
+      },
       root: root(
         item.rootMode,
         item.rootPath,

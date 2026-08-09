@@ -1343,20 +1343,35 @@ class PostgresSchedulerRepository:
                     )
                     run_id = _id("run", discovery_id)
                     capability = _id("capability", run_id)
-                    pending = connection.execute(
+                    pending_forward = connection.execute(
                         """
-                        SELECT request_id, lineage_key
-                        FROM subtitle_scan_requests_v2
-                        WHERE watch_id = %s AND source_folder = %s
-                          AND state = 'dispatched'
-                          AND successor_discovery_id IS NULL
-                        ORDER BY created_at, request_id
-                        FOR UPDATE SKIP LOCKED
+                        SELECT request.operation_id,
+                               origin.subtitle_acquisition_lineage_key
+                        FROM execution_rescan_outbox_v2 AS request
+                        JOIN execution_operations_v2 AS operation
+                          ON operation.operation_id = request.operation_id
+                        JOIN runs AS origin ON origin.run_id = request.run_id
+                        JOIN discoveries AS origin_discovery
+                          ON origin_discovery.discovery_id =
+                             origin.discovery_id
+                        WHERE operation.operation_kind = 'subtitle_acquire'
+                          AND request.state = 'completed'
+                          AND request.successor_run_id IS NULL
+                          AND origin.subtitle_acquisition_lineage_key
+                              IS NOT NULL
+                          AND origin_discovery.watch_id = %s
+                          AND origin_discovery.source_folder = %s
+                        ORDER BY request.created_at, request.operation_id
+                        FOR UPDATE OF request SKIP LOCKED
                         LIMIT 1
                         """,
                         (str(discovery[2]), str(discovery[3])),
                     ).fetchone()
-                    lineage_key = None if pending is None else str(pending[1])
+                    lineage_key = (
+                        None
+                        if pending_forward is None
+                        else str(pending_forward[1])
+                    )
                     connection.execute(
                         """
                         INSERT INTO runs
@@ -1385,22 +1400,20 @@ class PostgresSchedulerRepository:
                         (discovery_id,),
                     ).fetchone()
                     actual_run = str(row[0])
-                    if pending is not None:
-                        completed = connection.execute(
+                    if pending_forward is not None:
+                        completed_forward = connection.execute(
                             """
-                            UPDATE subtitle_scan_requests_v2
-                            SET state = 'completed',
-                                successor_discovery_id = %s,
-                                successor_run_id = %s,
+                            UPDATE execution_rescan_outbox_v2
+                            SET successor_run_id = %s,
                                 updated_at = clock_timestamp()
-                            WHERE request_id = %s
-                              AND state = 'dispatched'
-                              AND successor_discovery_id IS NULL
-                            RETURNING request_id
+                            WHERE operation_id = %s
+                              AND state = 'completed'
+                              AND successor_run_id IS NULL
+                            RETURNING operation_id
                             """,
-                            (discovery_id, actual_run, str(pending[0])),
+                            (actual_run, str(pending_forward[0])),
                         ).fetchone()
-                        if completed is None:
+                        if completed_forward is None:
                             raise ServerError(ServerErrorCode.RUN_BUSY)
                     actual_job = _id("job", actual_run)
                     connection.execute(
@@ -1936,6 +1949,56 @@ class PostgresSchedulerRepository:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
+
+    def terminalize_run_failure(
+        self, *, run_id: str, failure_code: str
+    ) -> None:
+        """Fail the runtime and preserve a semantic source in one direction."""
+
+        if (
+            not isinstance(failure_code, str)
+            or not failure_code
+            or len(failure_code.encode("utf-8")) > 128
+        ):
+            raise ValueError("invalid failure code")
+        from reeloom.runtime.events import RunFailed
+        from reeloom.runtime.state import RunStatus
+        from reeloom.server.runtime_store import PostgresEventStore
+
+        store = PostgresEventStore(self._pool, run_id=run_id)
+        state = store.state
+        if state is None:
+            raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
+        if state.status not in {RunStatus.COMPLETED, RunStatus.FAILED}:
+            store.append(RunFailed(failure_code))
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        SELECT d.watch_id, d.source_folder, d.inventory_id
+                        FROM runs AS r
+                        JOIN discoveries AS d USING (discovery_id)
+                        JOIN watch_states AS w ON w.watch_id = d.watch_id
+                        WHERE r.run_id = %s
+                          AND d.folder_generation_id IS NOT NULL
+                          AND w.semantic_v2 = true
+                        """,
+                        (run_id,),
+                    ).fetchone()
+                    if row is not None:
+                        connection.execute(
+                            """
+                            INSERT INTO handled_folder_inventories_v2
+                                (watch_id, source_folder, inventory_id,
+                                 run_id, terminal_status)
+                            VALUES (%s, %s, %s, %s, 'agent_failed')
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (str(row[0]), str(row[1]), str(row[2]), run_id),
+                        )
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
     def retry_job(
         self,

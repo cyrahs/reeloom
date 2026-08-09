@@ -11,6 +11,7 @@ from enum import StrEnum
 from psycopg_pool import ConnectionPool
 
 from reeloom.kernel.errors import DomainError
+from reeloom.kernel.approval import ApprovalScope
 from reeloom.kernel.forward_execution import (
     CURRENT_EXECUTION_OPERATION_SCHEMA_VERSION,
     ExecutionItemOutcome,
@@ -19,8 +20,13 @@ from reeloom.kernel.forward_execution import (
     ExecutionOperationStatus,
 )
 from reeloom.executor.forward import ForwardExecutionResult
+from reeloom.executor.subtitle_publication import (
+    SubtitlePublicationResult,
+    SubtitlePublicationState,
+)
 from reeloom.executor.folder_housekeeping_v2 import housekeeping_target_name
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.subtitle_successor import subtitle_lineage_key
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _PLAN_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -53,6 +59,7 @@ class ForwardRescanClaim:
 @dataclass(frozen=True, slots=True)
 class ForwardOperationView:
     operation: ExecutionOperation
+    operation_kind: str = "media_move"
     items: tuple[dict[str, str | None], ...] = ()
     warnings: tuple[str, ...] = ()
     fresh_scan_required: bool = False
@@ -120,6 +127,8 @@ class PostgresForwardOperationRepository:
         *,
         approval_id: str,
         now: datetime,
+        scope: ApprovalScope = ApprovalScope.APPLY,
+        operation_kind: str = "media_move",
     ) -> ExecutionOperation:
         _validate_time(now)
         if (
@@ -134,6 +143,16 @@ class PostgresForwardOperationRepository:
             )
             or not isinstance(approval_id, str)
             or not approval_id
+            or not isinstance(scope, ApprovalScope)
+            or operation_kind not in {"media_move", "subtitle_acquire"}
+            or (
+                operation_kind == "media_move"
+                and scope is not ApprovalScope.APPLY
+            )
+            or (
+                operation_kind == "subtitle_acquire"
+                and scope is not ApprovalScope.SUBTITLE_ACQUIRE
+            )
         ):
             raise ForwardOperationError(
                 ForwardOperationErrorCode.INVALID_OPERATION
@@ -153,18 +172,21 @@ class PostgresForwardOperationRepository:
                         """
                         INSERT INTO execution_operations_v2
                             (operation_id, schema_version, run_id, plan_hash,
-                             approval_id, status, attempt_count, outcomes,
-                             authorized_at, updated_at)
+                             approval_id, operation_kind, status,
+                             attempt_count, outcomes, authorized_at,
+                             updated_at)
                         SELECT %s, 2, a.run_id, a.plan_hash, a.approval_id,
-                               'authorized', 0, '[]'::jsonb, %s, %s
+                               %s, 'authorized', 0, '[]'::jsonb, %s, %s
                         FROM approvals AS a
-                        JOIN plan_lineage AS p
+                        JOIN effect_plan_bindings_v2 AS p
                           ON p.run_id = a.run_id
                          AND p.plan_hash = a.plan_hash
                         WHERE a.approval_id = %s
                           AND a.run_id = %s
                           AND a.plan_hash = %s
-                          AND a.scope = 'apply'
+                          AND a.scope = %s
+                          AND p.plan_kind = %s
+                          AND p.approval_scope = %s
                           AND a.expires_at > %s
                           AND NOT EXISTS (
                               SELECT 1 FROM approval_claims AS old_claim
@@ -176,11 +198,15 @@ class PostgresForwardOperationRepository:
                         """,
                         (
                             operation.operation_id,
+                            operation_kind,
                             now,
                             now,
                             approval_id,
                             operation.run_id,
                             operation.plan_hash,
+                            scope.value,
+                            operation_kind,
+                            scope.value,
                             now,
                         ),
                     ).fetchone()
@@ -190,7 +216,7 @@ class PostgresForwardOperationRepository:
                         """
                         SELECT schema_version, operation_id, run_id,
                                plan_hash, status, attempt_count, outcomes,
-                               approval_id
+                               approval_id, operation_kind
                         FROM execution_operations_v2
                         WHERE operation_id = %s
                         """,
@@ -201,19 +227,21 @@ class PostgresForwardOperationRepository:
                         and str(existing[7]) == approval_id
                         and str(existing[2]) == operation.run_id
                         and str(existing[3]) == operation.plan_hash
+                        and str(existing[8]) == operation_kind
                     ):
                         return _operation_from_row(existing)
                     approval = connection.execute(
                         """
                         SELECT 1 FROM approvals
                         WHERE approval_id = %s AND run_id = %s
-                          AND plan_hash = %s AND scope = 'apply'
+                          AND plan_hash = %s AND scope = %s
                           AND expires_at > %s
                         """,
                         (
                             approval_id,
                             operation.run_id,
                             operation.plan_hash,
+                            scope.value,
                             now,
                         ),
                     ).fetchone()
@@ -236,6 +264,7 @@ class PostgresForwardOperationRepository:
     ) -> ExecutionOperationLease | None:
         return self._claim(
             operation_id=None,
+            operation_kind="media_move",
             worker_id=worker_id,
             now=now,
             lease_for=lease_for,
@@ -248,6 +277,7 @@ class PostgresForwardOperationRepository:
         worker_id: str,
         now: datetime,
         lease_for: timedelta,
+        operation_kind: str = "media_move",
     ) -> ExecutionOperationLease | None:
         if not isinstance(operation_id, str) or not operation_id:
             raise ForwardOperationError(
@@ -255,6 +285,7 @@ class PostgresForwardOperationRepository:
             )
         return self._claim(
             operation_id=operation_id,
+            operation_kind=operation_kind,
             worker_id=worker_id,
             now=now,
             lease_for=lease_for,
@@ -264,11 +295,16 @@ class PostgresForwardOperationRepository:
         self,
         *,
         operation_id: str | None,
+        operation_kind: str,
         worker_id: str,
         now: datetime,
         lease_for: timedelta,
     ) -> ExecutionOperationLease | None:
         _validate_time(now)
+        if operation_kind not in {"media_move", "subtitle_acquire"}:
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
@@ -292,6 +328,7 @@ class PostgresForwardOperationRepository:
                                plan_hash, status, attempt_count, outcomes
                         FROM execution_operations_v2
                         WHERE attempt_count < 100
+                          AND operation_kind = %s
                           AND (%s::text IS NULL OR operation_id = %s)
                           AND (
                               status = 'authorized'
@@ -304,7 +341,7 @@ class PostgresForwardOperationRepository:
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                         """,
-                        (operation_id, operation_id, now),
+                        (operation_kind, operation_id, operation_id, now),
                     ).fetchone()
                     if row is None:
                         return None
@@ -597,6 +634,376 @@ class PostgresForwardOperationRepository:
         except Exception:
             raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
+    def settle_subtitle_result(
+        self,
+        lease: ExecutionOperationLease,
+        result: SubtitlePublicationResult,
+        *,
+        origin_discovery_id: str,
+        now: datetime,
+    ) -> ExecutionOperation:
+        """Settle subtitle publication in the shared v2 operation ledger."""
+
+        _validate_time(now)
+        if (
+            not isinstance(lease, ExecutionOperationLease)
+            or not isinstance(result, SubtitlePublicationResult)
+            or not isinstance(origin_discovery_id, str)
+            or not origin_discovery_id
+        ):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        outcome = {
+            SubtitlePublicationState.COMPLETED: ExecutionItemOutcome.SATISFIED,
+            SubtitlePublicationState.COLLISION: ExecutionItemOutcome.COLLISION,
+            SubtitlePublicationState.UNSAFE: ExecutionItemOutcome.UNSAFE,
+            SubtitlePublicationState.UNAVAILABLE: ExecutionItemOutcome.UNAVAILABLE,
+        }[result.state]
+        try:
+            settled = lease.settle((outcome,), now=now)
+        except DomainError:
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.LEASE_CONFLICT
+            ) from None
+        failure_code = {
+            SubtitlePublicationState.COMPLETED: None,
+            SubtitlePublicationState.COLLISION: "destination_collision",
+            SubtitlePublicationState.UNSAFE: "unsafe_entry",
+            SubtitlePublicationState.UNAVAILABLE: "root_unavailable",
+        }[result.state]
+        item = {
+            "diagnostic": {
+                SubtitlePublicationState.COMPLETED: None,
+                SubtitlePublicationState.COLLISION: "collision",
+                SubtitlePublicationState.UNSAFE: "unsafe",
+                SubtitlePublicationState.UNAVAILABLE: "transient_io",
+            }[result.state],
+            "outcome": outcome.value,
+            "source_id": "subtitle-publication",
+        }
+        lineage_key = subtitle_lineage_key(origin_discovery_id)
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    kind = connection.execute(
+                        """
+                        SELECT operation_kind
+                        FROM execution_operations_v2
+                        WHERE operation_id = %s
+                        """,
+                        (settled.operation_id,),
+                    ).fetchone()
+                    if kind is None or str(kind[0]) != "subtitle_acquire":
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.INVALID_OPERATION
+                        )
+                    row = connection.execute(
+                        """
+                        UPDATE execution_operations_v2
+                        SET status = %s, outcomes = %s::jsonb,
+                            lease_owner = NULL, lease_expires_at = NULL,
+                            updated_at = %s
+                        WHERE operation_id = %s
+                          AND status = 'running'
+                          AND attempt_count = %s
+                          AND lease_owner = %s
+                          AND lease_expires_at = %s
+                          AND lease_expires_at > %s
+                        RETURNING schema_version, operation_id, run_id,
+                                  plan_hash, status, attempt_count, outcomes
+                        """,
+                        (
+                            settled.status.value,
+                            json.dumps([outcome.value]),
+                            now,
+                            settled.operation_id,
+                            settled.attempt_count,
+                            lease.worker_id,
+                            lease.expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.LEASE_CONFLICT
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO execution_operation_results_v2
+                            (operation_id, items, warnings,
+                             fresh_scan_required, settled_at)
+                        VALUES (%s, %s::jsonb, '[]'::jsonb, true, %s)
+                        """,
+                        (
+                            settled.operation_id,
+                            json.dumps([item], separators=(",", ":")),
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO execution_rescan_outbox_v2
+                            (operation_id, run_id)
+                        VALUES (%s, %s)
+                        """,
+                        (settled.operation_id, settled.run_id),
+                    )
+                    scope = connection.execute(
+                        """
+                        SELECT d.watch_id, d.source_folder, d.inventory_id
+                        FROM runs AS r
+                        JOIN discoveries AS d USING (discovery_id)
+                        WHERE r.run_id = %s AND d.discovery_id = %s
+                        """,
+                        (settled.run_id, origin_discovery_id),
+                    ).fetchone()
+                    if scope is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.INVALID_OPERATION
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO handled_folder_inventories_v2
+                            (watch_id, source_folder, inventory_id,
+                             run_id, operation_id, terminal_status,
+                             handled_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        (
+                            str(scope[0]),
+                            str(scope[1]),
+                            str(scope[2]),
+                            settled.run_id,
+                            settled.operation_id,
+                            settled.status.value,
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE subtitle_acquisition_requests
+                        SET status = %s, failure_code = %s,
+                            transaction_id = %s,
+                            updated_at = %s
+                        WHERE run_id = %s AND plan_hash = %s
+                        """,
+                        (
+                            (
+                                "published"
+                                if result.state
+                                is SubtitlePublicationState.COMPLETED
+                                else "blocked"
+                            ),
+                            failure_code,
+                            settled.operation_id,
+                            now,
+                            settled.run_id,
+                            settled.plan_hash,
+                        ),
+                    )
+                    if result.state is SubtitlePublicationState.COMPLETED:
+                        connection.execute(
+                            """
+                            INSERT INTO subtitle_acquisition_lineages
+                                (lineage_key, root_discovery_id)
+                            VALUES (%s, %s)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (lineage_key, origin_discovery_id),
+                        )
+                    connection.execute(
+                        """
+                        UPDATE runs
+                        SET status = %s,
+                            subtitle_acquisition_lineage_key = CASE
+                                WHEN %s::text IS NULL
+                                THEN %s
+                                ELSE subtitle_acquisition_lineage_key
+                            END
+                        WHERE run_id = %s
+                        """,
+                        (
+                            (
+                                "superseded"
+                                if result.state
+                                is SubtitlePublicationState.COMPLETED
+                                else "failed"
+                            ),
+                            failure_code,
+                            lineage_key,
+                            settled.run_id,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'completed', boot_id = NULL,
+                            updated_at = %s
+                        WHERE run_id = %s
+                          AND status IN ('pending', 'running')
+                        """,
+                        (now, settled.run_id),
+                    )
+                    return _operation_from_row(row)
+        except ForwardOperationError:
+            raise
+        except Exception:
+            _LOG.exception("subtitle_operation_settlement_failed")
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+
+    def settle_exhausted_subtitle(
+        self,
+        operation_id: str,
+        *,
+        origin_discovery_id: str,
+        now: datetime,
+    ) -> ExecutionOperation:
+        """Project a lease-exhausted subtitle operation into one terminal truth.
+
+        The claim path deliberately stops after a bounded number of attempts.
+        This method closes the remaining control-plane state without performing
+        another filesystem effect, so the run can be rescanned or deleted.
+        """
+
+        _validate_time(now)
+        if (
+            not isinstance(operation_id, str)
+            or not operation_id
+            or not isinstance(origin_discovery_id, str)
+            or not origin_discovery_id
+        ):
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.INVALID_OPERATION
+            )
+        item = {
+            "diagnostic": "transient_io",
+            "outcome": ExecutionItemOutcome.UNAVAILABLE.value,
+            "source_id": "subtitle-publication",
+        }
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        SELECT schema_version, operation_id, run_id,
+                               plan_hash, status, attempt_count, outcomes
+                        FROM execution_operations_v2
+                        WHERE operation_id = %s
+                          AND operation_kind = 'subtitle_acquire'
+                          AND status = 'unavailable'
+                        FOR UPDATE
+                        """,
+                        (operation_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.OPERATION_CONFLICT
+                        )
+                    operation = _operation_from_row(row)
+                    existing = connection.execute(
+                        """
+                        SELECT 1 FROM execution_operation_results_v2
+                        WHERE operation_id = %s
+                        """,
+                        (operation_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        return operation
+                    scope = connection.execute(
+                        """
+                        SELECT d.watch_id, d.source_folder, d.inventory_id
+                        FROM runs AS r
+                        JOIN discoveries AS d USING (discovery_id)
+                        WHERE r.run_id = %s AND d.discovery_id = %s
+                        """,
+                        (operation.run_id, origin_discovery_id),
+                    ).fetchone()
+                    if scope is None:
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.INVALID_OPERATION
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO execution_operation_results_v2
+                            (operation_id, items, warnings,
+                             fresh_scan_required, settled_at)
+                        VALUES (%s, %s::jsonb, '[]'::jsonb, true, %s)
+                        """,
+                        (
+                            operation_id,
+                            json.dumps([item], separators=(",", ":")),
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO execution_rescan_outbox_v2
+                            (operation_id, run_id)
+                        VALUES (%s, %s)
+                        ON CONFLICT (operation_id) DO NOTHING
+                        """,
+                        (operation_id, operation.run_id),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO handled_folder_inventories_v2
+                            (watch_id, source_folder, inventory_id,
+                             run_id, operation_id, terminal_status,
+                             handled_at)
+                        VALUES (%s, %s, %s, %s, %s, 'unavailable', %s)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        (
+                            str(scope[0]),
+                            str(scope[1]),
+                            str(scope[2]),
+                            operation.run_id,
+                            operation_id,
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE subtitle_acquisition_requests
+                        SET status = 'blocked',
+                            failure_code = 'root_unavailable',
+                            transaction_id = %s, updated_at = %s
+                        WHERE run_id = %s AND plan_hash = %s
+                        """,
+                        (
+                            operation_id,
+                            now,
+                            operation.run_id,
+                            operation.plan_hash,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE runs SET status = 'failed'
+                        WHERE run_id = %s
+                          AND status NOT IN ('completed', 'superseded')
+                        """,
+                        (operation.run_id,),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'completed', boot_id = NULL,
+                            updated_at = %s
+                        WHERE run_id = %s
+                          AND status IN ('pending', 'running')
+                        """,
+                        (now, operation.run_id),
+                    )
+                    return operation
+        except ForwardOperationError:
+            raise
+        except Exception:
+            _LOG.exception("subtitle_operation_exhaustion_settlement_failed")
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
+
     def get_view(self, operation_id: str) -> ForwardOperationView:
         try:
             with self._pool.connection() as connection:
@@ -606,7 +1013,7 @@ class PostgresForwardOperationRepository:
                            o.plan_hash, o.status, o.attempt_count, o.outcomes,
                            r.items, r.warnings, r.fresh_scan_required,
                            q.state, q.successor_run_id,
-                           h.state, h.warning
+                           h.state, h.warning, o.operation_kind
                     FROM execution_operations_v2 AS o
                     LEFT JOIN execution_operation_results_v2 AS r
                       ON r.operation_id = o.operation_id
@@ -646,6 +1053,7 @@ class PostgresForwardOperationRepository:
                 warnings.append("housekeeping:" + str(row[13]))
             return ForwardOperationView(
                 operation=operation,
+                operation_kind=str(row[14]),
                 items=items,
                 warnings=tuple(sorted(set(warnings))),
                 fresh_scan_required=(False if row[9] is None else bool(row[9])),
@@ -663,6 +1071,7 @@ class PostgresForwardOperationRepository:
         worker_id: str,
         now: datetime,
         lease_for: timedelta,
+        operation_id: str | None = None,
     ) -> ForwardRescanClaim | None:
         _validate_time(now)
         if (
@@ -671,6 +1080,10 @@ class PostgresForwardOperationRepository:
             or len(worker_id.encode("utf-8")) > 128
             or not isinstance(lease_for, timedelta)
             or not timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
+            or (
+                operation_id is not None
+                and (not isinstance(operation_id, str) or not operation_id)
+            )
         ):
             raise ForwardOperationError(
                 ForwardOperationErrorCode.INVALID_OPERATION
@@ -695,6 +1108,7 @@ class PostgresForwardOperationRepository:
                         SELECT operation_id, run_id, attempt_count
                         FROM execution_rescan_outbox_v2
                         WHERE available_at <= %s
+                          AND (%s::text IS NULL OR operation_id = %s)
                           AND (
                               state IN ('queued', 'retry_wait')
                               OR (state = 'leased' AND lease_expires_at <= %s)
@@ -704,7 +1118,7 @@ class PostgresForwardOperationRepository:
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                         """,
-                        (now, now),
+                        (now, operation_id, operation_id, now),
                     ).fetchone()
                     if row is None:
                         return None

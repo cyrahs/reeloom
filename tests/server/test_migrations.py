@@ -23,6 +23,8 @@ def test_foundation_migration_is_versioned_and_immutable() -> None:
     by_version = {item.version: item.sql for item in migrations}
     assert "service_boots" in migrations[0].sql
     assert "schema_migrations" in migrations[0].sql
+    assert "subtitle_request_published_transaction" in by_version[40]
+    assert "subtitle_request_pre_effect_transaction" in by_version[40]
     assert "subtitle_successor_outbox" in by_version[27]
     assert "subtitle_acquisition_lineages" in by_version[27]
     assert "superseded" in by_version[27]

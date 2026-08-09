@@ -1064,6 +1064,7 @@ def reduce_event(
             phase=Phase.COMPLETED,
             status=RunStatus.STOPPED,
             stop_reason=StopReason.MODEL_FINAL,
+            plan_hash=event.plan_hash,
             event_count=event_count,
         )
 

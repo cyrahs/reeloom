@@ -131,6 +131,7 @@ class ForwardExecutionItemView(_StrictModel):
 
 class ForwardExecutionView(_StrictModel):
     operation_id: str
+    operation_kind: Literal["media_move", "subtitle_acquire"]
     plan_hash: str
     status: Literal[
         "authorized",
@@ -219,14 +220,13 @@ class RunResponse(_StrictModel):
             "revision",
             "approve_apply",
             "execute",
+            "rescan",
             "reapply",
             "recover",
             "settle_folder",
             "dispose_failed_folder",
             "recover_folder_disposition",
             "approve_subtitle_acquisition",
-            "retry_subtitle_acquisition",
-            "fail_subtitle_acquisition",
             "retry_run",
             "fail_run",
             "delete_run",
@@ -297,7 +297,6 @@ class SubtitleAcquisitionView(_StrictModel):
     plan_hash: str
     policy: Literal["plan_only", "manual", "automatic"]
     status: Literal["planned", "approved", "published", "blocked"]
-    approval_id: str | None
     transaction_id: str | None
     failure_code: str | None
     failure_diagnostic: (
@@ -432,6 +431,12 @@ class RunDeletionResponse(_StrictModel):
     deleted_at: str
 
 
+class WatchSubtitleAcquisition(_StrictModel):
+    enabled: bool
+    provider: Literal["acgrip"] | None
+    policy: Literal["plan_only", "manual", "automatic"]
+
+
 class ConfigWatchResponse(_StrictModel):
     watch_id: str
     work_type: Literal["anime", "tv", "movie"]
@@ -439,6 +444,7 @@ class ConfigWatchResponse(_StrictModel):
     settle_interval_seconds: int
     root: str
     library_root: str
+    subtitle_acquisition: WatchSubtitleAcquisition
 
 
 class ConfigProviderResponse(_StrictModel):
@@ -462,10 +468,6 @@ class ConfigTelegramResponse(_StrictModel):
     destination_configured: bool
 
 
-class ConfigAcgripResponse(_StrictModel):
-    enabled: bool
-
-
 class ConfigAgentBudget(_StrictModel):
     max_model_turns: int = Field(ge=1, le=MAX_MODEL_TURNS)
     max_tool_calls: int = Field(ge=1, le=MAX_TOOL_CALLS)
@@ -483,11 +485,7 @@ class ConfigResponse(_StrictModel):
     watches: list[ConfigWatchResponse]
     provider: ConfigProviderResponse
     telegram: ConfigTelegramResponse
-    acgrip: ConfigAcgripResponse
     apply_policy: Literal["plan_only", "manual", "automatic"]
-    subtitle_acquisition_policy: Literal[
-        "plan_only", "manual", "automatic"
-    ]
     agent_budget: ConfigAgentBudget
 
 
@@ -510,6 +508,7 @@ class ConfigWatchRequest(_StrictModel):
     settle_interval_seconds: int
     root: RootInput
     library_root: RootInput
+    subtitle_acquisition: WatchSubtitleAcquisition | None = None
 
 
 class _ProviderRequest(_StrictModel):
@@ -559,10 +558,6 @@ class TelegramConfigRequest(_StrictModel):
     )
 
 
-class AcgripConfigRequest(_StrictModel):
-    enabled: bool
-
-
 class EditProviderRequest(_ProviderRequest):
     credential: CredentialRetain | CredentialReplace
 
@@ -573,10 +568,6 @@ class ConfigUpdateRequest(_StrictModel):
     apply_policy: Literal["plan_only", "manual", "automatic"]
     agent_budget: ConfigAgentBudget | None = None
     telegram: TelegramConfigRequest | None = None
-    acgrip: AcgripConfigRequest | None = None
-    subtitle_acquisition_policy: Literal[
-        "plan_only", "manual", "automatic"
-    ] | None = None
 
 
 class ProviderProbeRequest(_StrictModel):
@@ -646,13 +637,6 @@ class AttentionFailResponse(_StrictModel):
     run_id: str
     status: Literal["failure_planned"]
     plan_hash: str
-
-
-class SubtitleAcquisitionFailResponse(_StrictModel):
-    run_id: str
-    plan_hash: str
-    status: Literal["failed"]
-    failure_code: str
 
 
 class ReapplyRequest(_StrictModel):

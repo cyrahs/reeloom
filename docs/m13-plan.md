@@ -117,9 +117,8 @@ unique key 防止重复 successor 与自动获取循环；旧 run 永不 rescan 
 - scripted fake model 已验证 `probe → search → explicit selection`，选择后只进入
   `build_subtitle_acquisition_plan`，本步骤不下载、解压、签发审批或写媒体目录。
 
-生产环境的 ACG.RIP provider 仍保持未实例化；必须等后续显式
-`acgrip.enabled=true` 配置与 acquisition policy 落地后才接入 worker，避免升级即
-产生新的外部网络访问。
+生产环境只为 run 所属 Anime watch 的 `subtitle_acquisition.enabled=true` 且来源为
+`acgrip` 时实例化 ACG.RIP provider；其他 watch 不注册 M13 tool surface。
 
 ### M13.3：归档检查与计划编译（完成）
 
@@ -141,9 +140,9 @@ unique key 防止重复 successor 与自动获取循环；旧 run 永不 rescan 
 
 ### M13.4：审批、发布与 successor
 
-- M13.4a（完成）：config schema v5 新增显式 `acgrip.enabled`（旧配置固定迁移为
-  `false`）与独立 `subtitle_acquisition_policy`（默认 `automatic`，但 provider
-  未启用时无效）；新增 `ApprovalScope.SUBTITLE_ACQUIRE`，并建立 plan/approval
+- M13.4a（完成）：最初由 config schema v5 增加全局 opt-in 与独立 policy；schema v6
+  已迁移为每个 watch 的 `subtitle_acquisition {enabled, provider, policy}`，旧 v5 全局值
+  仅复制到 Anime watch；新增 `ApprovalScope.SUBTITLE_ACQUIRE`，并建立 plan/approval
   绑定的 deterministic transaction、逐 member write-once journal 和 transaction
   mutex。该 scope 不能作为 media `APPLY` 被消费；
 - M13.4b（完成）：独立 executor 在 exact approval claim 后重新获取并核对全部卷、
@@ -168,7 +167,7 @@ unique key 防止重复 successor 与自动获取循环；旧 run 永不 rescan 
 
 ### M13.5：Agent loop hardening（完成）
 
-- `acgrip.enabled=false` 时 Anime definition 使用基础 episode prompt/tool surface，
+- run 所属 watch 未启用字幕获取时，Anime definition 使用基础 episode prompt/tool surface，
   不注册或注入 M13 inspector/search capability；revision/reapply 同样保持纯 mapping；
 - runtime projection v8 持久化 subtitle-acquisition capability 与按季 search failure，
   tool discovery、tool implementation、reducer 和 `submit_mapping` 共享确定性 workflow

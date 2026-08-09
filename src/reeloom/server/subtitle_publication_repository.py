@@ -11,7 +11,7 @@ from reeloom.executor.subtitle_publication import (
     SubtitlePublicationResult,
     SubtitlePublicationState,
 )
-from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlan
+from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlanV2
 from reeloom.kernel.subtitle_publication import SubtitlePublicationManifest
 from reeloom.server.config import ServerWorkType
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -48,13 +48,13 @@ class PostgresSubtitlePublicationRepository:
     def settle(
         self,
         *,
-        plan: SubtitleAcquisitionPlan,
+        plan: SubtitleAcquisitionPlanV2,
         approval_id: str,
         result: SubtitlePublicationResult,
         origin_discovery_id: str,
     ) -> str:
         if (
-            not isinstance(plan, SubtitleAcquisitionPlan)
+            not isinstance(plan, SubtitleAcquisitionPlanV2)
             or not plan.verify_hash()
             or not isinstance(result, SubtitlePublicationResult)
             or result.state is not SubtitlePublicationState.COMPLETED

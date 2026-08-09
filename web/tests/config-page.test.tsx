@@ -40,6 +40,11 @@ test("keeps internal watch identity hidden and displays configured paths", async
         settle_interval_seconds: 120,
         root: "/media/incoming/anime",
         library_root: "/media/library/anime",
+        subtitle_acquisition: {
+          enabled: false,
+          provider: "acgrip",
+          policy: "automatic",
+        },
       }],
       provider: {
         base_url: "https://api.openai.com/v1",
@@ -85,6 +90,10 @@ test("keeps internal watch identity hidden and displays configured paths", async
   const workTypes = screen.getAllByLabelText("内容类型");
   await user.selectOptions(workTypes[0]!, "movie");
   expect(workTypes[0]).toHaveFocus();
+  expect(screen.getByRole("option", {
+    name: "当前类型暂无可用来源",
+  })).toBeVisible();
+  expect(screen.getByRole("button", { name: "启用" })).toBeDisabled();
   expect(screen.getByPlaceholderText("/media/incoming/anime")).toHaveValue("");
   expect(screen.getByPlaceholderText("/media/library/anime")).toHaveValue("");
 });
@@ -103,6 +112,11 @@ test("selects a pod directory without requiring manual path entry", async () => 
         settle_interval_seconds: 120,
         root: "/media/incoming/anime",
         library_root: "/media/library/anime",
+        subtitle_acquisition: {
+          enabled: false,
+          provider: "acgrip",
+          policy: "automatic",
+        },
       }],
       provider: {
         base_url: "https://api.openai.com/v1",
@@ -257,6 +271,11 @@ test("shows bounded move capability below its watch", async () => {
         settle_interval_seconds: 120,
         root: "/media/incoming/anime",
         library_root: "/media/library/anime",
+        subtitle_acquisition: {
+          enabled: false,
+          provider: "acgrip",
+          policy: "automatic",
+        },
       }],
       provider: {
         base_url: "https://api.openai.com/v1",
@@ -311,14 +330,41 @@ test("shows bounded move capability below its watch", async () => {
   expect(screen.getByText(/媒体执行：跨文件系统/)).toBeVisible();
 });
 
-test("shows explicit ACG.RIP opt-in and independent acquisition policy", async () => {
+test("shows watch-scoped subtitle acquisition sources and policy", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
   vi.spyOn(globalThis, "fetch")
     .mockResolvedValueOnce(jsonResponse({ api_version: "1.0.0", role: "admin" }))
     .mockResolvedValueOnce(jsonResponse({
       revision: 1,
       revision_id: "revision-1",
-      watches: [],
+      watches: [
+        {
+          watch_id: "anime-watch",
+          work_type: "anime",
+          poll_interval_seconds: 30,
+          settle_interval_seconds: 120,
+          root: "/media/incoming/anime",
+          library_root: "/media/library/anime",
+          subtitle_acquisition: {
+            enabled: true,
+            provider: "acgrip",
+            policy: "manual",
+          },
+        },
+        {
+          watch_id: "movie-watch",
+          work_type: "movie",
+          poll_interval_seconds: 30,
+          settle_interval_seconds: 120,
+          root: "/media/incoming/movies",
+          library_root: "/media/library/movies",
+          subtitle_acquisition: {
+            enabled: false,
+            provider: null,
+            policy: "automatic",
+          },
+        },
+      ],
       provider: {
         base_url: "https://api.openai.com/v1",
         model: "gpt-5",
@@ -331,9 +377,7 @@ test("shows explicit ACG.RIP opt-in and independent acquisition policy", async (
         notification_types: ["attention_required"],
         destination_configured: false,
       },
-      acgrip: { enabled: true },
       apply_policy: "plan_only",
-      subtitle_acquisition_policy: "manual",
       agent_budget: {
         max_model_turns: 64,
         max_tool_calls: 64,
@@ -351,35 +395,55 @@ test("shows explicit ACG.RIP opt-in and independent acquisition policy", async (
     </QueryClientProvider>,
   );
 
-  const section = (await screen.findByRole("heading", {
+  await screen.findByText("/media/incoming/anime");
+  expect(screen.queryByRole("heading", {
     name: "动漫字幕自动获取",
-  })).closest("section");
-  expect(section).not.toBeNull();
-  const enableButton = within(section!).getByRole("button", {
+  })).toBeNull();
+  const animeCard = screen
+    .getByText("/media/incoming/anime")
+    .closest<HTMLElement>(".form-card");
+  expect(animeCard).not.toBeNull();
+  const acquisition = within(animeCard!).getByRole("group", {
+    name: "字幕自动获取",
+  });
+  const enableButton = within(acquisition).getByRole("button", {
     name: "已启用",
     pressed: true,
   });
-  const source = within(section!).getByRole("combobox", {
-    name: "字幕来源",
+  const source = within(acquisition).getByRole("combobox", {
+    name: "监听 1 字幕来源",
   });
   expect(enableButton).toBeVisible();
   expect(source).toHaveValue("acgrip");
-  expect(within(section!).getByRole("option", {
+  expect(within(acquisition).getByRole("option", {
     name: "ACG.RIP 动漫字幕论坛",
   })).toBeVisible();
-  expect(within(section!).getByRole("radio", {
+  expect(within(acquisition).getByRole("radio", {
     name: "人工审批",
   })).toBeChecked();
-  expect(within(section!).getAllByRole("radio")).toHaveLength(3);
-  expect(within(section!).queryByText(/robots\.txt/)).toBeNull();
+  expect(within(acquisition).getAllByRole("radio")).toHaveLength(3);
+
+  const movieCard = screen
+    .getByText("/media/incoming/movies")
+    .closest<HTMLElement>(".form-card");
+  expect(movieCard).not.toBeNull();
+  const movieAcquisition = within(movieCard!).getByRole("group", {
+    name: "字幕自动获取",
+  });
+  expect(within(movieAcquisition).getByRole("button", {
+    name: "启用",
+  })).toBeDisabled();
+  expect(within(movieAcquisition).getByRole("option", {
+    name: "当前类型暂无可用来源",
+  })).toBeVisible();
 
   await userEvent.click(enableButton);
-  expect(within(section!).getByRole("button", {
+  expect(within(acquisition).getByRole("button", {
     name: "启用",
     pressed: false,
   })).toBeVisible();
   expect(source).toBeDisabled();
-  for (const radio of within(section!).getAllByRole("radio")) {
+  for (const radio of within(acquisition).getAllByRole("radio")) {
     expect(radio).toBeDisabled();
   }
 });

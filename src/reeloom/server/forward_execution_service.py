@@ -16,8 +16,10 @@ from reeloom.kernel.forward_execution import (
     RenamePlanV2,
 )
 from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
+from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlanV2
 from reeloom.kernel.initial_plan import parse_initial_plan
 from reeloom.ports.plans import PlanStore
+from reeloom.ports.subtitle_acquisition import SubtitleAcquisitionPlanStore
 from reeloom.server.approval_repository import PostgresApprovalStore
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.config_repository import PostgresConfigRepository
@@ -64,6 +66,7 @@ class ForwardExecutionCoordinator:
         operations: PostgresForwardOperationRepository,
         executor: ForwardExecutor,
         worker_id: str,
+        subtitle_plans: SubtitleAcquisitionPlanStore | None = None,
         clock: Callable[[], datetime] = _now,
     ) -> None:
         self._configs = configs
@@ -72,6 +75,7 @@ class ForwardExecutionCoordinator:
         self._operations = operations
         self._executor = executor
         self._worker_id = worker_id
+        self._subtitle_plans = subtitle_plans
         self._clock = clock
 
     def execute_manual(
@@ -119,7 +123,14 @@ class ForwardExecutionCoordinator:
     def request_rescan(
         self, *, run_id: str, plan_hash: str
     ) -> ForwardOperationView:
-        plan, config = self._load(run_id=run_id, plan_hash=plan_hash)
+        try:
+            plan, config = self._load(run_id=run_id, plan_hash=plan_hash)
+            policy = config.apply_policy
+        except ForwardExecutionServiceError:
+            plan, config = self._load_subtitle(
+                run_id=run_id, plan_hash=plan_hash
+            )
+            policy = config.apply_policy
         view = self._operations.get_view(
             execution_operation_id(
                 run_id=plan.run_id,
@@ -127,7 +138,7 @@ class ForwardExecutionCoordinator:
             )
         )
         if ForwardAvailableAction.RESCAN not in forward_available_actions(
-            policy=config.apply_policy,
+            policy=policy,
             operation_status=view.operation.status,
         ):
             raise ForwardExecutionServiceError("rescan_not_allowed")
@@ -136,7 +147,38 @@ class ForwardExecutionCoordinator:
             plan_hash=plan.plan_hash,
             now=self._clock(),
         )
-        return self.view(run_id=run_id, plan_hash=plan_hash)
+        return self._operations.get_view(
+            execution_operation_id(
+                run_id=plan.run_id,
+                plan_hash=plan.plan_hash,
+            )
+        )
+
+    def _load_subtitle(
+        self, *, run_id: str, plan_hash: str
+    ) -> tuple[SubtitleAcquisitionPlanV2, ConfigRevision]:
+        if self._subtitle_plans is None:
+            raise ForwardExecutionServiceError("invalid_v2_plan")
+        try:
+            plan = SubtitleAcquisitionPlanV2.from_canonical_bytes(
+                self._subtitle_plans.load(plan_hash), plan_hash=plan_hash
+            )
+        except Exception:
+            raise ForwardExecutionServiceError("invalid_v2_plan") from None
+        if plan.run_id != run_id:
+            raise ForwardExecutionServiceError("invalid_v2_plan")
+        config = self._configs.get(plan.config_revision)
+        watch = next(
+            (
+                item
+                for item in config.watches
+                if item.watch_id == plan.watch_id
+            ),
+            None,
+        )
+        if watch is None:
+            raise ForwardExecutionServiceError("watch_unavailable")
+        return plan, config
 
     def reconcile_one(self) -> ForwardExecutionCommandResult | None:
         """Lease one unfinished operation without consulting browser state."""

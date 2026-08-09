@@ -615,12 +615,6 @@ class FilesystemPlanCompilerV2:
             PurePosixPath(self.output_root.path.as_posix())
         )
 
-    @property
-    def legacy_source_root_binding(self) -> RootBinding:
-        return FilesystemPlanCompiler._root_binding(
-            self.scan.authorized_root
-        )
-
     def compile(
         self,
         *,

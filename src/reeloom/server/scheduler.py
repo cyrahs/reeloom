@@ -411,8 +411,12 @@ class InMemorySchedulerRepository:
                     source_folder=folder.name,
                     folder_generation_id=generation_id,
                     inventory_id=inventory_id,
-                    source_folder_device=folder.device,
-                    source_folder_inode=folder.inode,
+                    source_folder_device=(
+                        None if state.semantic_v2 else folder.device
+                    ),
+                    source_folder_inode=(
+                        None if state.semantic_v2 else folder.inode
+                    ),
                 )
                 self._discoveries[discovery_id] = discovery
                 self._discovery_by_snapshot[

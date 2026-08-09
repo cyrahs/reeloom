@@ -12,10 +12,10 @@ from reeloom.executor.subtitle_publication import (
     SubtitlePublicationResult,
     SubtitlePublicationState,
 )
-from reeloom.kernel.rename_plan import RootBinding
+from reeloom.kernel.semantic_identity import SemanticRootBinding
 from reeloom.kernel.subtitle_acquisition import (
     InspectedSubtitleMember,
-    SubtitleAcquisitionPlan,
+    SubtitleAcquisitionPlanV2,
     SubtitleArchiveFormat,
     SubtitleArchiveSetId,
     SubtitleArchiveSource,
@@ -52,7 +52,7 @@ def _dsn() -> str:
 
 
 @pytest.mark.postgres
-def test_marker_settlement_uses_normal_scan_and_propagates_lineage(
+def test_active_registration_does_not_consume_legacy_subtitle_scan(
     tmp_path: Path,
 ) -> None:
     control = PostgresControlPlane(_dsn())
@@ -133,20 +133,19 @@ def test_marker_settlement_uses_normal_scan_and_propagates_lineage(
                 ),
             ),
         )
-        plan = SubtitleAcquisitionPlan.create(
+        plan = SubtitleAcquisitionPlanV2.create(
             run_id=registration.run_id,
+            config_revision=config.revision,
             config_revision_id=config.revision_id,
+            watch_id=watch_id,
             created_at=started,
-            source_root=RootBinding(
-                PurePosixPath(watch_root.as_posix()),
-                root.device,
-                root.inode,
+            source_root=SemanticRootBinding(
+                PurePosixPath(watch_root.as_posix())
             ),
             source_folder=source.name,
-            source_folder_device=folder.device,
-            source_folder_inode=folder.inode,
             folder_generation_id=discovery.folder_generation_id or "missing",
-            candidate_snapshot_id=folder.candidates.snapshot_id,
+            inventory_id=folder.semantic_inventory_id,
+            candidate_snapshot=folder.candidates.semantic_snapshot,
             tmdb_id=123,
             archives=(archive_source,),
             inspected_members=(
@@ -223,7 +222,7 @@ def test_marker_settlement_uses_normal_scan_and_propagates_lineage(
             discovery_id=successor_discovery.discovery_id
         )
 
-        assert not publications.lineage_allows_automatic_acquisition(
+        assert publications.lineage_allows_automatic_acquisition(
             successor.run_id
         )
         with control.pool.connection() as connection:
@@ -236,6 +235,7 @@ def test_marker_settlement_uses_normal_scan_and_propagates_lineage(
                 (registration.run_id,),
             ).fetchone()
         assert row is not None
-        assert (str(row[0]), str(row[1])) == ("completed", successor.run_id)
+        assert str(row[0]) == "dispatched"
+        assert row[1] is None
     finally:
         control.close()

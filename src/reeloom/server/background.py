@@ -25,9 +25,11 @@ from reeloom.server.config import (
     ApplyPolicy,
     ConfigRevision,
     ServerWorkType,
+    SubtitleProvider,
 )
 from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.job_outcome import AgentWorkFailure
 from reeloom.server.folder_disposition import FolderDispositionCoordinator
 from reeloom.server.forward_execution_service import (
     ForwardExecutionCoordinator,
@@ -44,8 +46,6 @@ from reeloom.server.watcher import NoFollowWatcher
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
 )
-from reeloom.server.subtitle_successor import SubtitleSuccessorWorker
-from reeloom.server.subtitle_scan import SubtitleScanWorker
 
 _LOG = logging.getLogger(__name__)
 _MAX_FOLDER_FAILURE_RETRIES = 3
@@ -76,8 +76,6 @@ class BackgroundServices:
     folder_dispositions: FolderDispositionCoordinator | None = None
     notifications: ConfiguredNotificationDelivery | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
-    subtitle_successors: SubtitleSuccessorWorker | None = None
-    subtitle_scans: SubtitleScanWorker | None = None
     forward_execution: ForwardExecutionCoordinator | None = None
     forward_rescans: ForwardRescanWorker | None = None
     folder_housekeeping_v2: FolderHousekeepingWorker | None = None
@@ -153,19 +151,6 @@ class BackgroundServices:
                     self._execute_job(claimed.job_id, claimed.run_id)
                 if self.notifications is not None:
                     progressed = self.notifications.run_once() or progressed
-                if self.subtitle_successors is not None:
-                    progressed = (
-                        self.subtitle_successors.process_one(
-                            worker_id=self.boot_id,
-                            now=datetime.now(UTC),
-                        )
-                        is not None
-                    ) or progressed
-                if self.subtitle_scans is not None:
-                    progressed = self.subtitle_scans.process_one(
-                        worker_id=self.boot_id,
-                        now=datetime.now(UTC),
-                    ) or progressed
                 if self.forward_execution is not None:
                     progressed = (
                         self.forward_execution.reconcile_one() is not None
@@ -329,8 +314,23 @@ class BackgroundServices:
                 config = self.configs.get(
                     context.registration.config_revision
                 )
+                watch = next(
+                    (
+                        item
+                        for item in config.watches
+                        if item.watch_id == context.discovery.watch_id
+                    ),
+                    None,
+                )
                 if (
-                    config.subtitle_acquisition_policy.value
+                    watch is None
+                    or not watch.subtitle_acquisition.enabled
+                    or watch.subtitle_acquisition.provider
+                    is not SubtitleProvider.ACGRIP
+                ):
+                    raise RuntimeError("subtitle watch unavailable")
+                if (
+                    watch.subtitle_acquisition.policy.value
                     == "automatic"
                 ):
                     request = self.subtitle_acquisitions.approve_and_execute(
@@ -338,7 +338,10 @@ class BackgroundServices:
                         plan_hash=plan_hash,
                         automatic=True,
                     )
-                    job_already_settled = request.status == "published"
+                    job_already_settled = request.status in {
+                        "published",
+                        "blocked",
+                    }
                 succeeded = True
                 return
             config = self.configs.get(
@@ -411,6 +414,15 @@ class BackgroundServices:
                         )
             succeeded = True
         except Exception as error:
+            work_failure = (
+                error.failure
+                if isinstance(error, AgentWorkFailure)
+                else None
+            )
+            if work_failure is not None:
+                subtitle_work = (
+                    work_failure.stage.value == "subtitle_plan"
+                )
             if (
                 isinstance(error, ServerError)
                 and error.code is ServerErrorCode.DATABASE_UNAVAILABLE
@@ -421,6 +433,7 @@ class BackgroundServices:
             )
             if (
                 subtitle_work
+                and work_failure is None
                 and database_error is None
                 and self.subtitle_acquisitions is not None
             ):
@@ -452,12 +465,25 @@ class BackgroundServices:
                 and error.code is ExecutorErrorCode.SOURCE_DRIFT
             )
             if subtitle_work:
-                pass
+                if work_failure is not None and database_error is None:
+                    self._terminalize_preserving_source(
+                        run_id=run_id,
+                        reason_code=work_failure.code,
+                    )
+                    succeeded = True
             elif execution_blocked:
+                self._terminalize_preserving_source(
+                    run_id=run_id,
+                    reason_code=(
+                        error.code.value
+                        if isinstance(error, ExecutorError)
+                        else "execution_failed"
+                    ),
+                )
                 succeeded = True
             elif reason_code is not None:
                 try:
-                    self._prepare_terminal_failure(
+                    self._terminalize_preserving_source(
                         run_id=run_id,
                         reason_code=reason_code,
                     )
@@ -494,18 +520,11 @@ class BackgroundServices:
                         retry = True
             elif folder_run and database_error is None:
                 try:
-                    retry_count = self.scheduler.retry_folder_generation(
+                    self._terminalize_preserving_source(
                         run_id=run_id,
-                        max_retries=_MAX_FOLDER_FAILURE_RETRIES,
+                        reason_code="internal_error",
                     )
-                    if retry_count is not None:
-                        restarted = True
-                    else:
-                        self._prepare_terminal_failure(
-                            run_id=run_id,
-                            reason_code="agent_retry_exhausted",
-                        )
-                        succeeded = True
+                    succeeded = True
                 except ServerError as retry_error:
                     if (
                         retry_error.code
@@ -529,10 +548,8 @@ class BackgroundServices:
                                 succeeded = True
                             else:
                                 retry = True
-                except ExecutorError:
-                    succeeded = True
                 except Exception:
-                    retry = True
+                    succeeded = False
             elif database_error is None:
                 try:
                     self.scheduler.mark_run_failed(run_id=run_id)
@@ -625,6 +642,17 @@ class BackgroundServices:
                 plan_hash=plan.plan_hash,
                 automatic=True,
             )
+
+    def _terminalize_preserving_source(
+        self, *, run_id: str, reason_code: str
+    ) -> None:
+        terminalize = getattr(
+            self.scheduler, "terminalize_run_failure", None
+        )
+        if terminalize is not None:
+            terminalize(run_id=run_id, failure_code=reason_code)
+            return
+        self.scheduler.mark_run_failed(run_id=run_id)
 
     @staticmethod
     def _failure_reason(error: Exception) -> str | None:

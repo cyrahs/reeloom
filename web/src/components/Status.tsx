@@ -76,7 +76,7 @@ export function errorMessage(code: string) {
     recovery_required:
       "请求结果尚未安全结算，只能使用服务端返回的指定审批 ID 恢复。",
     destination_collision:
-      "目标位置已经存在内容；系统没有覆盖文件。请保留现场并选择“标记失败”结束此运行。",
+      "目标位置已经存在不同内容；系统没有覆盖文件。当前执行已终结，可重新扫描或删除记录。",
     source_drift:
       "源文件夹内容已变化，原计划不再适用；系统没有继续执行。请结束此运行并让新扫描创建新运行。",
     interaction_budget_exhausted:
