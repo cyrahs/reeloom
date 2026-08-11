@@ -229,6 +229,36 @@ async def test_an_unidentifiable_folder_waits_for_a_human_and_can_be_discarded(
     assert not any(library.iterdir())
 
 
+async def test_abandoning_a_done_run_reassembles_the_folder_in_fail(
+    harness: Harness, roots: tuple[Path, Path], client
+) -> None:
+    inbound, library = roots
+    await harness.drain()
+    run_id = next(iter(harness.database.runs))
+    assert harness.database.runs[run_id].state is RunState.DONE
+
+    # A subtitle reeloom downloaded itself sits in the acquired staging.
+    make_files(
+        inbound / "archive" / FOLDER / ".acquired", "Show S01E01.sc.ass"
+    )
+
+    await client.post(f"/api/runs/{run_id}/discard", headers=AUTH)
+    await harness.drain()
+
+    assert harness.database.runs[run_id].state is RunState.DISCARDED
+    # The original download is back together, in the fail bucket.
+    parked = inbound / "fail" / FOLDER
+    assert (parked / "[Group] Show - 01 [1080p].mkv").is_file()
+    assert (parked / "[Group] Show - 02 [1080p].mkv").is_file()
+    assert (parked / "[Group] Show - 01 [CHS].ass").is_file()
+    assert (parked / "Show.torrent").is_file()
+    # The library holds no files any more, and the acquired subtitle was
+    # deleted rather than parked.
+    assert not [path for path in library.rglob("*") if path.is_file()]
+    assert not (inbound / "archive" / FOLDER).exists()
+    assert not (inbound / FOLDER).exists()
+
+
 async def test_a_movie_watch_produces_a_flat_layout(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:

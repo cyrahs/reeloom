@@ -333,15 +333,18 @@ class Database:
         return tuple(SnapshotFile.from_json(item) for item in row["snapshot"] or ())
 
     async def next_active_run(self) -> Run | None:
+        # Derived from the enum: a hand-written copy of this list once
+        # dropped 'discarding' and left those runs stuck forever.
+        active = [state.value for state in RunState if state.is_active]
         async with self._connection() as connection:
             cursor = await connection.execute(
                 """
                 select * from run
-                where state in ('pending', 'identifying', 'executing',
-                                'acquiring_subs', 'reverting')
+                where state = any(%s)
                 order by updated_at
                 limit 1
-                """
+                """,
+                (active,),
             )
             row = await cursor.fetchone()
         return _run(row) if row else None

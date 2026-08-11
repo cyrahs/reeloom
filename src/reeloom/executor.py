@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -36,7 +37,7 @@ from reeloom.models import (
     WatchConfig,
 )
 from reeloom.rename import RenameFailure, classify, rename_noreplace
-from reeloom.scanner import ARCHIVE_BUCKET, FAIL_BUCKET, safe_relative
+from reeloom.scanner import ACQUIRED_DIR, ARCHIVE_BUCKET, FAIL_BUCKET, safe_relative
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,15 +110,22 @@ class FilesystemExecutor:
         return executed
 
     async def discard(self, run: Run, config: WatchConfig) -> int:
-        """Give up on a folder: park all of it in the fail bucket.
+        """Give up on a folder: park all of it, as downloaded, in the fail bucket.
 
-        Nothing is deleted, so a discard can be looked at afterwards and, if
-        it was a mistake, moved back by hand.
+        The original download is never deleted, so a discard can be looked at
+        afterwards and, if it was a mistake, moved back by hand. Subtitles
+        reeloom downloaded itself (the ``.acquired`` staging) are the one
+        deliberate exception: they are deleted rather than parked, so the fail
+        bucket holds exactly what came in — and they can be downloaded again.
         """
 
-        return await self._park_tree(
-            run, _Roots.of(config), FAIL_BUCKET, MoveKind.FAIL
+        roots = _Roots.of(config)
+        await asyncio.to_thread(_delete_acquired_staging, roots.inbound, run)
+        moved = await self._park_tree(run, roots, FAIL_BUCKET, MoveKind.FAIL)
+        await asyncio.to_thread(
+            _remove_empty_tree, roots.inbound / ARCHIVE_BUCKET / run.folder_name
         )
+        return moved
 
     # ---- one move -----------------------------------------------------
 
@@ -294,6 +302,20 @@ def _check_within(base: Path, destination: Path) -> None:
         raise ExecutionError(
             "destination_escapes_root", path=str(resolved), root=str(base)
         )
+
+
+def _delete_acquired_staging(inbound: Path, run: Run) -> None:
+    """Delete subtitles reeloom downloaded for this run.
+
+    The one place anything is ever deleted. These files did not come with the
+    release — parking them in ``fail/`` would make the discarded folder differ
+    from the original download, and they are always re-downloadable.
+    """
+
+    staging = inbound / ARCHIVE_BUCKET / run.folder_name / ACQUIRED_DIR
+    if staging.is_dir() and not staging.is_symlink():
+        _LOGGER.info("deleting acquired subtitle staging: %s", staging)
+        shutil.rmtree(staging)
 
 
 def _park_units(inbound: Path, run: Run, bucket: str) -> list[tuple[str, int]]:

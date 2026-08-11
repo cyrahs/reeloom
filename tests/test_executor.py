@@ -399,6 +399,46 @@ async def test_revert_ignores_moves_that_never_happened(
     assert not (inbound / FOLDER).exists()
 
 
+async def test_discard_parks_the_folder_and_deletes_acquired_subtitles(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / FOLDER, "ep01.mkv", "extras/notes.txt")
+    make_files(inbound / "archive" / FOLDER / ".acquired", "Show S01E01.chs.ass")
+    engine, database = executor
+    run = build_run()
+    database.runs[run.id] = run
+
+    moved = await engine.discard(run, config)
+
+    assert moved == 2
+    assert (inbound / "fail" / FOLDER / "ep01.mkv").is_file()
+    assert (inbound / "fail" / FOLDER / "extras/notes.txt").is_file()
+    assert not (inbound / FOLDER).exists()
+    # Reeloom's own downloads are deleted, not parked: the fail bucket holds
+    # exactly what came in, and the emptied archive folder is cleaned up.
+    assert not (inbound / "archive" / FOLDER).exists()
+
+
+async def test_discard_does_not_follow_a_symlinked_staging_folder(
+    config: WatchConfig, roots: tuple[Path, Path], executor, tmp_path: Path
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / FOLDER, "ep01.mkv")
+    outside = tmp_path / "outside"
+    make_files(outside, "keep.ass")
+    staging_parent = inbound / "archive" / FOLDER
+    staging_parent.mkdir(parents=True)
+    os.symlink(outside, staging_parent / ".acquired")
+    engine, database = executor
+    run = build_run()
+    database.runs[run.id] = run
+
+    await engine.discard(run, config)
+
+    assert (outside / "keep.ass").is_file()
+
+
 async def test_untagged_library_folder_is_renamed_then_used(
     config: WatchConfig, roots: tuple[Path, Path], executor
 ) -> None:

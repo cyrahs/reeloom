@@ -208,7 +208,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
           <button
             className="danger"
             disabled={busy || active}
-            title="把整个文件夹移入 fail，不删除任何文件"
+            title="复原已入库的文件，把原始文件夹整体移入 fail；自动下载的字幕会被删除"
             onClick={() => act(() => api.discard(runId))}
           >
             放弃

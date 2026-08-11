@@ -36,7 +36,7 @@ from reeloom.models import (
 )
 from reeloom.models import Move
 from reeloom.naming import episode_path
-from reeloom.scanner import SUBTITLE_EXTENSIONS
+from reeloom.scanner import ACQUIRED_DIR, ARCHIVE_BUCKET, SUBTITLE_EXTENSIONS
 from reeloom.subtitles import detect_variant_for_file
 
 _LOGGER = logging.getLogger(__name__)
@@ -325,11 +325,13 @@ def _stage(path: Path, config: WatchConfig, run: Run) -> str:
     keeps acquired subtitles on exactly the same code path as mapped files.
     """
 
-    staging = Path(config.inbound_root) / "archive" / run.folder_name / ".acquired"
+    staging = (
+        Path(config.inbound_root) / ARCHIVE_BUCKET / run.folder_name / ACQUIRED_DIR
+    )
     staging.mkdir(parents=True, exist_ok=True)
     target = staging / _safe_name(path.name)
     shutil.move(str(path), target)
-    return f"archive/{run.folder_name}/.acquired/{target.name}"
+    return f"{ARCHIVE_BUCKET}/{run.folder_name}/{ACQUIRED_DIR}/{target.name}"
 
 
 def _safe_name(name: str) -> str:
