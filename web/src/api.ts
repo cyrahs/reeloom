@@ -17,6 +17,7 @@ export interface RunResult {
   duplicates: string[];
   missing: string[];
   archived: number;
+  subtitles_moved: number;
   subtitles_acquired: number;
   subtitle_note: string;
 }

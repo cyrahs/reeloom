@@ -20,6 +20,7 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
       duplicates: [],
       missing: [],
       archived: 0,
+      subtitles_moved: 0,
       subtitles_acquired: 0,
       subtitle_note: "",
     },
@@ -288,7 +289,7 @@ describe("run detail page", () => {
     expect(
       screen.getByText("Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass"),
     ).toBeInTheDocument();
-    expect(screen.getByText("字幕")).toBeInTheDocument();
+    expect(screen.getByText("下载字幕")).toBeInTheDocument();
     // Executed media moves already show as plan moves; not repeated. A
     // non-moved acquired entry is not shown either.
     expect(screen.getAllByText(/Show S01E01\.mkv/)).toHaveLength(1);

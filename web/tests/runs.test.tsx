@@ -20,6 +20,7 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
       duplicates: [],
       missing: [],
       archived: 1,
+      subtitles_moved: 0,
       subtitles_acquired: 0,
       subtitle_note: "",
     },
@@ -92,7 +93,8 @@ describe("runs page", () => {
           duplicates: ["ep01.mkv"],
           missing: ["ep02.mkv"],
           archived: 0,
-          subtitles_acquired: 0,
+          subtitles_moved: 2,
+          subtitles_acquired: 3,
           subtitle_note: "",
         },
       }),
@@ -104,6 +106,8 @@ describe("runs page", () => {
       expect(screen.getByText(/重复 1/)).toBeInTheDocument(),
     );
     expect(screen.getByText(/缺失 1/)).toBeInTheDocument();
+    expect(screen.getByText(/字幕 2/)).toBeInTheDocument();
+    expect(screen.getByText(/下载字幕 3/)).toBeInTheDocument();
   });
 
   it("says so when there is nothing yet", async () => {

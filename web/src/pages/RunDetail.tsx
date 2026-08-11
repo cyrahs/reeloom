@@ -181,7 +181,7 @@ function Moves({ run }: { run: RunDetail }) {
               {item.move.source_path.split("/").pop()}
             </code>
             <code className="to">{item.move.dest_path}</code>
-            <span className="tag">字幕</span>
+            <span className="tag">下载字幕</span>
           </li>
         ))}
       </ul>
@@ -200,7 +200,7 @@ function Result({ run }: { run: RunDetail }) {
       <h2>结果</h2>
       <p>
         移动 {run.result.moved} · 归档 {run.result.archived} · 字幕{" "}
-        {run.result.subtitles_acquired}
+        {run.result.subtitles_moved} · 下载字幕 {run.result.subtitles_acquired}
       </p>
       {duplicates.length > 0 && (
         <p className="warn-text">重复（已放入 fail）：{duplicates.join(", ")}</p>

@@ -37,7 +37,13 @@ from reeloom.models import (
     WatchConfig,
 )
 from reeloom.rename import RenameFailure, classify, rename_noreplace
-from reeloom.scanner import ACQUIRED_DIR, ARCHIVE_BUCKET, FAIL_BUCKET, safe_relative
+from reeloom.scanner import (
+    ACQUIRED_DIR,
+    ARCHIVE_BUCKET,
+    FAIL_BUCKET,
+    SUBTITLE_EXTENSIONS,
+    safe_relative,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +64,7 @@ class FilesystemExecutor:
         roots = _Roots.of(config)
 
         moved = 0
+        subtitles_moved = 0
         duplicates: list[str] = []
         missing: list[str] = []
 
@@ -69,7 +76,10 @@ class FilesystemExecutor:
                 # The move was diverted: the library already held this episode.
                 duplicates.append(name)
             elif executed.outcome is MoveOutcome.MOVED:
-                moved += 1
+                if PurePosixPath(name).suffix.lower() in SUBTITLE_EXTENSIONS:
+                    subtitles_moved += 1
+                else:
+                    moved += 1
             elif executed.outcome is MoveOutcome.MISSING:
                 missing.append(name)
 
@@ -79,6 +89,7 @@ class FilesystemExecutor:
             duplicates=tuple(duplicates),
             missing=tuple(missing),
             archived=archived,
+            subtitles_moved=subtitles_moved,
         )
 
     async def revert(self, run: Run, config: WatchConfig) -> None:

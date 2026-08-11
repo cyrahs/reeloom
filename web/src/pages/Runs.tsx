@@ -26,8 +26,10 @@ function summary(run: RunSummary): string {
     parts.push(`重复 ${run.result.duplicates.length}`);
   if (run.result.missing.length) parts.push(`缺失 ${run.result.missing.length}`);
   if (run.result.archived) parts.push(`归档 ${run.result.archived}`);
+  if (run.result.subtitles_moved)
+    parts.push(`字幕 ${run.result.subtitles_moved}`);
   if (run.result.subtitles_acquired)
-    parts.push(`字幕 ${run.result.subtitles_acquired}`);
+    parts.push(`下载字幕 ${run.result.subtitles_acquired}`);
   return parts.join(" · ");
 }
 
