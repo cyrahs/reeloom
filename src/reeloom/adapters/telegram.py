@@ -26,6 +26,15 @@ class TelegramError(ReeloomError):
     pass
 
 
+def clip(text: str, limit: int) -> str:
+    """Trim to whole lines: a cut through a tag makes Telegram reject it all."""
+
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    return head[: head.rindex("\n")] if "\n" in head else ""
+
+
 def validate(token: str, chat_id: str) -> None:
     if _TOKEN.fullmatch(token) is None:
         raise TelegramError("invalid_bot_token")
@@ -60,26 +69,28 @@ class TelegramClient:
         await self._client.aclose()
 
     async def send(self, text: str) -> bool:
-        """Send one message. Returns False instead of raising on failure."""
+        """Send one HTML message. Returns False instead of raising on failure."""
 
         return await self._post(
             "sendMessage",
             {
                 "chat_id": self._chat_id,
-                "text": text[:MAX_MESSAGE_CHARS],
+                "text": clip(text, MAX_MESSAGE_CHARS),
+                "parse_mode": "HTML",
                 "disable_web_page_preview": "true",
             },
         )
 
     async def send_photo(self, photo_url: str, caption: str) -> bool:
-        """Send one photo with a caption. Returns False on failure."""
+        """Send one photo with an HTML caption. Returns False on failure."""
 
         return await self._post(
             "sendPhoto",
             {
                 "chat_id": self._chat_id,
                 "photo": photo_url,
-                "caption": caption[:MAX_CAPTION_CHARS],
+                "caption": clip(caption, MAX_CAPTION_CHARS),
+                "parse_mode": "HTML",
             },
         )
 

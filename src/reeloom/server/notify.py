@@ -8,14 +8,24 @@ because the run's own record is the durable one.
 from __future__ import annotations
 
 import logging
+from html import escape
 
 import httpx
 
 from reeloom.adapters.telegram import TelegramClient, TelegramError
-from reeloom.models import MediaType, ReeloomError, Run, RunState, WatchConfig
+from reeloom.models import (
+    MediaIdentity,
+    MediaType,
+    ReeloomError,
+    Run,
+    RunState,
+    WatchConfig,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
+_BRAND = "Reeloom"
+_TMDB_WEB = "https://www.themoviedb.org"
 _HEADLINE = {
     RunState.DONE: "✅ 整理完成",
     RunState.NEEDS_ATTENTION: "⚠️ 需要处理",
@@ -25,13 +35,14 @@ _HEADLINE = {
 
 
 def render(run: Run, config: WatchConfig) -> str:
+    """Telegram HTML. Every interpolated value is untrusted and escaped."""
+
     lines = [
-        f"{_HEADLINE.get(run.state, run.state.value)} · {config.name}",
-        run.folder_name,
+        _BRAND,
+        f"{_HEADLINE.get(run.state, run.state.value)} · {_text(config.name)}",
     ]
     if run.plan:
-        identity = run.plan.identity
-        lines.append(f"{identity.title} ({identity.year})")
+        lines.append(_title(run.plan.identity))
 
     if run.result:
         result = run.result
@@ -46,21 +57,30 @@ def render(run: Run, config: WatchConfig) -> str:
         if result.missing:
             lines.append(f"缺失：{_join(result.missing)}")
         if result.subtitle_note:
-            lines.append(f"字幕：{result.subtitle_note}")
+            lines.append(f"字幕：{_text(result.subtitle_note)}")
 
     if run.error:
-        code = run.error.get("code", "error")
-        detail = run.error.get("reason") or run.error.get("detail") or ""
+        code = _text(str(run.error.get("code", "error")))
+        detail = _text(str(run.error.get("reason") or run.error.get("detail") or ""))
         lines.append(f"原因：{code}{f' — {detail}' if detail else ''}")
-
-    if run.plan and run.plan.unmapped:
-        lines.append(f"未映射 {len(run.plan.unmapped)} 个文件（已归档）")
 
     return "\n".join(lines)
 
 
+def _title(identity: MediaIdentity) -> str:
+    """Bold title linking to the work's TMDB page; ``tmdb_id`` is an int."""
+
+    kind = "movie" if identity.media_type is MediaType.MOVIE else "tv"
+    url = f"{_TMDB_WEB}/{kind}/{identity.tmdb_id}"
+    return f'<b><a href="{url}">{_text(identity.title)} ({identity.year})</a></b>'
+
+
+def _text(value: str) -> str:
+    return escape(value, quote=False)
+
+
 def _join(values: tuple[str, ...], limit: int = 5) -> str:
-    shown = ", ".join(values[:limit])
+    shown = ", ".join(_text(value) for value in values[:limit])
     return shown if len(values) <= limit else f"{shown} 等 {len(values)} 个"
 
 
