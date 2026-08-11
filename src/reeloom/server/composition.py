@@ -36,24 +36,28 @@ class Clients:
     def __init__(self, database: Database) -> None:
         self._db = database
         self._model: Model | None = None
-        self._model_key: tuple[str, str, str] | None = None
+        self._model_key: tuple[str, str, str, str] | None = None
         self._tmdb: TmdbClient | None = None
         self._tmdb_key: str | None = None
 
     async def model(self) -> Model:
         settings = await self._db.get_settings()
-        key = (
+        required = (
             settings.get("llm_base_url", ""),
             settings.get("llm_api_key", ""),
             settings.get("llm_model", ""),
         )
-        if not all(key):
+        if not all(required):
             raise NotConfigured("model_not_configured")
+        key = (*required, settings.get("llm_reasoning_effort", ""))
         if key != self._model_key:
             await self._close_model()
             try:
                 self._model = OpenAICompatibleModel(
-                    base_url=key[0], api_key=key[1], model=key[2]
+                    base_url=key[0],
+                    api_key=key[1],
+                    model=key[2],
+                    reasoning_effort=key[3],
                 )
             except ModelError:
                 raise

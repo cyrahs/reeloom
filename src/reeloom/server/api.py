@@ -54,6 +54,8 @@ class SettingsInput(BaseModel):
     llm_base_url: str | None = Field(default=None, max_length=500)
     llm_api_key: str | None = Field(default=None, max_length=500)
     llm_model: str | None = Field(default=None, max_length=200)
+    # Empty string means "provider default": the parameter is not sent at all.
+    llm_reasoning_effort: Literal["", "minimal", "low", "medium", "high"] | None = None
     telegram_bot_token: str | None = Field(default=None, max_length=200)
     telegram_chat_id: str | None = Field(default=None, max_length=64)
 
@@ -279,6 +281,7 @@ def create_app(
         return {
             "llm_base_url": stored.get("llm_base_url", ""),
             "llm_model": stored.get("llm_model", ""),
+            "llm_reasoning_effort": stored.get("llm_reasoning_effort", ""),
             "telegram_chat_id": stored.get("telegram_chat_id", ""),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),

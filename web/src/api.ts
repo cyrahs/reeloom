@@ -106,6 +106,8 @@ export interface DirListing {
 export interface Settings {
   llm_base_url: string;
   llm_model: string;
+  /** "" means provider default: the parameter is never sent. */
+  llm_reasoning_effort: string;
   telegram_chat_id: string;
   tmdb_api_key_set: boolean;
   llm_api_key_set: boolean;
