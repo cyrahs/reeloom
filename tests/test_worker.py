@@ -6,9 +6,14 @@ from pathlib import Path
 import pytest
 
 from reeloom.models import (
+    ExecutedMove,
     MediaIdentity,
     MediaType,
+    Move,
+    MoveKind,
+    MoveOutcome,
     Plan,
+    Root,
     Run,
     RunResult,
     RunState,
@@ -41,6 +46,7 @@ class StubExecutor:
     def __init__(self) -> None:
         self.executed: list[str] = []
         self.reverted: list[str] = []
+        self.discarded: list[str] = []
 
     async def execute(self, run: Run, config: WatchConfig) -> RunResult:
         self.executed.append(run.id)
@@ -48,6 +54,10 @@ class StubExecutor:
 
     async def revert(self, run: Run, config: WatchConfig) -> None:
         self.reverted.append(run.id)
+
+    async def discard(self, run: Run, config: WatchConfig) -> int:
+        self.discarded.append(run.id)
+        return 1
 
 
 def build(config: WatchConfig, **kwargs):
@@ -243,6 +253,60 @@ async def test_reverting_run_replays_into_execution(
     assert executor.executed == [run_id]
     assert database.runs[run_id].state is RunState.DONE
     assert database.runs[run_id].executed_moves == ()
+
+
+async def test_discarding_an_executed_run_reverts_the_layout_first(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    executor = StubExecutor()
+    database, worker = build(config, executor=executor)
+    await worker.scan()
+    run_id = next(iter(database.runs))
+    database.runs[run_id] = replace(
+        database.runs[run_id],
+        state=RunState.DISCARDING,
+        executed_moves=(
+            ExecutedMove(
+                Move(
+                    kind=MoveKind.MEDIA,
+                    source_root=Root.INBOUND,
+                    source_path="Show/ep01.mkv",
+                    dest_root=Root.LIBRARY,
+                    dest_path="Show (2024) {tmdb-1}/S01/Show S01E01.mkv",
+                ),
+                MoveOutcome.MOVED,
+            ),
+        ),
+    )
+
+    await drain(worker)
+
+    assert executor.reverted == [run_id]
+    assert executor.discarded == [run_id]
+    assert database.runs[run_id].state is RunState.DISCARDED
+    assert database.runs[run_id].executed_moves == ()
+
+
+async def test_discarding_an_unexecuted_run_skips_the_revert(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    executor = StubExecutor()
+    database, worker = build(config, executor=executor)
+    await worker.scan()
+    run_id = next(iter(database.runs))
+    database.runs[run_id] = replace(
+        database.runs[run_id], state=RunState.DISCARDING
+    )
+
+    await drain(worker)
+
+    assert executor.reverted == []
+    assert executor.discarded == [run_id]
+    assert database.runs[run_id].state is RunState.DISCARDED
 
 
 async def test_disabled_config_is_not_scanned(

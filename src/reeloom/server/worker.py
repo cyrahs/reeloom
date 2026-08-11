@@ -303,6 +303,13 @@ class Worker:
         await self._db.set_state(run.id, RunState.EXECUTING)
 
     async def _discard(self, run: Run, config: WatchConfig) -> None:
+        # An executed run (typically a done one being abandoned) is reverted
+        # first, so the intake folder holds the original download again and
+        # all of it — not just leftovers — ends up in the fail bucket.
+        if run.executed_moves:
+            await self._executor.revert(run, config)
+            await self._db.clear_executed(run.id)
+            await self._db.log(run.id, "reverted layout before discarding")
         moved = await self._executor.discard(run, config)
         await self._db.log(run.id, f"discarded {moved} file(s) to the fail bucket")
         await self._db.set_state(run.id, RunState.DISCARDED)

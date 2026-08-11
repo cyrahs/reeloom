@@ -24,6 +24,9 @@ ARCHIVE_BUCKET = "archive"
 FAIL_BUCKET = "fail"
 RESERVED_NAMES = frozenset({ARCHIVE_BUCKET, FAIL_BUCKET})
 
+ACQUIRED_DIR = ".acquired"
+"""Staging folder under ``archive/<folder>/`` for subtitles reeloom downloads."""
+
 VIDEO_EXTENSIONS = frozenset({".avi", ".m4v", ".mkv", ".mp4", ".ts", ".webm"})
 SUBTITLE_EXTENSIONS = frozenset({".ass", ".srt", ".ssa", ".sup", ".vtt"})
 

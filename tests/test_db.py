@@ -188,6 +188,20 @@ async def test_next_active_run_ignores_terminal_runs(
     assert await database.next_active_run() is None
 
 
+async def test_next_active_run_picks_up_a_discarding_run(
+    database: Database, watch: WatchConfig
+) -> None:
+    # 'discarding' was once missing from the query and such runs hung forever.
+    run = await database.create_run(
+        config_id=watch.id, folder_name="Show", snapshot=SNAPSHOT
+    )
+    assert run is not None
+    await database.set_state(run.id, RunState.DISCARDING)
+
+    picked = await database.next_active_run()
+    assert picked is not None and picked.id == run.id
+
+
 async def test_settings_update_ignores_unknown_keys(database: Database) -> None:
     await database.update_settings({"tmdb_api_key": "k", "evil": "x"})
     settings = await database.get_settings()

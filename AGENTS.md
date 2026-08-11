@@ -9,6 +9,8 @@ Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。
 ## 1. 安全不变量
 
 1. 永不删除文件；永不覆盖已存在的目标。目录只用 `rmdir` 清理。
+   唯一例外：discard 会删除 reeloom 自己下载的 `.acquired` 字幕暂存
+   （可重新下载），保证 fail/ 里是与原始下载一致的内容。
 2. 模型没有路径输入通道。它提交 candidate ID 和集数；标题、年份来自 TMDB，
    目标路径由 `naming.py` 计算。
 3. Agent 工具不得提供 shell、任意文件读写、任意 URL 或 apply 能力。
