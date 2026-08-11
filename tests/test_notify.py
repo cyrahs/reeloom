@@ -5,7 +5,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from reeloom.adapters.telegram import TelegramClient, TelegramError, validate
+from reeloom.adapters.telegram import TelegramClient, TelegramError, clip, validate
 from reeloom.models import (
     MediaIdentity,
     MediaType,
@@ -62,7 +62,15 @@ async def test_send_posts_to_the_fixed_origin() -> None:
     assert await client.send("hello") is True
     assert seen[0].url.host == "api.telegram.org"
     assert seen[0].url.path.endswith("/sendMessage")
+    assert parse_qs(seen[0].content.decode())["parse_mode"] == ["HTML"]
     await client.aclose()
+
+
+def test_an_oversized_message_is_cut_at_a_line_boundary() -> None:
+    # Cutting mid-tag would make Telegram reject the whole message.
+    text = "Reeloom\n<b>kept</b>\n" + "x" * 40
+    assert clip(text, 30) == "Reeloom\n<b>kept</b>"
+    assert clip(text, 500) == text
 
 
 async def test_a_failed_send_is_reported_not_raised() -> None:
@@ -96,12 +104,42 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
 
     text = render(run, config)
 
+    assert text.splitlines()[0] == "Reeloom"
     assert "整理完成" in text
-    assert "[Group] Show S01" in text
-    assert "Show (2024)" in text
     assert "移动 12" in text and "归档 3" in text and "字幕 12" in text
     assert "ep01.mkv" in text
-    assert "未映射 2 个文件" in text
+    # The intake folder name and the unmapped count belong to the web UI.
+    assert "[Group] Show S01" not in text
+    assert "未映射" not in text
+
+
+def test_the_title_is_bold_and_links_to_tmdb(config: WatchConfig) -> None:
+    run = make_run(plan=Plan(identity=IDENTITY, moves=()))
+
+    assert (
+        '<b><a href="https://www.themoviedb.org/tv/123">Show (2024)</a></b>'
+        in render(run, config)
+    )
+
+
+def test_a_movie_links_to_the_movie_page(config: WatchConfig) -> None:
+    identity = MediaIdentity(MediaType.MOVIE, 77, "Film", 2020)
+    run = make_run(plan=Plan(identity=identity, moves=()))
+
+    assert 'href="https://www.themoviedb.org/movie/77"' in render(run, config)
+
+
+def test_untrusted_text_cannot_inject_markup(config: WatchConfig) -> None:
+    identity = MediaIdentity(MediaType.ANIME, 5, "<b>A & B</b>", 2024)
+    run = make_run(
+        plan=Plan(identity=identity, moves=()),
+        result=RunResult(missing=("<i>ep01</i>.mkv",)),
+    )
+
+    text = render(run, config)
+
+    assert "&lt;b&gt;A &amp; B&lt;/b&gt;" in text
+    assert "&lt;i&gt;ep01&lt;/i&gt;.mkv" in text
 
 
 def test_attention_message_carries_the_reason(config: WatchConfig) -> None:
