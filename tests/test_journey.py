@@ -111,7 +111,8 @@ async def test_drop_a_folder_and_it_organizes_itself(
     listing = (await client.get("/api/runs", headers=AUTH)).json()["runs"]
     assert listing[0]["state"] == "done"
     assert listing[0]["title"] == "Show"
-    assert listing[0]["result"]["moved"] == 3
+    assert listing[0]["result"]["moved"] == 2
+    assert listing[0]["result"]["subtitles_moved"] == 1
     assert listing[0]["result"]["archived"] == 1
 
 

@@ -38,8 +38,10 @@ def render(run: Run, config: WatchConfig) -> str:
         summary = [f"移动 {result.moved}"]
         if result.archived:
             summary.append(f"归档 {result.archived}")
+        if result.subtitles_moved:
+            summary.append(f"字幕 {result.subtitles_moved}")
         if result.subtitles_acquired:
-            summary.append(f"字幕 {result.subtitles_acquired}")
+            summary.append(f"下载字幕 {result.subtitles_acquired}")
         lines.append(" · ".join(summary))
         if result.duplicates:
             lines.append(f"重复（已入 fail）：{_join(result.duplicates)}")

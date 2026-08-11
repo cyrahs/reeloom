@@ -90,7 +90,11 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
     run = make_run(
         plan=Plan(identity=IDENTITY, moves=(), unmapped=("O1", "O2")),
         result=RunResult(
-            moved=12, archived=3, subtitles_acquired=12, duplicates=("ep01.mkv",)
+            moved=12,
+            archived=3,
+            subtitles_moved=24,
+            subtitles_acquired=12,
+            duplicates=("ep01.mkv",),
         ),
     )
 
@@ -99,7 +103,8 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
     assert "整理完成" in text
     assert "[Group] Show S01" in text
     assert "Show (2024)" in text
-    assert "移动 12" in text and "归档 3" in text and "字幕 12" in text
+    assert "移动 12" in text and "归档 3" in text
+    assert "字幕 24" in text and "下载字幕 12" in text
     assert "ep01.mkv" in text
     assert "未映射 2 个文件" in text
 

@@ -74,6 +74,27 @@ async def test_plain_move_lands_in_the_library(
     assert result.moved == 1
 
 
+async def test_bundled_subtitles_are_counted_separately(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", "ep01.chs.ass")
+    engine, database = executor
+    run = build_run(
+        media_move("ep01.mkv", "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"),
+        media_move(
+            "ep01.chs.ass", "Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass", "S1"
+        ),
+    )
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    assert (library / "Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass").is_file()
+    assert result.moved == 1
+    assert result.subtitles_moved == 1
+
+
 async def test_existing_destination_is_never_overwritten(
     config: WatchConfig, roots: tuple[Path, Path], executor
 ) -> None:
