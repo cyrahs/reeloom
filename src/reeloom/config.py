@@ -8,13 +8,19 @@ PostgreSQL.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from reeloom.models import ReeloomError
 
+logger = logging.getLogger(__name__)
+
 _MIN_TOKEN_LENGTH = 16
+
+_LINK_SCHEMES = ("tcp://", "udp://")
+"""Value shapes only Docker-link style injection produces, never an operator."""
 
 
 class ConfigError(ReeloomError):
@@ -47,12 +53,16 @@ class Settings:
         if not work_dir.is_absolute():
             raise ConfigError("work_dir_not_absolute", value=str(work_dir))
 
+        # The listen pair is spelled REELOOM_LISTEN_* because Kubernetes and
+        # Docker inject <SERVICE>_PORT, <SERVICE>_SERVICE_HOST and
+        # <SERVICE>_SERVICE_PORT into every container. A Service named
+        # `reeloom` would otherwise hand us REELOOM_PORT=tcp://10.43.0.1:80.
         return cls(
             database_url=database_url,
             admin_token=admin_token,
             work_dir=work_dir,
-            host=env.get("REELOOM_HOST", "0.0.0.0"),
-            port=_int(env, "REELOOM_PORT", 8080, 1, 65535),
+            host=env.get("REELOOM_LISTEN_HOST", "0.0.0.0"),
+            port=_int(env, "REELOOM_LISTEN_PORT", 8080, 1, 65535),
             scan_interval_seconds=_int(
                 env, "REELOOM_SCAN_INTERVAL_SECONDS", 30, 5, 3600
             ),
@@ -64,6 +74,14 @@ def _int(
 ) -> int:
     raw = env.get(key)
     if raw is None or not raw.strip():
+        return default
+    if raw.startswith(_LINK_SCHEMES):
+        # Our names sit outside the injected namespace, so a value shaped like
+        # this is someone else's variable landing on ours. Fall back rather
+        # than crash; a typo still fails loudly below.
+        logger.warning(
+            "ignoring injected service-link value for %s: %s", key, raw
+        )
         return default
     try:
         value = int(raw)
