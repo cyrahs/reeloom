@@ -10,7 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from reeloom.adapters.llm import Conversation, Model, ModelError, OpenAICompatibleModel
+from reeloom.adapters.llm import (
+    Conversation,
+    Model,
+    ModelError,
+    ModelReply,
+    OpenAICompatibleModel,
+)
 from reeloom.adapters.tmdb import TmdbClient
 from reeloom.db import Database
 from reeloom.models import Deferred, Run, WatchConfig
@@ -105,11 +111,22 @@ class Answerer:
     def __init__(self, clients: Clients) -> None:
         self._clients = clients
 
-    async def answer(self, run: Run, config: WatchConfig, question: str) -> str:
+    async def answer(
+        self,
+        run: Run,
+        config: WatchConfig,
+        question: str,
+        history: list[dict[str, Any]] | None = None,
+    ) -> str:
         model = await self._clients.model()
         conversation = Conversation()
         conversation.system(_ANSWER_SYSTEM)
         conversation.user(_describe(run, config))
+        for item in history or []:
+            if item["role"] == "agent":
+                conversation.assistant(ModelReply(content=item["content"]))
+            else:
+                conversation.user(item["content"])
         conversation.user(question)
         reply = await model.complete(conversation, [])
         return reply.content[:MAX_ANSWER_CHARS] or "(no answer)"

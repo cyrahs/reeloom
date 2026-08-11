@@ -112,6 +112,132 @@ async def test_unmapped_residue_is_archived_not_deleted(
     assert not (inbound / FOLDER).exists()
 
 
+async def test_residue_is_archived_with_a_single_rename(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(
+        inbound / FOLDER,
+        "ep01.mkv",
+        "extras/trailer.mkv",
+        "extras/scans/cover.jpg",
+        "readme.txt",
+    )
+    engine, database = executor
+    run = build_run(media_move("ep01.mkv", "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"))
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    archives = [
+        item
+        for item in database.runs[run.id].executed_moves
+        if item.move.kind is MoveKind.ARCHIVE
+    ]
+    # The whole emptied folder went to the bucket in one rename.
+    assert [(item.move.source_path, item.move.dest_path) for item in archives] == [
+        (FOLDER, f"archive/{FOLDER}")
+    ]
+    assert result.archived == 3
+    assert (inbound / "archive" / FOLDER / "extras/scans/cover.jpg").is_file()
+
+
+async def test_a_mapped_file_leaves_its_subfolder_free_to_move_whole(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "Discs/ep01.mkv", "Discs/log.txt", "Discs/art.jpg")
+    engine, database = executor
+    run = build_run(
+        media_move("Discs/ep01.mkv", "Show (2024) {tmdb-123}/S00/Show S00E01.mkv")
+    )
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    # The mapped video went to the library first; what remained of the
+    # subfolder moved as one unit.
+    assert (library / "Show (2024) {tmdb-123}/S00/Show S00E01.mkv").is_file()
+    assert (inbound / "archive" / FOLDER / "Discs/log.txt").is_file()
+    assert (inbound / "archive" / FOLDER / "Discs/art.jpg").is_file()
+    archives = [
+        item
+        for item in database.runs[run.id].executed_moves
+        if item.move.kind is MoveKind.ARCHIVE
+    ]
+    assert len(archives) == 1
+    assert result.archived == 2
+
+
+async def test_an_occupied_bucket_name_forces_subfolder_and_file_units(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", "extras/trailer.mkv", "readme.txt")
+    # An earlier run of a same-named folder already archived something.
+    make_files(inbound / "archive" / FOLDER, "old.txt")
+    engine, database = executor
+    run = build_run(media_move("ep01.mkv", "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"))
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    archives = sorted(
+        item.move.source_path
+        for item in database.runs[run.id].executed_moves
+        if item.move.kind is MoveKind.ARCHIVE
+    )
+    assert archives == [f"{FOLDER}/extras", f"{FOLDER}/readme.txt"]
+    assert result.archived == 2
+    assert (inbound / "archive" / FOLDER / "old.txt").is_file()
+    assert (inbound / "archive" / FOLDER / "extras/trailer.mkv").is_file()
+    assert (inbound / "archive" / FOLDER / "readme.txt").is_file()
+
+
+async def test_discard_parks_the_folder_with_one_rename(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / FOLDER, "ep01.mkv", "extras/trailer.mkv")
+    engine, database = executor
+    run = build_run(snapshot=(SnapshotFile("V1", "ep01.mkv", FileKind.VIDEO, 1),))
+    database.runs[run.id] = run
+
+    moved = await engine.discard(run, config)
+
+    assert moved == 2
+    assert (inbound / "fail" / FOLDER / "ep01.mkv").is_file()
+    assert (inbound / "fail" / FOLDER / "extras/trailer.mkv").is_file()
+    assert not (inbound / FOLDER).exists()
+    fails = [
+        item
+        for item in database.runs[run.id].executed_moves
+        if item.move.kind is MoveKind.FAIL
+    ]
+    assert [(item.move.source_path, item.move.dest_path) for item in fails] == [
+        (FOLDER, f"fail/{FOLDER}")
+    ]
+
+
+async def test_reverting_a_folder_level_archive_restores_the_tree(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", "extras/trailer.mkv", "readme.txt")
+    engine, database = executor
+    run = build_run(media_move("ep01.mkv", "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"))
+    database.runs[run.id] = run
+    await engine.execute(run, config)
+
+    await engine.revert(database.runs[run.id], config)
+
+    assert (inbound / FOLDER / "ep01.mkv").is_file()
+    assert (inbound / FOLDER / "extras/trailer.mkv").is_file()
+    assert (inbound / FOLDER / "readme.txt").is_file()
+    assert not (library / "Show (2024) {tmdb-123}/S01/Show S01E01.mkv").exists()
+    assert not (inbound / "archive" / FOLDER).exists()
+
+
 async def test_missing_source_is_recorded_and_does_not_stop_the_run(
     config: WatchConfig, roots: tuple[Path, Path], executor
 ) -> None:

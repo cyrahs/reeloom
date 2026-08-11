@@ -39,7 +39,7 @@ def build(settings: Settings, database: Database):
     clients = Clients(database)
     worker = Worker(
         database,
-        identifier=AgentIdentifier(clients),
+        identifier=AgentIdentifier(clients, database),
         executor=FilesystemExecutor(database),
         subtitles=build_subtitles(database, clients, settings),
         notifier=build_notifier(clients),

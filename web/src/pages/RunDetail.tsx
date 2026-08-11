@@ -3,8 +3,37 @@ import { useState } from "react";
 import { ACTIVE_STATES, STATE_LABEL, api, type RunDetail } from "../api";
 import { usePoll } from "../usePoll";
 
+function archivedSummary(run: RunDetail): string[] {
+  if (!run.plan) return [];
+  const unmapped = new Set(run.plan.unmapped);
+  // A first-level subfolder whose files are all unmapped is archived whole,
+  // so it collapses to "folder/"; partial folders list their leftover files.
+  const folders = new Map<string, { total: number; unmapped: string[] }>();
+  const looseFiles: string[] = [];
+  for (const item of run.snapshot) {
+    const slash = item.relative_path.indexOf("/");
+    if (slash === -1) {
+      if (unmapped.has(item.candidate_id)) looseFiles.push(item.relative_path);
+      continue;
+    }
+    const folder = item.relative_path.slice(0, slash);
+    const group = folders.get(folder) ?? { total: 0, unmapped: [] };
+    group.total += 1;
+    if (unmapped.has(item.candidate_id)) group.unmapped.push(item.relative_path);
+    folders.set(folder, group);
+  }
+  const shown: string[] = [];
+  for (const [folder, group] of folders) {
+    if (group.unmapped.length === 0) continue;
+    if (group.unmapped.length === group.total) shown.push(`${folder}/`);
+    else shown.push(...group.unmapped);
+  }
+  return [...shown, ...looseFiles];
+}
+
 function Moves({ run }: { run: RunDetail }) {
   if (!run.plan) return null;
+  const archived = archivedSummary(run);
   return (
     <section>
       <h2>计划</h2>
@@ -22,10 +51,8 @@ function Moves({ run }: { run: RunDetail }) {
           </li>
         ))}
       </ul>
-      {run.plan.unmapped.length > 0 && (
-        <p className="unmapped">
-          未映射（将归档）：{run.plan.unmapped.join(", ")}
-        </p>
+      {archived.length > 0 && (
+        <p className="unmapped">未映射（将归档）：{archived.join("、")}</p>
       )}
     </section>
   );
@@ -59,7 +86,6 @@ export function RunDetailPage({ runId }: { runId: string }) {
     [runId],
   );
   const [message, setMessage] = useState("");
-  const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
 
@@ -111,32 +137,22 @@ export function RunDetailPage({ runId }: { runId: string }) {
       <Result run={run} />
 
       <section>
-        <h2>文件</h2>
-        <ul className="files">
-          {run.snapshot.map((item) => (
-            <li key={item.candidate_id}>
-              <code>{item.candidate_id}</code> {item.relative_path}
-              {item.variant && <span className="tag">{item.variant}</span>}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section>
         <h2>交流</h2>
+        <p className="muted">
+          记录始终保留，并在提问和重新识别（重试 / 修订重做）时完整提供给
+          Agent 作为上下文。
+        </p>
         <div className="chat-log">
           {run.interactions.map((item, index) => (
-            <p key={index} className={`chat ${item.role}`}>
-              <strong>{item.role === "user" ? "你" : "Agent"}</strong>
+            <p
+              key={index}
+              className={`chat ${item.role === "agent" ? "agent" : "user"}`}
+            >
+              <strong>{item.role === "agent" ? "Agent" : "你"}</strong>
+              {item.role === "revision" && <span className="tag">修订</span>}
               {item.content}
             </p>
           ))}
-          {answer && (
-            <p className="chat agent">
-              <strong>Agent</strong>
-              {answer}
-            </p>
-          )}
         </div>
         <textarea
           value={message}
@@ -148,8 +164,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
             disabled={busy || !message.trim()}
             onClick={() =>
               act(async () => {
-                const reply = await api.ask(runId, message);
-                setAnswer(reply.answer);
+                await api.ask(runId, message);
                 setMessage("");
               })
             }
@@ -164,13 +179,24 @@ export function RunDetailPage({ runId }: { runId: string }) {
               act(async () => {
                 await api.revise(runId, message);
                 setMessage("");
-                setAnswer("");
               })
             }
           >
             按此修订并重做
           </button>
         </div>
+      </section>
+
+      <section>
+        <h2>文件</h2>
+        <ul className="files">
+          {run.snapshot.map((item) => (
+            <li key={item.candidate_id}>
+              <code>{item.candidate_id}</code> {item.relative_path}
+              {item.variant && <span className="tag">{item.variant}</span>}
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section className="danger">

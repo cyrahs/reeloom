@@ -15,6 +15,7 @@ import html
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -36,7 +37,7 @@ REQUEST_INTERVAL = 1.0
 SEARCH_INTERVAL = 5.0
 
 _SEARCH_PATH = "/search.php?mod=forum"
-_THREAD_LINK = re.compile(r"^(?:https://bbs\.acgrip\.com)?/thread-(\d+)-\d+-1\.html$")
+_STATIC_THREAD_PATH = re.compile(r"^thread-([1-9][0-9]*)-[1-9][0-9]*-1\.html$")
 _FORMHASH = re.compile(r"^[0-9a-f]{8}$")
 _META_REFRESH_URL = re.compile(r"(?i)url\s*=\s*['\"]?([^'\";]+)")
 _SESSION_COOKIE = re.compile(r"^[A-Za-z0-9]{1,16}_2132_(?:saltkey|lastvisit|sid|lastact)$")
@@ -66,7 +67,10 @@ class Attachment:
 
 
 def clean(value: str, limit: int = 300) -> str:
-    return _WHITESPACE.sub(" ", html.unescape(value)).strip()[:limit]
+    # NFKC folds full-width punctuation and digits to their ASCII forms so
+    # the model compares titles in one script width.
+    normalized = unicodedata.normalize("NFKC", html.unescape(value))
+    return _WHITESPACE.sub(" ", normalized).strip()[:limit]
 
 
 class AcgripClient:
@@ -96,11 +100,27 @@ class AcgripClient:
         await self._client.aclose()
 
     async def search(self, keyword: str) -> list[Thread]:
-        """Run one forum search and return the threads it matched."""
+        """Search the forum, retrying once with a relaxed query on no results.
 
-        if not keyword.strip():
+        The relaxed form collapses every punctuation run into an ASCII space,
+        which Discuz compiles as an AND between title terms. That recovers
+        titles whose stored form differs from the query only in punctuation —
+        typically full-width marks like ！ glued to a CJK title.
+        """
+
+        keyword = unicodedata.normalize("NFKC", keyword).strip()
+        if not keyword:
             raise AcgripError("empty_keyword")
 
+        threads = await self._search_once(keyword[:120])
+        if threads:
+            return threads
+        relaxed = _relaxed_keyword(keyword)
+        if relaxed is None or relaxed == keyword.casefold():
+            return threads
+        return await self._search_once(relaxed[:120])
+
+    async def _search_once(self, keyword: str) -> list[Thread]:
         await self._pace(SEARCH_INTERVAL, search=True)
         landing = await self._get_html(_SEARCH_PATH)
         formhash = _find_formhash(landing)
@@ -131,10 +151,10 @@ class AcgripClient:
             _search_result_path(_find_meta_refresh(text) or "")
         )
         if target is None:
-            return _parse_threads(text)
+            return _threads_from_results(text)
 
         await self._pace(REQUEST_INTERVAL)
-        return _parse_threads(await self._get_html(target))
+        return _threads_from_results(await self._get_html(target))
 
     async def get_attachments(self, thread_id: int) -> list[Attachment]:
         path = f"/forum.php?mod=viewthread&tid={int(thread_id)}"
@@ -222,6 +242,32 @@ def _keep_only_session_cookies(client: httpx.AsyncClient) -> None:
             client.cookies.jar.clear(cookie.domain, cookie.path, cookie.name)
 
 
+_MIN_RELAXED_CHARACTERS = 2
+
+
+def _relaxed_keyword(value: str) -> str | None:
+    """Keep letter/mark/number runs, join them with the spaces Discuz ANDs."""
+
+    terms: list[str] = []
+    current: list[str] = []
+    informative = 0
+    for character in value.casefold():
+        category = unicodedata.category(character)[0]
+        if category in "LMN":
+            current.append(character)
+            if category in "LN":
+                informative += 1
+            continue
+        if current:
+            terms.append("".join(current))
+            current = []
+    if current:
+        terms.append("".join(current))
+    if informative < _MIN_RELAXED_CHARACTERS or not terms:
+        return None
+    return " ".join(terms)
+
+
 def _search_result_path(value: str) -> str | None:
     """Accept only a same-origin Discuz search listing URL."""
 
@@ -295,6 +341,33 @@ def _find_meta_refresh(text: str) -> str | None:
     return parser.url
 
 
+def _thread_id(value: str) -> int | None:
+    """Read a thread id out of either Discuz link style, or give up.
+
+    Search listings link results as ``forum.php?mod=viewthread&tid=…`` while
+    static rewriting elsewhere produces ``/thread-<tid>-<page>-1.html``. Only
+    origin and tid matter: the href itself is never fetched, the viewthread
+    path is rebuilt from the integer id.
+    """
+
+    parsed = urlparse(html.unescape(value.strip()))
+    if parsed.scheme and parsed.scheme != "https":
+        return None
+    if parsed.netloc and parsed.netloc != "bbs.acgrip.com":
+        return None
+    path = parsed.path.lstrip("/")
+    match = _STATIC_THREAD_PATH.fullmatch(path)
+    if match is not None:
+        return int(match.group(1))
+    if path != "forum.php":
+        return None
+    query = parse_qs(parsed.query)
+    if query.get("mod") != ["viewthread"]:
+        return None
+    tid = query.get("tid", [""])[0]
+    return int(tid) if tid.isdigit() else None
+
+
 class _ThreadParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -314,10 +387,10 @@ class _ThreadParser(HTMLParser):
     def handle_endtag(self, tag):
         if tag != "a" or self._href is None:
             return
-        match = _THREAD_LINK.match(html.unescape(self._href.strip()))
+        thread_id = _thread_id(self._href)
         title = clean("".join(self._text))
-        if match and title and len(self.threads) < MAX_THREADS:
-            self.threads.setdefault(int(match.group(1)), title)
+        if thread_id is not None and title and len(self.threads) < MAX_THREADS:
+            self.threads.setdefault(thread_id, title)
         self._href = None
         self._text = []
 
@@ -326,6 +399,17 @@ def _parse_threads(text: str) -> list[Thread]:
     parser = _ThreadParser()
     parser.feed(text)
     return [Thread(tid, title) for tid, title in parser.threads.items()]
+
+
+_NO_RESULTS_MARKER = "没有找到匹配结果"
+
+
+def _threads_from_results(text: str) -> list[Thread]:
+    # Pinned notices link from every results page, so parsed threads alone
+    # cannot tell an empty search from a hit; Discuz's own marker can.
+    if _NO_RESULTS_MARKER in text:
+        return []
+    return _parse_threads(text)
 
 
 class _AttachmentParser(HTMLParser):
@@ -338,17 +422,24 @@ class _AttachmentParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag != "a":
             return
-        href = dict(attrs).get("href") or ""
+        values = dict(attrs)
+        href = values.get("href") or ""
         path = _attachment_path(href)
         if path is None:
             return
-        aid = parse_qs(urlparse(html.unescape(href)).query).get("aid", [""])[0]
-        # Discuz signs attachment ids; keep the raw value, take a stable
-        # numeric prefix as the identity.
-        digits = re.match(r"^\d+", aid)
-        if digits is None:
-            return
-        self._pending = (int(digits.group()), path)
+        # Discuz signs the aid in the href (base64, no digit prefix); the
+        # anchor's own id attribute carries the numeric identity. Fall back
+        # to a numeric prefix for skins that inline it in the parameter.
+        identity = re.fullmatch(r"aid([1-9][0-9]*)", values.get("id") or "")
+        if identity is not None:
+            numeric = int(identity.group(1))
+        else:
+            aid = parse_qs(urlparse(html.unescape(href)).query).get("aid", [""])[0]
+            digits = re.match(r"^\d+", aid)
+            if digits is None:
+                return
+            numeric = int(digits.group())
+        self._pending = (numeric, path)
         self._text = []
 
     def handle_data(self, data):

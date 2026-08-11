@@ -89,7 +89,7 @@ async def test_a_revised_run_is_reverted_and_reapplied(
     assert database.runs[run_id].state is RunState.DONE
 
     # The user asks for season 2 instead.
-    await database.set_extra(run_id, {"revisions": ["these are season 2"]})
+    await database.add_interaction(run_id, "revision", "these are season 2")
     await database.set_state(run_id, RunState.IDENTIFYING)
     await drain(worker)
 

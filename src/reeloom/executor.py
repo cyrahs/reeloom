@@ -121,19 +121,7 @@ class FilesystemExecutor:
 
         roots = _Roots.of(config)
         await asyncio.to_thread(_delete_acquired_staging, roots.inbound, run)
-        moved = 0
-        for relative in await asyncio.to_thread(_remaining_files, roots.inbound, run):
-            move = Move(
-                kind=MoveKind.FAIL,
-                source_root=Root.INBOUND,
-                source_path=f"{run.folder_name}/{relative}",
-                dest_root=Root.INBOUND,
-                dest_path=f"{FAIL_BUCKET}/{run.folder_name}/{relative}",
-            )
-            executed = await self.apply_move(move, config, run)
-            if executed.outcome is MoveOutcome.MOVED:
-                moved += 1
-        await asyncio.to_thread(_remove_empty_tree, roots.inbound / run.folder_name)
+        moved = await self._park_tree(run, roots, FAIL_BUCKET, MoveKind.FAIL)
         await asyncio.to_thread(
             _remove_empty_tree, roots.inbound / ARCHIVE_BUCKET / run.folder_name
         )
@@ -234,23 +222,39 @@ class FilesystemExecutor:
         seeing it.
         """
 
-        archived = 0
-        for relative in await asyncio.to_thread(_remaining_files, roots.inbound, run):
+        return await self._park_tree(run, roots, ARCHIVE_BUCKET, MoveKind.ARCHIVE)
+
+    async def _park_tree(
+        self, run: Run, roots: _Roots, bucket: str, kind: MoveKind
+    ) -> int:
+        """Move the folder's remaining content into ``bucket``. Returns files.
+
+        The inbound root may be a network mount where every rename is a
+        request, so movement is as coarse as the bucket allows: the whole
+        folder when the bucket does not hold its name yet, then whole
+        subfolders, then single files. Each executed unit lands in the ledger,
+        so revert and crash replay see directory moves like any other.
+        """
+
+        moved = 0
+        units = await asyncio.to_thread(_park_units, roots.inbound, run, bucket)
+        for relative, files in units:
+            suffix = f"/{relative}" if relative else ""
             move = Move(
-                kind=MoveKind.ARCHIVE,
+                kind=kind,
                 source_root=Root.INBOUND,
-                source_path=f"{run.folder_name}/{relative}",
+                source_path=f"{run.folder_name}{suffix}",
                 dest_root=Root.INBOUND,
-                dest_path=f"{ARCHIVE_BUCKET}/{run.folder_name}/{relative}",
+                dest_path=f"{bucket}/{run.folder_name}{suffix}",
             )
             executed = await asyncio.to_thread(self._apply, move, roots, run)
             await self._db.append_executed(run.id, executed)
             if executed.outcome is MoveOutcome.MOVED:
-                archived += 1
+                moved += files
         await asyncio.to_thread(
             _remove_empty_tree, roots.inbound / run.folder_name
         )
-        return archived
+        return moved
 
     def _prune_buckets(self, run: Run, roots: _Roots) -> None:
         for bucket in (ARCHIVE_BUCKET, FAIL_BUCKET):
@@ -314,16 +318,54 @@ def _delete_acquired_staging(inbound: Path, run: Run) -> None:
         shutil.rmtree(staging)
 
 
-def _remaining_files(inbound: Path, run: Run) -> list[str]:
+def _park_units(inbound: Path, run: Run, bucket: str) -> list[tuple[str, int]]:
+    """Units of remaining content to move into ``bucket``.
+
+    Each unit is ``(relative_path, file_count)``; ``""`` stands for the run
+    folder itself. A directory is one unit only while its bucket twin does not
+    exist — an existing twin (a replayed run, or an older run of the same
+    name) forces a descent so nothing is merged blindly. Directories holding
+    no files are left for the rmdir pass.
+    """
+
     folder = inbound / run.folder_name
-    if not folder.is_dir():
+    if folder.is_symlink() or not folder.is_dir():
         return []
-    found: list[str] = []
-    for current, _, filenames in os.walk(folder, followlinks=False):
-        for filename in filenames:
-            path = Path(current) / filename
-            found.append(path.relative_to(folder).as_posix())
-    return sorted(found)
+
+    def file_count(path: Path) -> int:
+        total = 0
+        for _, _, filenames in os.walk(path, followlinks=False):
+            total += len(filenames)
+        return total
+
+    units: list[tuple[str, int]] = []
+
+    def visit(source: Path, taken: Path, prefix: str) -> None:
+        with os.scandir(source) as scanned:
+            entries = sorted(scanned, key=lambda entry: entry.name)
+        for entry in entries:
+            relative = f"{prefix}{entry.name}"
+            twin = taken / entry.name
+            if entry.is_dir(follow_symlinks=False):
+                count = file_count(Path(entry.path))
+                if count == 0:
+                    continue
+                if twin.exists() or twin.is_symlink():
+                    visit(Path(entry.path), twin, f"{relative}/")
+                else:
+                    units.append((relative, count))
+            else:
+                units.append((relative, 1))
+
+    destination = inbound / bucket / run.folder_name
+    total = file_count(folder)
+    if total == 0:
+        return []
+    if destination.exists() or destination.is_symlink():
+        visit(folder, destination, "")
+    else:
+        units.append(("", total))
+    return units
 
 
 def _remove_empty_tree(folder: Path) -> None:

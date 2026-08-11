@@ -427,14 +427,6 @@ class Database:
                 (run_id,),
             )
 
-    async def set_extra(self, run_id: str, values: dict[str, Any]) -> None:
-        async with self._connection() as connection:
-            await connection.execute(
-                "update run set extra = extra || %s::jsonb,"
-                " updated_at = now() where id = %s",
-                (json.dumps(values), run_id),
-            )
-
     async def delete_run(self, run_id: str) -> None:
         async with self._connection() as connection:
             await connection.execute("delete from run where id = %s", (run_id,))
