@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
 import pytest
 
+from reeloom.executor.errors import ApprovalError, ApprovalErrorCode
 from reeloom.executor.forward import (
     ForwardExecutionItemResult,
     ForwardExecutionResult,
@@ -27,10 +29,12 @@ from reeloom.kernel.semantic_identity import (
 )
 from reeloom.kernel.tmdb import TmdbWorkType
 from reeloom.server.config import ApplyPolicy
+from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.forward_execution_service import (
     ForwardExecutionCoordinator,
     ForwardExecutionServiceError,
 )
+import reeloom.server.forward_execution_service as forward_service
 from reeloom.server.forward_operation_repository import (
     ForwardOperationError,
     ForwardOperationErrorCode,
@@ -104,6 +108,12 @@ class _Configs:
         )
 
 
+class _MissingConfigs:
+    def get(self, revision: int) -> object:
+        assert revision == 1
+        raise ServerError(ServerErrorCode.CONFIG_NOT_FOUND)
+
+
 class _Approvals:
     def __init__(self) -> None:
         self.issued = 0
@@ -113,11 +123,57 @@ class _Approvals:
         return approval
 
 
+class _FailingApprovals:
+    def __init__(self, code: ApprovalErrorCode) -> None:
+        self.code = code
+        self.issued = 0
+
+    def issue_or_reuse(self, approval: object) -> object:
+        self.issued += 1
+        raise ApprovalError(self.code)
+
+
 class _Operations:
     def __init__(self) -> None:
         self.operation: ExecutionOperation | None = None
         self.settled = 0
         self.rescans = 0
+        self.rescan_state: str | None = None
+        self.unstarted: tuple[str, str] | None = None
+        self.failed_unstarted: list[tuple[str, str, str]] = []
+        self.renewed = 0
+        self.renewed_event = threading.Event()
+
+    def find_unstarted_automatic(
+        self, *, operation_kind: str
+    ) -> tuple[str, str] | None:
+        assert operation_kind == "media_move"
+        value = self.unstarted
+        self.unstarted = None
+        return value
+
+    def claim_next(self, **_: object) -> ExecutionOperationLease | None:
+        return None
+
+    def renew_lease(
+        self,
+        lease: ExecutionOperationLease,
+        **_: object,
+    ) -> ExecutionOperationLease:
+        self.renewed += 1
+        self.renewed_event.set()
+        return lease
+
+    def fail_unstarted_automatic(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+        reason_code: str,
+        **_: object,
+    ) -> bool:
+        self.failed_unstarted.append((run_id, plan_hash, reason_code))
+        return True
 
     def get(self, operation_id: str) -> ExecutionOperation:
         if self.operation is None:
@@ -168,7 +224,10 @@ class _Operations:
         return result.operation
 
     def get_view(self, operation_id: str) -> ForwardOperationView:
-        return ForwardOperationView(operation=self.get(operation_id))
+        return ForwardOperationView(
+            operation=self.get(operation_id),
+            rescan_state=self.rescan_state,
+        )
 
     def requeue_rescan(self, **_: object) -> None:
         assert self.operation is not None
@@ -177,11 +236,48 @@ class _Operations:
 
 class _Executor:
     def execute(
-        self, plan: RenamePlanV2, lease: ExecutionOperationLease
+        self,
+        plan: RenamePlanV2,
+        lease: ExecutionOperationLease,
+        *,
+        lease_provider: object = None,
     ) -> ForwardExecutionResult:
+        if callable(lease_provider):
+            lease = lease_provider()
         operation = lease.settle(
             (ExecutionItemOutcome.SATISFIED,),
             now=_NOW + timedelta(seconds=1),
+        )
+        return ForwardExecutionResult(
+            operation=operation,
+            items=(
+                ForwardExecutionItemResult(
+                    plan.sources[0].candidate_id,
+                    ExecutionItemOutcome.SATISFIED,
+                ),
+            ),
+            warnings=(),
+            fresh_scan_required=False,
+        )
+
+
+class _SlowExecutor:
+    def __init__(self, operations: _Operations) -> None:
+        self._operations = operations
+
+    def execute(
+        self,
+        plan: RenamePlanV2,
+        lease: ExecutionOperationLease,
+        *,
+        lease_provider: object = None,
+    ) -> ForwardExecutionResult:
+        assert self._operations.renewed_event.wait(timeout=1)
+        if callable(lease_provider):
+            lease = lease_provider()
+        operation = lease.settle(
+            (ExecutionItemOutcome.SATISFIED,),
+            now=_NOW + timedelta(milliseconds=500),
         )
         return ForwardExecutionResult(
             operation=operation,
@@ -214,7 +310,7 @@ def _coordinator(
     return coordinator, approvals, operations, plan
 
 
-def test_manual_execute_consumes_one_approval_and_replays_terminal() -> None:
+def test_manual_execute_only_authorizes_then_background_reconciles() -> None:
     coordinator, approvals, operations, plan = _coordinator(
         ApplyPolicy.MANUAL
     )
@@ -226,10 +322,17 @@ def test_manual_execute_consumes_one_approval_and_replays_terminal() -> None:
         run_id=plan.run_id, plan_hash=plan.plan_hash
     )
 
-    assert first.operation.terminal
+    assert not first.operation.terminal
     assert replay.operation == first.operation
     assert replay.result is None
     assert approvals.issued == 1
+    assert operations.settled == 0
+
+    settled = coordinator.reconcile(
+        run_id=plan.run_id, plan_hash=plan.plan_hash
+    )
+
+    assert settled.operation.terminal
     assert operations.settled == 1
 
 
@@ -246,9 +349,146 @@ def test_browser_cannot_select_automatic_policy() -> None:
     result = coordinator.execute_automatic(
         run_id=plan.run_id, plan_hash=plan.plan_hash
     )
-    assert result.operation.terminal
+    assert not result.operation.terminal
     assert approvals.issued == 1
-    assert operations.settled == 1
+    assert operations.settled == 0
+
+
+def test_background_authorizes_durable_automatic_head_after_restart() -> None:
+    coordinator, approvals, operations, plan = _coordinator(
+        ApplyPolicy.AUTOMATIC
+    )
+    operations.unstarted = (plan.run_id, plan.plan_hash)
+
+    result = coordinator.reconcile_one()
+
+    assert result is not None
+    assert result.operation.status.value == "authorized"
+    assert approvals.issued == 1
+    assert operations.operation == result.operation
+
+
+def test_slow_effect_renews_operation_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = _plan()
+    operations = _Operations()
+    operations.operation = ExecutionOperation.authorized(
+        operation_id=execution_operation_id(
+            run_id=plan.run_id, plan_hash=plan.plan_hash
+        ),
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+    )
+    monkeypatch.setattr(
+        forward_service, "_OPERATION_LEASE_FOR", timedelta(seconds=1)
+    )
+    monkeypatch.setattr(
+        forward_service,
+        "_OPERATION_HEARTBEAT_INTERVAL",
+        timedelta(milliseconds=10),
+    )
+    coordinator = ForwardExecutionCoordinator(
+        configs=_Configs(ApplyPolicy.AUTOMATIC),  # type: ignore[arg-type]
+        plans=_Plans(plan),  # type: ignore[arg-type]
+        approvals=_Approvals(),  # type: ignore[arg-type]
+        operations=operations,  # type: ignore[arg-type]
+        executor=_SlowExecutor(operations),  # type: ignore[arg-type]
+        worker_id="worker:m14",
+        clock=lambda: _NOW,
+    )
+
+    result = coordinator.reconcile(
+        run_id=plan.run_id, plan_hash=plan.plan_hash
+    )
+
+    assert result.operation.terminal
+    assert operations.renewed >= 1
+
+
+def test_bad_automatic_head_is_terminalized_instead_of_retried_forever() -> None:
+    coordinator, approvals, operations, plan = _coordinator(
+        ApplyPolicy.AUTOMATIC
+    )
+    bad_hash = "sha256:" + "f" * 64
+    operations.unstarted = (plan.run_id, bad_hash)
+
+    result = coordinator.reconcile_one()
+
+    assert result is None
+    assert approvals.issued == 0
+    assert operations.failed_unstarted == [
+        (plan.run_id, bad_hash, "automatic_start_invalid_v2_plan")
+    ]
+    assert coordinator.reconcile_one() is None
+
+
+def test_missing_config_does_not_block_all_automatic_heads() -> None:
+    plan = _plan()
+    approvals = _Approvals()
+    operations = _Operations()
+    operations.unstarted = (plan.run_id, plan.plan_hash)
+    coordinator = ForwardExecutionCoordinator(
+        configs=_MissingConfigs(),  # type: ignore[arg-type]
+        plans=_Plans(plan),  # type: ignore[arg-type]
+        approvals=approvals,  # type: ignore[arg-type]
+        operations=operations,  # type: ignore[arg-type]
+        executor=_Executor(),  # type: ignore[arg-type]
+        worker_id="worker:m14",
+        clock=lambda: _NOW,
+    )
+
+    assert coordinator.reconcile_one() is None
+    assert approvals.issued == 0
+    assert operations.failed_unstarted == [
+        (plan.run_id, plan.plan_hash, "automatic_start_config_not_found")
+    ]
+
+
+def test_bad_approval_record_does_not_block_all_automatic_heads() -> None:
+    plan = _plan()
+    approvals = _FailingApprovals(ApprovalErrorCode.INVALID_RECORD)
+    operations = _Operations()
+    operations.unstarted = (plan.run_id, plan.plan_hash)
+    coordinator = ForwardExecutionCoordinator(
+        configs=_Configs(ApplyPolicy.AUTOMATIC),  # type: ignore[arg-type]
+        plans=_Plans(plan),  # type: ignore[arg-type]
+        approvals=approvals,  # type: ignore[arg-type]
+        operations=operations,  # type: ignore[arg-type]
+        executor=_Executor(),  # type: ignore[arg-type]
+        worker_id="worker:m14",
+        clock=lambda: _NOW,
+    )
+
+    assert coordinator.reconcile_one() is None
+    assert approvals.issued == 1
+    assert operations.failed_unstarted == [
+        (
+            plan.run_id,
+            plan.plan_hash,
+            "automatic_start_approval_invalid_record",
+        )
+    ]
+    assert coordinator.reconcile_one() is None
+
+
+def test_approval_store_failure_is_a_database_outage_not_a_poison_head() -> None:
+    plan = _plan()
+    approvals = _FailingApprovals(ApprovalErrorCode.STORE_FAILURE)
+    operations = _Operations()
+    operations.unstarted = (plan.run_id, plan.plan_hash)
+    coordinator = ForwardExecutionCoordinator(
+        configs=_Configs(ApplyPolicy.AUTOMATIC),  # type: ignore[arg-type]
+        plans=_Plans(plan),  # type: ignore[arg-type]
+        approvals=approvals,  # type: ignore[arg-type]
+        operations=operations,  # type: ignore[arg-type]
+        executor=_Executor(),  # type: ignore[arg-type]
+        worker_id="worker:m14",
+        clock=lambda: _NOW,
+    )
+
+    with pytest.raises(ServerError) as raised:
+        coordinator.reconcile_one()
+    assert raised.value.code is ServerErrorCode.DATABASE_UNAVAILABLE
+    assert operations.failed_unstarted == []
 
 
 def test_plan_only_never_authorizes_forward_operation() -> None:
@@ -314,3 +554,30 @@ def test_rescan_rejects_nonterminal_operation() -> None:
         )
 
     assert operations.rescans == 0
+
+
+def test_rescan_requeues_blocked_successor_after_completed_effect() -> None:
+    coordinator, approvals, operations, plan = _coordinator(
+        ApplyPolicy.AUTOMATIC
+    )
+    operations.operation = ExecutionOperation.restore(
+        schema_version="2",
+        operation_id=execution_operation_id(
+            run_id=plan.run_id,
+            plan_hash=plan.plan_hash,
+        ),
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+        status="completed",
+        attempt_count=1,
+        outcomes=("satisfied",),
+    )
+    operations.rescan_state = "blocked"
+
+    coordinator.request_rescan(
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+    )
+
+    assert operations.rescans == 1
+    assert approvals.issued == 0

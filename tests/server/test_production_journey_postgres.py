@@ -1,22 +1,53 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import threading
 import time
 import uuid
 from collections import deque
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 import httpx
 import pytest
 from agents import ModelSettings
 
 from reeloom.agents.scripted_model import ScriptedModel, ToolCallStep
+from reeloom.adapters.subtitle_archive_cache import (
+    FilesystemSubtitleArchiveCache,
+)
+from reeloom.adapters.subtitle_plan_store import (
+    FilesystemSubtitleAcquisitionPlanStore,
+)
+from reeloom.executor.subtitle_marker_acquisition import (
+    SubtitleMarkerAcquisitionExecutor,
+)
 from reeloom.executor.folder_housekeeping_v2 import (
     housekeeping_target_name,
 )
 from reeloom.kernel.specials import SpecialKind
+from reeloom.kernel.subtitle_publication import SUBTITLE_PUBLICATION_MARKER
+from reeloom.kernel.subtitle_acquisition import (
+    CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION,
+    CURRENT_SUBTITLE_SEARCH_PARSER_VERSION,
+    CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION,
+    EmbeddedChineseStatus,
+    EmbeddedSubtitleInspection,
+    EmbeddedSubtitleProbeStatus,
+    InspectedSubtitleMember,
+    SubtitleArchiveFormat,
+    SubtitleArchiveSetCapability,
+    SubtitleArchiveSetId,
+    SubtitleArchiveSetSummary,
+    SubtitleArchiveSource,
+    SubtitleArchiveVolume,
+    SubtitleReleaseId,
+    SubtitleReleaseSummary,
+    SubtitleSearchDiagnostics,
+    SubtitleSearchPage,
+)
 from reeloom.kernel.tmdb import (
     TmdbEpisode,
     TmdbLanguage,
@@ -28,7 +59,16 @@ from reeloom.kernel.tmdb import (
 )
 from reeloom.server.auth import AuthSettings
 from reeloom.server.composition import build_application
+from reeloom.server.subtitle_acquisition import SubtitleAcquisitionPlanner
 from reeloom.server.settings import DeploymentSettings
+from reeloom.policy.path_policy import AuthorizedRoot
+from reeloom.ports.subtitle_acquisition import (
+    DownloadedArchiveVolume,
+    DownloadedSubtitleArchiveSet,
+    InspectedSubtitleArchiveSet,
+    SubtitleSearchRequest,
+    SubtitleSearchResult,
+)
 
 
 def _dsn() -> str:
@@ -139,6 +179,171 @@ class _ModelLease:
         return None
 
 
+@dataclass(frozen=True)
+class _AbsentVideoInspector:
+    snapshot_id: str
+    candidate_count: int
+
+    async def inspect(self, video_id, *, season_number: int):
+        return EmbeddedSubtitleInspection(
+            video_id,
+            season_number,
+            EmbeddedSubtitleProbeStatus.ABSENT,
+            EmbeddedChineseStatus.ABSENT,
+            (),
+        )
+
+
+class _ProductionSubtitleSearch:
+    provider_version = (
+        f"{CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION}+"
+        f"{CURRENT_SUBTITLE_SEARCH_PARSER_VERSION}"
+    )
+
+    async def search(
+        self, request: SubtitleSearchRequest
+    ) -> SubtitleSearchResult:
+        archive_id = SubtitleArchiveSetId(1)
+        release_id = SubtitleReleaseId(1)
+        return SubtitleSearchResult(
+            SubtitleSearchPage(
+                (
+                    SubtitleReleaseSummary(
+                        release_id,
+                        (
+                            SubtitleArchiveSetSummary(
+                                archive_id,
+                                SubtitleArchiveFormat.ZIP,
+                                1,
+                                16,
+                            ),
+                        ),
+                        "Journey Anime 中文字幕",
+                        "原生附件",
+                        "S00",
+                        ("简体中文",),
+                        (),
+                        ("标题匹配",),
+                        (),
+                        True,
+                    ),
+                ),
+                None,
+                True,
+            ),
+            (
+                SubtitleArchiveSetCapability(
+                    archive_id,
+                    release_id,
+                    SubtitleArchiveFormat.ZIP,
+                    10806,
+                    95257,
+                    (34768,),
+                    16,
+                ),
+            ),
+            SubtitleSearchDiagnostics(
+                request.title_aliases,
+                tuple(1 for _ in request.title_aliases),
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ),
+        )
+
+
+class _ProductionSubtitleSearchLease:
+    provider = _ProductionSubtitleSearch()
+
+    async def close(self) -> None:
+        return None
+
+
+@dataclass
+class _ProductionArchiveFetcher:
+    workspace_root: Path
+    provider_version: str = CURRENT_SUBTITLE_SEARCH_PROVIDER_VERSION
+    parser_version: str = CURRENT_SUBTITLE_SEARCH_PARSER_VERSION
+
+    async def fetch(self, capability):
+        content = b"PK\x03\x04archive"
+        path = self.workspace_root / "subtitle.zip"
+        path.write_bytes(content)
+        metadata = path.stat()
+        volume = SubtitleArchiveVolume(
+            1,
+            capability.attachment_ids[0],
+            len(content),
+            hashlib.sha256(content).hexdigest(),
+        )
+        return DownloadedSubtitleArchiveSet(
+            capability,
+            (
+                DownloadedArchiveVolume(
+                    volume,
+                    path,
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_mtime_ns,
+                    metadata.st_ctime_ns,
+                ),
+            ),
+        )
+
+
+class _ProductionArchiveInspector:
+    inspector_version = CURRENT_SUBTITLE_ARCHIVE_INSPECTOR_VERSION
+
+    async def inspect(self, downloaded, *, season_numbers):
+        subtitle = b"[Script Info]\n"
+        capability = downloaded.capability
+        return InspectedSubtitleArchiveSet(
+            SubtitleArchiveSource(
+                capability.release_id,
+                capability.archive_set_id,
+                capability.format,
+                season_numbers,
+                capability.thread_id,
+                capability.post_id,
+                "c" * 64,
+                tuple(item.volume for item in downloaded.volumes),
+            ),
+            (
+                InspectedSubtitleMember(
+                    capability.archive_set_id,
+                    PurePosixPath("Subs/E01.ass"),
+                    len(subtitle),
+                    hashlib.sha256(subtitle).hexdigest(),
+                ),
+            ),
+            (),
+        )
+
+    async def extract_member(self, downloaded, member):
+        del downloaded, member
+        return b"[Script Info]\n"
+
+
+@dataclass
+class _ProductionPlanningLease:
+    planner: SubtitleAcquisitionPlanner
+
+    async def close(self) -> None:
+        return None
+
+
+@dataclass
+class _ProductionExecutorLease:
+    executor: SubtitleMarkerAcquisitionExecutor
+
+    async def close(self) -> None:
+        return None
+
+
 def _mapping_model(episode: int) -> ScriptedModel:
     return ScriptedModel(
         (
@@ -238,6 +443,65 @@ def _movie_mapping_model() -> ScriptedModel:
     )
 
 
+def _production_subtitle_model() -> ScriptedModel:
+    return ScriptedModel(
+        (
+            ToolCallStep(
+                "search_tmdb",
+                {"query": "Journey Anime", "work_type": "anime"},
+                "subtitle-search-tmdb",
+            ),
+            ToolCallStep(
+                "get_tmdb_series",
+                {
+                    "tmdb_id": 700,
+                    "work_type": "anime",
+                    "language": "zh-CN",
+                },
+                "subtitle-series",
+            ),
+            ToolCallStep(
+                "select_series",
+                {"tmdb_id": 700, "work_type": "anime"},
+                "subtitle-select-series",
+            ),
+            ToolCallStep(
+                "get_tmdb_season",
+                {
+                    "tmdb_id": 700,
+                    "work_type": "anime",
+                    "season_number": 0,
+                    "language": "zh-CN",
+                },
+                "subtitle-season",
+            ),
+            ToolCallStep(
+                "check_sub_from_video",
+                {"video_id": "video:1", "season_number": 0},
+                "subtitle-probe",
+            ),
+            ToolCallStep(
+                "search_sub",
+                {"season_number": 0, "cursor": None},
+                "subtitle-forum-search",
+            ),
+            ToolCallStep(
+                "select_subtitle_release",
+                {
+                    "selections": [
+                        {
+                            "season_number": 0,
+                            "archive_set_id": "subarchive:1",
+                        }
+                    ],
+                    "needs_attention_reason": None,
+                },
+                "subtitle-release-select",
+            ),
+        )
+    )
+
+
 @pytest.mark.postgres
 def test_production_builder_manual_revision_executes_forward_operation(
     tmp_path: Path,
@@ -281,6 +545,8 @@ def test_production_builder_manual_revision_executes_forward_operation(
         model_factory=model_factory,
         tmdb_factory=_TmdbLease,
     )
+    assert not (state_root / "journals").exists()
+    assert not (state_root / "folder-journals").exists()
     try:
         transport = httpx.ASGITransport(app=application.api)
 
@@ -402,20 +668,32 @@ def test_production_builder_manual_revision_executes_forward_operation(
                 admin_auth = {
                     "authorization": "Bearer admin-token-strong",
                 }
+                run_before_revision = await client.get(
+                    f"/api/v1/runs/{run_id}", headers=admin_auth
+                )
+                assert run_before_revision.status_code == 200
+                revise_action = next(
+                    item
+                    for item in run_before_revision.json()["lifecycle"][
+                        "actions"
+                    ]
+                    if item["kind"] == "revise_plan"
+                )
                 revision = await client.post(
-                    f"/api/v1/runs/{run_id}/interactions",
+                    f"/api/v1/runs/{run_id}/actions/"
+                    f"{revise_action['action_id']}",
                     headers={
                         **admin_auth,
                         "idempotency-key": f"revision-{journey_id}",
-                        "if-match": initial_hash,
                     },
                     json={
-                        "kind": "revision",
                         "message": "Map the complete set to episode 2.",
                     },
                 )
                 assert revision.status_code == 200, revision.text
-                revised_hash = revision.json()["plan_hash"]
+                revised_hash = revision.json()["run"]["lifecycle"][
+                    "active_plan"
+                ]["plan_hash"]
                 assert revised_hash != initial_hash
                 session = await client.get(
                     "/api/v1/session",
@@ -475,28 +753,57 @@ def test_production_builder_manual_revision_executes_forward_operation(
                 assert "execute" in run_before_apply.json()[
                     "available_actions"
                 ]
+                execute_action = next(
+                    item
+                    for item in run_before_apply.json()["lifecycle"]["actions"]
+                    if item["kind"] == "execute"
+                )
+                execute_key = f"execute-{journey_id}"
                 applied = await client.post(
-                    f"/api/v1/runs/{run_id}/execute",
+                    f"/api/v1/runs/{run_id}/actions/"
+                    f"{execute_action['action_id']}",
                     headers={
                         **admin_auth,
-                        "if-match": revised_hash,
+                        "idempotency-key": execute_key,
                     },
-                    json={},
+                    json={"message": None},
                 )
                 assert applied.status_code == 200, applied.text
-                assert applied.json()["status"] == "completed"
-                operation_id = applied.json()["operation_id"]
+                assert applied.json()["kind"] == "execute"
+                operation_id = applied.json()["run"]["lifecycle"][
+                    "operation_id"
+                ]
+                assert operation_id is not None
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    current = await client.get(
+                        f"/api/v1/runs/{run_id}", headers=admin_auth
+                    )
+                    execution = current.json().get("execution")
+                    if (
+                        execution is not None
+                        and execution["status"] == "completed"
+                    ):
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail("forward operation did not converge")
                 replayed = await client.post(
-                    f"/api/v1/runs/{run_id}/execute",
+                    f"/api/v1/runs/{run_id}/actions/"
+                    f"{execute_action['action_id']}",
                     headers={
                         **admin_auth,
-                        "if-match": revised_hash,
+                        "idempotency-key": execute_key,
                     },
-                    json={},
+                    json={"message": None},
                 )
                 assert replayed.status_code == 200, replayed.text
-                assert replayed.json()["operation_id"] == operation_id
-                assert replayed.json()["status"] == "completed"
+                assert replayed.json()["action_id"] == (
+                    execute_action["action_id"]
+                )
+                assert replayed.json()["run"]["lifecycle"][
+                    "operation_id"
+                ] == operation_id
 
                 legacy_apply = await client.post(
                     f"/api/v1/runs/{run_id}/approve-and-apply",
@@ -564,6 +871,228 @@ def test_production_builder_manual_revision_executes_forward_operation(
                 assert final.json()["recovery_approval_id"] is None
                 assert final.json()["execution"]["status"] == "completed"
                 assert not models
+
+        asyncio.run(journey())
+    finally:
+        application.close()
+
+
+@pytest.mark.postgres
+def test_production_builder_automatic_subtitle_journey(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    incoming = tmp_path / "incoming"
+    archive = tmp_path / "archive"
+    for root in (state_root, incoming, archive):
+        root.mkdir()
+    source_folder = incoming / "Journey"
+    source_folder.mkdir()
+    (source_folder / "episode.mkv").write_bytes(b"video")
+    workspace = state_root / "subtitle-workspace"
+    plan_root = state_root / "subtitle-plans"
+    cache_root = state_root / "subtitle-archive-cache"
+    for root in (workspace, plan_root, cache_root):
+        root.mkdir()
+    plans = FilesystemSubtitleAcquisitionPlanStore(
+        AuthorizedRoot.create(plan_root)
+    )
+    cache = FilesystemSubtitleArchiveCache(
+        AuthorizedRoot.create(cache_root)
+    )
+    inspector = _ProductionArchiveInspector()
+
+    def planning_factory() -> _ProductionPlanningLease:
+        fetcher = _ProductionArchiveFetcher(workspace)
+        return _ProductionPlanningLease(
+            SubtitleAcquisitionPlanner(fetcher, inspector, plans, cache)
+        )
+
+    def executor_factory() -> _ProductionExecutorLease:
+        fetcher = _ProductionArchiveFetcher(workspace)
+        return _ProductionExecutorLease(
+            SubtitleMarkerAcquisitionExecutor(
+                plans, cache, fetcher, inspector
+            )
+        )
+
+    models = deque((_production_subtitle_model(), _mapping_model(1)))
+    model_lock = threading.Lock()
+
+    def model_factory(config: object, secret: bytes) -> _ModelLease:
+        del config
+        assert secret == b"offline-provider-key"
+        with model_lock:
+            return _ModelLease(models.popleft())
+
+    journey_id = uuid.uuid4().hex
+    watch_id = f"subtitle-watch-{journey_id}"
+    application = build_application(
+        DeploymentSettings(
+            postgres_dsn=_dsn(),
+            state_root=state_root,
+            tmdb_api_key="offline",
+        ),
+        auth=AuthSettings.create(
+            admin_token="admin-token-strong",
+            allowed_hosts=("reeloom.test",),
+            allowed_origins=("https://ui.example.test",),
+        ),
+        model_factory=model_factory,
+        tmdb_factory=_TmdbLease,
+        subtitle_search_factory=_ProductionSubtitleSearchLease,
+        subtitle_planning_factory=planning_factory,
+        subtitle_executor_factory=executor_factory,
+        video_subtitle_inspector_factory=(
+            lambda scan, snapshot_id: _AbsentVideoInspector(
+                snapshot_id or scan.snapshot.snapshot_id,
+                len(scan.snapshot.records),
+            )
+        ),
+    )
+    try:
+        async def journey() -> None:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=application.api),
+                base_url="http://reeloom.test",
+                timeout=15,
+            ) as client:
+                current = await client.get(
+                    "/api/v1/admin/config",
+                    headers={"authorization": "Bearer admin-token-strong"},
+                )
+                updated = await client.put(
+                    "/api/v1/admin/config",
+                    headers={
+                        "authorization": "Bearer admin-token-strong",
+                        "idempotency-key": f"config-{journey_id}",
+                        "if-match": str(current.json().get("revision", 0)),
+                    },
+                    json={
+                        "watches": [
+                            {
+                                "watch_id": watch_id,
+                                "root": str(incoming),
+                                "library_root": str(archive),
+                                "work_type": "anime",
+                                "poll_interval_seconds": 1,
+                                "settle_interval_seconds": 1,
+                                "subtitle_acquisition": {
+                                    "enabled": True,
+                                    "provider": "acgrip",
+                                    "policy": "automatic",
+                                },
+                            }
+                        ],
+                        "provider": {
+                            "base_url": "https://api.openai.com/v1",
+                            "model": "gpt-offline",
+                            "api_key": "offline-provider-key",
+                            "reasoning_effort": None,
+                            "verbosity": None,
+                        },
+                        "apply_policy": "manual",
+                    },
+                )
+                assert updated.status_code == 200, updated.text
+
+                deadline = time.monotonic() + 12
+                origin = None
+                while time.monotonic() < deadline:
+                    with application.database.pool.connection() as connection:
+                        origin = connection.execute(
+                            """
+                            SELECT r.run_id, request.status,
+                                   operation.status, generation.state,
+                                   generation.successor_run_id,
+                                   (SELECT count(*) FROM run_operations
+                                    WHERE run_id = r.run_id),
+                                   (SELECT count(*)
+                                    FROM subtitle_scan_requests_v2
+                                    WHERE run_id = r.run_id)
+                            FROM runs AS r
+                            JOIN discoveries AS discovery
+                              ON discovery.discovery_id = r.discovery_id
+                            JOIN subtitle_acquisition_requests AS request
+                              ON request.run_id = r.run_id
+                            JOIN execution_operations_v2 AS operation
+                              ON operation.run_id = r.run_id
+                             AND operation.operation_kind =
+                                 'subtitle_acquire'
+                            LEFT JOIN generation_requests_v2 AS generation
+                              ON generation.operation_id =
+                                 operation.operation_id
+                            WHERE discovery.watch_id = %s
+                            ORDER BY r.created_at
+                            LIMIT 1
+                            """,
+                            (watch_id,),
+                        ).fetchone()
+                    publications = tuple(
+                        item
+                        for item in source_folder.glob("reeloom-acquired-*")
+                        if (item / SUBTITLE_PUBLICATION_MARKER).is_file()
+                    )
+                    if (
+                        origin is not None
+                        and tuple(map(str, origin[1:3]))
+                        == ("published", "completed")
+                        and str(origin[3]) == "completed"
+                        and origin[4] is not None
+                        and len(publications) == 1
+                    ):
+                        break
+                    await asyncio.sleep(0.1)
+
+                assert origin is not None
+                assert tuple(map(str, origin[1:3])) == (
+                    "published",
+                    "completed",
+                )
+                assert str(origin[3]) == "completed"
+                assert origin[4] is not None
+                assert tuple(map(int, origin[5:])) == (0, 0)
+                assert len(publications) == 1
+                assert any(
+                    item.suffix == ".ass"
+                    for item in publications[0].iterdir()
+                )
+                response = await client.get(
+                    f"/api/v1/runs/{origin[0]}",
+                    headers={"authorization": "Bearer admin-token-strong"},
+                )
+                assert response.status_code == 200, response.text
+                assert response.json()["status"] == "completed"
+                assert response.json()["recovery_approval_id"] is None
+                assert response.json()["subtitle_acquisition"][
+                    "successor_status"
+                ] == "completed"
+                with application.database.pool.connection() as connection:
+                    successor = connection.execute(
+                        """
+                        SELECT run.subtitle_acquisition_lineage_key,
+                               (SELECT count(*)
+                                FROM subtitle_acquisition_requests AS request
+                                WHERE request.run_id = run.run_id)
+                        FROM runs AS run
+                        WHERE run.run_id = %s
+                        """,
+                        (str(origin[4]),),
+                    ).fetchone()
+                    successor_count = connection.execute(
+                        """
+                        SELECT count(*)
+                        FROM generation_requests_v2
+                        WHERE origin_run_id = %s
+                          AND successor_run_id IS NOT NULL
+                        """,
+                        (str(origin[0]),),
+                    ).fetchone()
+                assert successor is not None
+                assert successor[0] is not None
+                assert int(successor[1]) == 0
+                assert successor_count == (1,)
+                assert not application.background.fatal
 
         asyncio.run(journey())
     finally:

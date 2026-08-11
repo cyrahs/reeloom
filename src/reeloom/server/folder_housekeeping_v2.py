@@ -53,13 +53,17 @@ class PostgresFolderHousekeepingRepository:
                     row = connection.execute(
                         """
                         SELECT d.watch_id, d.source_folder, d.inventory_id,
-                               r.config_revision
+                               r.config_revision, control.effect_plan_hash
                         FROM runs AS r
                         JOIN discoveries AS d USING (discovery_id)
                         JOIN watch_states AS w ON w.watch_id = d.watch_id
+                        JOIN run_lifecycle_controls_v2 AS control
+                          ON control.run_id = r.run_id
                         WHERE r.run_id = %s
                           AND d.folder_generation_id IS NOT NULL
                           AND w.semantic_v2 = true
+                          AND control.mode = 'forward_v2'
+                          AND control.operation_id IS NULL
                         FOR UPDATE OF r
                         """,
                         (run_id,),
@@ -69,11 +73,43 @@ class PostgresFolderHousekeepingRepository:
                     source_folder = str(row[1])
                     connection.execute(
                         """
+                        INSERT INTO planning_terminal_results_v2
+                            (run_id, plan_hash, outcome, reason_code,
+                             source_disposition)
+                        VALUES (
+                            %s, %s,
+                            CASE WHEN %s = 'no_supported_video'
+                                 THEN 'unsupported_source'
+                                 ELSE 'agent_failed' END,
+                            %s, 'fail'
+                        )
+                        ON CONFLICT (run_id) DO NOTHING
+                        """,
+                        (run_id, row[4], reason_code, reason_code),
+                    )
+                    connection.execute(
+                        """
                         UPDATE runs SET status = 'failed'
                         WHERE run_id = %s
                           AND status NOT IN ('completed', 'superseded')
                         """,
                         (run_id,),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE run_states
+                        SET phase = 'failed', runtime_status = 'failed',
+                            projection_payload = projection_payload
+                                || jsonb_build_object(
+                                    'phase', 'failed',
+                                    'status', 'failed',
+                                    'stop_reason', NULL,
+                                    'failure_code', %s
+                                ),
+                            updated_at = clock_timestamp()
+                        WHERE run_id = %s
+                        """,
+                        (reason_code, run_id),
                     )
                     connection.execute(
                         """

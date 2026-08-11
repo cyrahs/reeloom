@@ -1,86 +1,6 @@
 {
   "components": {
     "schemas": {
-      "ApplyResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "applied_count": {
-            "minimum": 0.0,
-            "title": "Applied Count",
-            "type": "integer"
-          },
-          "approval_id": {
-            "title": "Approval Id",
-            "type": "string"
-          },
-          "folder_disposition": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FolderDispositionResultResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          },
-          "rolled_back_count": {
-            "minimum": 0.0,
-            "title": "Rolled Back Count",
-            "type": "integer"
-          },
-          "status": {
-            "enum": [
-              "completed",
-              "rolled_back"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "transaction_id": {
-            "title": "Transaction Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "transaction_id",
-          "plan_hash",
-          "approval_id",
-          "status",
-          "applied_count",
-          "rolled_back_count"
-        ],
-        "title": "ApplyResponse",
-        "type": "object"
-      },
-      "ApproveApplyRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "automatic": {
-            "title": "Automatic",
-            "type": "boolean"
-          },
-          "folder_disposition_plan_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Folder Disposition Plan Hash"
-          }
-        },
-        "required": [
-          "automatic"
-        ],
-        "title": "ApproveApplyRequest",
-        "type": "object"
-      },
       "ArchiveReport": {
         "additionalProperties": false,
         "properties": {
@@ -245,24 +165,19 @@
       "AttentionFailResponse": {
         "additionalProperties": false,
         "properties": {
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
           },
           "status": {
-            "const": "failure_planned",
+            "const": "failed",
             "title": "Status",
             "type": "string"
           }
         },
         "required": [
           "run_id",
-          "status",
-          "plan_hash"
+          "status"
         ],
         "title": "AttentionFailResponse",
         "type": "object"
@@ -292,6 +207,51 @@
           "retry_count"
         ],
         "title": "AttentionRetryResponse",
+        "type": "object"
+      },
+      "BoundRunActionView": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Action Id",
+            "type": "string"
+          },
+          "destructive": {
+            "title": "Destructive",
+            "type": "boolean"
+          },
+          "input": {
+            "enum": [
+              "none",
+              "message",
+              "confirmation"
+            ],
+            "title": "Input",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ask_agent",
+              "revise_plan",
+              "execute",
+              "request_rescan",
+              "retry_agent",
+              "mark_failed",
+              "delete_run"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action_id",
+          "kind",
+          "input",
+          "destructive"
+        ],
+        "title": "BoundRunActionView",
         "type": "object"
       },
       "ConfigAgentBudget": {
@@ -933,101 +893,6 @@
         "title": "EventsResponse",
         "type": "object"
       },
-      "FolderDispositionRecoveryRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "approval_id": {
-            "title": "Approval Id",
-            "type": "string"
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          }
-        },
-        "required": [
-          "plan_hash",
-          "approval_id"
-        ],
-        "title": "FolderDispositionRecoveryRequest",
-        "type": "object"
-      },
-      "FolderDispositionRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "automatic": {
-            "title": "Automatic",
-            "type": "boolean"
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          }
-        },
-        "required": [
-          "plan_hash",
-          "automatic"
-        ],
-        "title": "FolderDispositionRequest",
-        "type": "object"
-      },
-      "FolderDispositionResultResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "enum": [
-              "archive",
-              "fail",
-              "remove_empty"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "approval_id": {
-            "title": "Approval Id",
-            "type": "string"
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "status": {
-            "const": "completed",
-            "title": "Status",
-            "type": "string"
-          },
-          "target_relative": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Relative"
-          },
-          "transaction_id": {
-            "title": "Transaction Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_id",
-          "plan_hash",
-          "approval_id",
-          "transaction_id",
-          "action",
-          "target_relative",
-          "status"
-        ],
-        "title": "FolderDispositionResultResponse",
-        "type": "object"
-      },
       "FolderDispositionView": {
         "additionalProperties": false,
         "properties": {
@@ -1210,126 +1075,6 @@
         "title": "FolderObservationsResponse",
         "type": "object"
       },
-      "ForwardExecuteRequest": {
-        "additionalProperties": false,
-        "properties": {},
-        "title": "ForwardExecuteRequest",
-        "type": "object"
-      },
-      "ForwardExecuteResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "attempt_count": {
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Attempt Count",
-            "type": "integer"
-          },
-          "counts": {
-            "$ref": "#/components/schemas/ForwardExecutionCounts"
-          },
-          "fresh_scan_required": {
-            "title": "Fresh Scan Required",
-            "type": "boolean"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ForwardExecutionItemView"
-            },
-            "maxItems": 10000,
-            "title": "Items",
-            "type": "array"
-          },
-          "operation_id": {
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "operation_kind": {
-            "enum": [
-              "media_move",
-              "subtitle_acquire"
-            ],
-            "title": "Operation Kind",
-            "type": "string"
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          },
-          "rescan_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "queued",
-                  "leased",
-                  "retry_wait",
-                  "completed",
-                  "blocked"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rescan State"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "authorized",
-              "running",
-              "completed",
-              "partial",
-              "stale",
-              "collision",
-              "unsafe",
-              "unavailable",
-              "superseded"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "successor_run_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Successor Run Id"
-          },
-          "warnings": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 1000,
-            "title": "Warnings",
-            "type": "array"
-          }
-        },
-        "required": [
-          "operation_id",
-          "operation_kind",
-          "plan_hash",
-          "status",
-          "attempt_count",
-          "counts",
-          "items",
-          "warnings",
-          "fresh_scan_required",
-          "rescan_state",
-          "successor_run_id",
-          "run_id"
-        ],
-        "title": "ForwardExecuteResponse",
-        "type": "object"
-      },
       "ForwardExecutionCounts": {
         "additionalProperties": false,
         "properties": {
@@ -1463,6 +1208,7 @@
                 "enum": [
                   "queued",
                   "leased",
+                  "accepted",
                   "retry_wait",
                   "completed",
                   "blocked"
@@ -2323,55 +2069,6 @@
         "title": "ReapplyResponse",
         "type": "object"
       },
-      "RecoveryRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "approval_id": {
-            "title": "Approval Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "approval_id"
-        ],
-        "title": "RecoveryRequest",
-        "type": "object"
-      },
-      "RecoveryResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "applied_count": {
-            "minimum": 0.0,
-            "title": "Applied Count",
-            "type": "integer"
-          },
-          "rolled_back_count": {
-            "minimum": 0.0,
-            "title": "Rolled Back Count",
-            "type": "integer"
-          },
-          "status": {
-            "enum": [
-              "completed",
-              "rolled_back"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "transaction_id": {
-            "title": "Transaction Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "transaction_id",
-          "status",
-          "applied_count",
-          "rolled_back_count"
-        ],
-        "title": "RecoveryResponse",
-        "type": "object"
-      },
       "RootReplace": {
         "additionalProperties": false,
         "properties": {
@@ -2407,23 +2104,282 @@
         "title": "RootRetain",
         "type": "object"
       },
-      "RunDeletionResponse": {
+      "RunActionRequest": {
         "additionalProperties": false,
         "properties": {
-          "deleted_at": {
-            "title": "Deleted At",
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 16384,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "title": "RunActionRequest",
+        "type": "object"
+      },
+      "RunActionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "title": "Action Id",
             "type": "string"
           },
-          "run_id": {
-            "title": "Run Id",
+          "assistant_reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Reply"
+          },
+          "kind": {
+            "enum": [
+              "ask_agent",
+              "revise_plan",
+              "execute",
+              "request_rescan",
+              "retry_agent",
+              "mark_failed",
+              "delete_run"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "action_id",
+          "kind",
+          "run"
+        ],
+        "title": "RunActionResponse",
+        "type": "object"
+      },
+      "RunActivePlanView": {
+        "additionalProperties": false,
+        "properties": {
+          "family": {
+            "enum": [
+              "media_move",
+              "subtitle_acquire"
+            ],
+            "title": "Family",
+            "type": "string"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
             "type": "string"
           }
         },
         "required": [
-          "run_id",
-          "deleted_at"
+          "family",
+          "plan_hash"
         ],
-        "title": "RunDeletionResponse",
+        "title": "RunActivePlanView",
+        "type": "object"
+      },
+      "RunHousekeepingView": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "leased",
+                  "retry_wait",
+                  "completed",
+                  "warning"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          }
+        },
+        "required": [
+          "state",
+          "warning"
+        ],
+        "title": "RunHousekeepingView",
+        "type": "object"
+      },
+      "RunLifecycleView": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/BoundRunActionView"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "active_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunActivePlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "etag": {
+            "title": "Etag",
+            "type": "string"
+          },
+          "housekeeping": {
+            "$ref": "#/components/schemas/RunHousekeepingView"
+          },
+          "mode": {
+            "enum": [
+              "forward_v2",
+              "legacy_read_only"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "operation_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "authorized",
+                  "running",
+                  "completed",
+                  "partial",
+                  "stale",
+                  "collision",
+                  "unsafe",
+                  "unavailable",
+                  "superseded"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Status"
+          },
+          "rescan_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "leased",
+                  "accepted",
+                  "retry_wait",
+                  "completed",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rescan State"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "planning",
+              "needs_attention",
+              "awaiting_approval",
+              "execution_queued",
+              "executing",
+              "completed",
+              "failed",
+              "legacy_read_only",
+              "deleted"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "successor_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Run Id"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "mode",
+          "state",
+          "terminal",
+          "revision",
+          "active_plan",
+          "operation_id",
+          "operation_status",
+          "rescan_state",
+          "successor_run_id",
+          "housekeeping",
+          "actions",
+          "etag"
+        ],
+        "title": "RunLifecycleView",
         "type": "object"
       },
       "RunResponse": {
@@ -2495,6 +2451,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/FolderDispositionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunLifecycleView"
               },
               {
                 "type": "null"
@@ -2707,6 +2673,16 @@
             "title": "Created At",
             "type": "string"
           },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunLifecycleView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "phase": {
             "anyOf": [
               {
@@ -2849,109 +2825,6 @@
         "title": "SessionResponse",
         "type": "object"
       },
-      "SubtitleAcquisitionApprovalRequest": {
-        "additionalProperties": false,
-        "properties": {},
-        "title": "SubtitleAcquisitionApprovalRequest",
-        "type": "object"
-      },
-      "SubtitleAcquisitionResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "failure_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Code"
-          },
-          "failure_diagnostic": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SubtitleFailureDiagnostic"
-              },
-              {
-                "$ref": "#/components/schemas/SubtitlePublicationFailureDiagnostic"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Diagnostic"
-          },
-          "plan_hash": {
-            "title": "Plan Hash",
-            "type": "string"
-          },
-          "policy": {
-            "enum": [
-              "plan_only",
-              "manual",
-              "automatic"
-            ],
-            "title": "Policy",
-            "type": "string"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "planned",
-              "approved",
-              "published",
-              "blocked"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "successor_status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "queued",
-                  "retry_wait",
-                  "leased",
-                  "dispatched",
-                  "completed",
-                  "blocked"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Successor Status"
-          },
-          "transaction_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Transaction Id"
-          }
-        },
-        "required": [
-          "plan_hash",
-          "policy",
-          "status",
-          "transaction_id",
-          "failure_code",
-          "run_id"
-        ],
-        "title": "SubtitleAcquisitionResponse",
-        "type": "object"
-      },
       "SubtitleAcquisitionView": {
         "additionalProperties": false,
         "properties": {
@@ -3010,6 +2883,7 @@
                   "queued",
                   "retry_wait",
                   "leased",
+                  "accepted",
                   "dispatched",
                   "completed",
                   "blocked"
@@ -4305,268 +4179,6 @@
         "summary": "List Folder Observations"
       }
     },
-    "/api/v1/operations/runs/{run_id}/folder-disposition/recover": {
-      "post": {
-        "operationId": "recover_folder_disposition_api_v1_operations_runs__run_id__folder_disposition_recover_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FolderDispositionRecoveryRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FolderDispositionResultResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Recover Folder Disposition"
-      }
-    },
-    "/api/v1/operations/runs/{run_id}/recover": {
-      "post": {
-        "operationId": "recover_api_v1_operations_runs__run_id__recover_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecoveryRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecoveryResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Recover"
-      }
-    },
     "/api/v1/runs": {
       "get": {
         "operationId": "list_runs_api_v1_runs_get",
@@ -4679,116 +4291,6 @@
       }
     },
     "/api/v1/runs/{run_id}": {
-      "delete": {
-        "operationId": "delete_run_api_v1_runs__run_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RunDeletionResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Delete Run"
-      },
       "get": {
         "operationId": "get_run_api_v1_runs__run_id__get",
         "parameters": [
@@ -4882,9 +4384,10 @@
         "summary": "Get Run"
       }
     },
-    "/api/v1/runs/{run_id}/approve-and-apply": {
+    "/api/v1/runs/{run_id}/actions/{action_id}": {
       "post": {
-        "operationId": "approve_and_apply_api_v1_runs__run_id__approve_and_apply_post",
+        "description": "Resolve an opaque current-state action; the browser binds no plan.",
+        "operationId": "execute_bound_run_action_api_v1_runs__run_id__actions__action_id__post",
         "parameters": [
           {
             "in": "path",
@@ -4892,6 +4395,15 @@
             "required": true,
             "schema": {
               "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
               "type": "string"
             }
           },
@@ -4912,31 +4424,13 @@
               "description": "Stable key for one logical mutation",
               "title": "Idempotency-Key"
             }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ApproveApplyRequest"
+                "$ref": "#/components/schemas/RunActionRequest"
               }
             }
           },
@@ -4947,7 +4441,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApplyResponse"
+                  "$ref": "#/components/schemas/RunActionResponse"
                 }
               }
             },
@@ -5019,7 +4513,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Approve And Apply"
+        "summary": "Execute Bound Run Action"
       }
     },
     "/api/v1/runs/{run_id}/events": {
@@ -5246,129 +4740,6 @@
         "summary": "Event Stream"
       }
     },
-    "/api/v1/runs/{run_id}/execute": {
-      "post": {
-        "description": "Start or reconcile one v2 operation; browser selects no policy.",
-        "operationId": "execute_forward_plan_api_v1_runs__run_id__execute_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForwardExecuteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ForwardExecuteResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Execute Forward Plan"
-      }
-    },
     "/api/v1/runs/{run_id}/fail": {
       "post": {
         "operationId": "fail_attention_run_api_v1_runs__run_id__fail_post",
@@ -5507,128 +4878,6 @@
           }
         ],
         "summary": "Fail Attention Run"
-      }
-    },
-    "/api/v1/runs/{run_id}/folder-disposition": {
-      "post": {
-        "operationId": "execute_folder_disposition_api_v1_runs__run_id__folder_disposition_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FolderDispositionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FolderDispositionResultResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Execute Folder Disposition"
       }
     },
     "/api/v1/runs/{run_id}/interactions": {
@@ -6382,128 +5631,6 @@
         "summary": "Reapply"
       }
     },
-    "/api/v1/runs/{run_id}/rescan": {
-      "post": {
-        "operationId": "rescan_forward_plan_api_v1_runs__run_id__rescan_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForwardExecuteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ForwardExecuteResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Rescan Forward Plan"
-      }
-    },
     "/api/v1/runs/{run_id}/retry": {
       "post": {
         "operationId": "retry_attention_run_api_v1_runs__run_id__retry_post",
@@ -6642,146 +5769,6 @@
           }
         ],
         "summary": "Retry Attention Run"
-      }
-    },
-    "/api/v1/runs/{run_id}/subtitle-acquisition/approve": {
-      "post": {
-        "operationId": "approve_subtitle_acquisition_api_v1_runs__run_id__subtitle_acquisition_approve_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable key for one logical mutation",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Stable key for one logical mutation",
-              "title": "Idempotency-Key"
-            }
-          },
-          {
-            "description": "Exact immutable plan hash",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Exact immutable plan hash",
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SubtitleAcquisitionApprovalRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubtitleAcquisitionResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Safe error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Approve Subtitle Acquisition"
       }
     },
     "/api/v1/session": {

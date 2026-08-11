@@ -48,8 +48,6 @@ from reeloom.server.api_models import (
     FolderDispositionRecoveryRequest,
     FolderDispositionRequest,
     FolderDispositionResultResponse,
-    ForwardExecuteRequest,
-    ForwardExecuteResponse,
     HealthResponse,
     InteractionHistoryResponse,
     InteractionRequest,
@@ -66,11 +64,11 @@ from reeloom.server.api_models import (
     RecoveryRequest,
     RecoveryResponse,
     RunDeletionResponse,
+    RunActionRequest,
+    RunActionResponse,
     RunResponse,
     RunsResponse,
     SessionResponse,
-    SubtitleAcquisitionApprovalRequest,
-    SubtitleAcquisitionResponse,
     TelegramTestRequest,
     TelegramTestResponse,
 )
@@ -82,12 +80,9 @@ from reeloom.server.forward_execution_service import (
 )
 from reeloom.server.forward_operation_repository import (
     ForwardOperationError,
-    ForwardOperationErrorCode,
-    ForwardOperationView,
 )
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
-    SubtitleAcquisitionRequestRecord,
 )
 from reeloom.server.web_static import StaticAsset, StaticWebBundle
 from reeloom.executor.errors import (
@@ -231,6 +226,7 @@ class ApiDependencies:
     folder_dispositions: FolderDispositionCoordinator | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     health: Callable[[], object] | None = None
+    effect_guard: Callable[[], None] | None = None
     config_update: (
         Callable[[int, dict[str, object]], dict[str, object]] | None
     ) = None
@@ -259,7 +255,7 @@ class ApiDependencies:
     attention_fail: (
         Callable[[str, int], dict[str, object]] | None
     ) = None
-    legacy_effects_enabled: bool = True
+    legacy_effects_enabled: bool = False
     sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
     sse_poll_seconds: float = _SSE_POLL_SECONDS
     sse_heartbeat_seconds: float = 15.0
@@ -274,34 +270,6 @@ def _duplicate_rejecting_object(
             raise ValueError("duplicate key")
         result[key] = value
     return result
-
-
-def _forward_execution_payload(
-    view: ForwardOperationView,
-) -> dict[str, object]:
-    counts = {
-        "satisfied": 0,
-        "stale": 0,
-        "collision": 0,
-        "unsafe": 0,
-        "unavailable": 0,
-    }
-    for outcome in view.operation.outcomes:
-        counts[outcome.value] += 1
-    return {
-        "operation_id": view.operation.operation_id,
-        "operation_kind": view.operation_kind,
-        "run_id": view.operation.run_id,
-        "plan_hash": view.operation.plan_hash,
-        "status": view.operation.status.value,
-        "attempt_count": view.operation.attempt_count,
-        "counts": counts,
-        "items": list(view.items),
-        "warnings": list(view.warnings),
-        "fresh_scan_required": view.fresh_scan_required,
-        "rescan_state": view.rescan_state,
-        "successor_run_id": view.successor_run_id,
-    }
 
 
 def _host_name(value: str) -> str | None:
@@ -946,6 +914,7 @@ def create_api(
                 ServerErrorCode.WATCH_NOT_FOUND: 404,
                 ServerErrorCode.FRESH_MAPPING_REQUIRED: 422,
                 ServerErrorCode.DATABASE_UNAVAILABLE: 503,
+                ServerErrorCode.INSTANCE_LOCK_LOST: 503,
                 ServerErrorCode.PROVIDER_UNAVAILABLE: 503,
             }
             return JSONResponse(
@@ -966,6 +935,13 @@ def create_api(
                 {"error": {"code": error.code.value}},
                 status_code=409,
             )
+        if isinstance(
+            error, (ForwardExecutionServiceError, ForwardOperationError)
+        ):
+            return JSONResponse(
+                {"error": {"code": "action_stale"}},
+                status_code=409,
+            )
         return JSONResponse(
             {"error": {"code": "internal_error"}},
             status_code=500,
@@ -980,6 +956,16 @@ def create_api(
             raise HTTPException(
                 404, detail={"code": "run_not_found"}
             )
+
+    async def require_pre_m14_control_surface(
+        run_id: str,
+        _: None = Depends(require_visible_run),
+    ) -> None:
+        value = await asyncio.to_thread(dependencies.queries.get_run, run_id)
+        if value is None:
+            raise HTTPException(404, detail={"code": "run_not_found"})
+        if value.get("lifecycle") is not None:
+            raise HTTPException(410, detail={"code": "action_api_required"})
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> dict[str, object]:
@@ -1030,13 +1016,201 @@ def create_api(
             raise HTTPException(404, detail={"code": "run_not_found"})
         return value
 
+    @app.post(
+        "/api/v1/runs/{run_id}/actions/{action_id}",
+        response_model=RunActionResponse,
+    )
+    async def execute_bound_run_action(
+        run_id: str,
+        action_id: str,
+        body: RunActionRequest,
+        key: str = Depends(_idempotency_key),
+    ) -> dict[str, object]:
+        """Resolve an opaque current-state action; the browser binds no plan."""
+
+        if (
+            not action_id.startswith("runaction-v1:")
+            or len(action_id) != len("runaction-v1:") + 64
+        ):
+            raise HTTPException(409, detail={"code": "action_stale"})
+
+        def execute() -> dict[str, object]:
+            if dependencies.effect_guard is not None:
+                dependencies.effect_guard()
+            current = dependencies.queries.get_run(run_id)
+            if current is None:
+                raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
+            lifecycle = current.get("lifecycle")
+            action: dict[str, object] | None = None
+            if isinstance(lifecycle, dict):
+                raw_actions = lifecycle.get("actions")
+                if isinstance(raw_actions, list):
+                    action = next(
+                        (
+                            item
+                            for item in raw_actions
+                            if isinstance(item, dict)
+                            and item.get("action_id") == action_id
+                        ),
+                        None,
+                    )
+            if action is None:
+                raise HTTPException(
+                    409, detail={"code": "action_stale"}
+                )
+            kind = str(action.get("kind"))
+            action_input = str(action.get("input"))
+            if (
+                action_input == "message" and not body.message
+            ) or (
+                action_input != "message" and body.message is not None
+            ):
+                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            active_plan = lifecycle.get("active_plan")
+            plan_hash = (
+                str(active_plan.get("plan_hash"))
+                if isinstance(active_plan, dict)
+                and active_plan.get("plan_hash") is not None
+                else None
+            )
+            plan_family = (
+                str(active_plan.get("family"))
+                if isinstance(active_plan, dict)
+                and active_plan.get("family") is not None
+                else None
+            )
+            assistant_reply: str | None = None
+            if kind == "execute":
+                if plan_hash is None:
+                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+                if plan_family == "subtitle_acquire":
+                    if dependencies.subtitle_acquisitions is None:
+                        raise ServerError(ServerErrorCode.RUN_BUSY)
+                    dependencies.subtitle_acquisitions.approve_and_execute(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                        automatic=False,
+                    )
+                elif plan_family == "media_move":
+                    if dependencies.forward_execution is None:
+                        raise ServerError(ServerErrorCode.RUN_BUSY)
+                    dependencies.forward_execution.execute_manual(
+                        run_id=run_id, plan_hash=plan_hash
+                    )
+                else:
+                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+            elif kind == "request_rescan":
+                if plan_hash is None or dependencies.forward_execution is None:
+                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+                dependencies.forward_execution.request_rescan(
+                    run_id=run_id, plan_hash=plan_hash
+                )
+            elif kind == "retry_agent":
+                if dependencies.attention_retry is None:
+                    raise ServerError(ServerErrorCode.RUN_BUSY)
+                dependencies.attention_retry(
+                    run_id, int(current["event_sequence"])
+                )
+            elif kind == "mark_failed":
+                if dependencies.attention_fail is None:
+                    raise ServerError(ServerErrorCode.RUN_BUSY)
+                dependencies.attention_fail(
+                    run_id, int(current["event_sequence"])
+                )
+            elif kind == "delete_run":
+                if dependencies.run_delete is None:
+                    raise ServerError(ServerErrorCode.RUN_BUSY)
+                dependencies.run_delete(run_id)
+            elif kind in {"ask_agent", "revise_plan"}:
+                if dependencies.interactions is None:
+                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+                interaction = dependencies.interactions.run(
+                    run_id=run_id,
+                    kind=(
+                        InteractionKind.QUESTION
+                        if kind == "ask_agent"
+                        else InteractionKind.REVISION
+                    ),
+                    idempotency_key=key,
+                    expected_plan_hash=(
+                        plan_hash if kind == "revise_plan" else None
+                    ),
+                    expected_event_sequence=(
+                        int(current["event_sequence"])
+                        if kind == "ask_agent"
+                        else None
+                    ),
+                    message=body.message,
+                )
+                assistant_reply = interaction.assistant_reply
+            else:
+                raise HTTPException(
+                    409, detail={"code": "action_stale"}
+                )
+            refreshed = dependencies.queries.get_run(run_id)
+            return {
+                "action_id": action_id,
+                "kind": kind,
+                "run": refreshed,
+                "assistant_reply": assistant_reply,
+            }
+
+        async def dispatch_bound_action(
+            command: Callable[[], dict[str, object]],
+        ) -> dict[str, object]:
+            try:
+                return await _shield_thread(command)
+            except (
+                ForwardExecutionServiceError,
+                ForwardOperationError,
+            ):
+                raise HTTPException(
+                    409, detail={"code": "action_stale"}
+                ) from None
+
+        if dependencies.idempotency is None:
+            return await dispatch_bound_action(execute)
+
+        def resolve() -> dict[str, object] | None:
+            # Deletion is the only bound action whose successful effect makes
+            # the canonical run disappear. Its durable tombstone is enough to
+            # settle a response lost between the command and API mutation
+            # finalization; no filesystem action is replayed.
+            if dependencies.run_delete_resolve is None:
+                return None
+            deleted = dependencies.run_delete_resolve(run_id)
+            if deleted is None:
+                return None
+            return {
+                "action_id": action_id,
+                "kind": "delete_run",
+                "run": None,
+                "assistant_reply": None,
+            }
+
+        return await dispatch_bound_action(
+            lambda: dependencies.idempotency.run(
+                scope="run_action_v1",
+                subject_id=run_id,
+                idempotency_key=key,
+                request={
+                    "action_id": action_id,
+                    "message": body.message,
+                },
+                execute=execute,
+                resolve=resolve,
+            )
+        )
+
     @app.delete(
         "/api/v1/runs/{run_id}",
         response_model=RunDeletionResponse,
+        include_in_schema=False,
     )
     async def delete_run(
         run_id: str,
         key: str = Depends(_idempotency_key),
+        _: None = Depends(require_pre_m14_control_surface),
     ) -> dict[str, object]:
         if dependencies.run_delete is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1419,7 +1593,7 @@ def create_api(
         body: InteractionRequest,
         key: str = Depends(_idempotency_key),
         head: tuple[str | None, int | None] = Depends(_interaction_head),
-        _: None = Depends(require_visible_run),
+        _: None = Depends(require_pre_m14_control_surface),
     ) -> dict[str, object]:
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1465,7 +1639,7 @@ def create_api(
         body: AttentionControlRequest,
         key: str = Depends(_idempotency_key),
         event_sequence: int = Depends(_event_sequence_head),
-        _: None = Depends(require_visible_run),
+        _: None = Depends(require_pre_m14_control_surface),
     ) -> dict[str, object]:
         del body
         if dependencies.attention_retry is None:
@@ -1495,7 +1669,7 @@ def create_api(
         body: AttentionControlRequest,
         key: str = Depends(_idempotency_key),
         event_sequence: int = Depends(_event_sequence_head),
-        _: None = Depends(require_visible_run),
+        _: None = Depends(require_pre_m14_control_surface),
     ) -> dict[str, object]:
         del body
         if dependencies.attention_fail is None:
@@ -1525,7 +1699,7 @@ def create_api(
         body: ReapplyRequest,
         key: str = Depends(_idempotency_key),
         plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
+        _: None = Depends(require_pre_m14_control_surface),
     ) -> dict[str, object]:
         if dependencies.interactions is None:
             raise HTTPException(503, detail={"code": "unavailable"})
@@ -1547,84 +1721,9 @@ def create_api(
         }
 
     @app.post(
-        "/api/v1/runs/{run_id}/execute",
-        response_model=ForwardExecuteResponse,
-    )
-    async def execute_forward_plan(
-        run_id: str,
-        body: ForwardExecuteRequest,
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        """Start or reconcile one v2 operation; browser selects no policy."""
-
-        del body
-        coordinator = dependencies.forward_execution
-        if coordinator is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        try:
-            await _shield_thread(
-                lambda: coordinator.execute_manual(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                )
-            )
-            view = await _shield_thread(
-                lambda: coordinator.view(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                )
-            )
-        except ForwardExecutionServiceError as error:
-            raise HTTPException(
-                409, detail={"code": str(error)}
-            ) from None
-        except ForwardOperationError as error:
-            status = (
-                404
-                if error.code
-                is ForwardOperationErrorCode.OPERATION_NOT_FOUND
-                else 409
-            )
-            raise HTTPException(
-                status, detail={"code": error.code.value}
-            ) from None
-        return _forward_execution_payload(view)
-
-    @app.post(
-        "/api/v1/runs/{run_id}/rescan",
-        response_model=ForwardExecuteResponse,
-    )
-    async def rescan_forward_plan(
-        run_id: str,
-        body: ForwardExecuteRequest,
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        del body
-        coordinator = dependencies.forward_execution
-        if coordinator is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        try:
-            view = await _shield_thread(
-                lambda: coordinator.request_rescan(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                )
-            )
-        except ForwardExecutionServiceError as error:
-            raise HTTPException(
-                409, detail={"code": str(error)}
-            ) from None
-        except ForwardOperationError as error:
-            raise HTTPException(
-                409, detail={"code": error.code.value}
-            ) from None
-        return _forward_execution_payload(view)
-
-    @app.post(
         "/api/v1/runs/{run_id}/approve-and-apply",
         response_model=ApplyResponse,
+        include_in_schema=False,
     )
     async def approve_and_apply(
         run_id: str,
@@ -1749,67 +1848,9 @@ def create_api(
         )
 
     @app.post(
-        "/api/v1/runs/{run_id}/subtitle-acquisition/approve",
-        response_model=SubtitleAcquisitionResponse,
-    )
-    async def approve_subtitle_acquisition(
-        run_id: str,
-        body: SubtitleAcquisitionApprovalRequest,
-        key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        del body
-        coordinator = dependencies.subtitle_acquisitions
-        if coordinator is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def payload(
-            record: SubtitleAcquisitionRequestRecord,
-        ) -> dict[str, object]:
-            return {
-                "run_id": record.run_id,
-                "plan_hash": record.plan_hash,
-                "policy": record.policy.value,
-                "status": record.status,
-                "transaction_id": record.transaction_id,
-                "failure_code": record.failure_code,
-                "failure_diagnostic": record.failure_diagnostic,
-                "successor_status": None,
-            }
-
-        def execute() -> dict[str, object]:
-            return payload(
-                coordinator.approve_and_execute(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                    automatic=False,
-                )
-            )
-
-        def resolve() -> dict[str, object] | None:
-            record = coordinator.resolve(
-                run_id=run_id,
-                plan_hash=plan_hash,
-            )
-            return None if record is None else payload(record)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="approve_subtitle_acquisition",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={"plan_hash": plan_hash},
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.post(
         "/api/v1/runs/{run_id}/folder-disposition",
         response_model=FolderDispositionResultResponse,
+        include_in_schema=False,
     )
     async def execute_folder_disposition(
         run_id: str,
@@ -1865,6 +1906,7 @@ def create_api(
     @app.post(
         "/api/v1/operations/runs/{run_id}/folder-disposition/recover",
         response_model=FolderDispositionResultResponse,
+        include_in_schema=False,
     )
     async def recover_folder_disposition(
         run_id: str,
@@ -1919,6 +1961,7 @@ def create_api(
     @app.post(
         "/api/v1/operations/runs/{run_id}/recover",
         response_model=RecoveryResponse,
+        include_in_schema=False,
     )
     async def recover(
         run_id: str,

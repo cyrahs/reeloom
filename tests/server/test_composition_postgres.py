@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
+import uuid
 
+import psycopg
 import pytest
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
 
 from reeloom.server.auth import AuthSettings
 from reeloom.server.composition import ServerApplication, build_application
+from reeloom.server.database import PostgresControlPlane
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.settings import DeploymentSettings
 
@@ -93,3 +98,50 @@ def test_production_builder_enforces_single_instance_and_closes(
 
     replacement = build_application(settings, auth=auth)
     replacement.close()
+
+
+@pytest.mark.postgres
+def test_production_builder_checks_instance_lock_before_migration(
+    tmp_path,
+) -> None:
+    schema = "composition_lock_order_" + uuid.uuid4().hex
+    dsn = _dsn()
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
+        )
+    isolated_dsn = make_conninfo(dsn, options=f"-c search_path={schema}")
+    running = PostgresControlPlane(isolated_dsn)
+    state_root = tmp_path / "second-instance"
+    state_root.mkdir(mode=0o700)
+    try:
+        running.open()
+        running.acquire_instance_lock()
+
+        with pytest.raises(ServerError) as raised:
+            build_application(
+                DeploymentSettings(
+                    postgres_dsn=isolated_dsn,
+                    state_root=state_root,
+                    workers=1,
+                ),
+                auth=AuthSettings.create(
+                    admin_token="admin-token-for-test",
+                    allowed_hosts=("reeloom.test",),
+                    allowed_origins=("https://ui.example.test",),
+                ),
+            )
+
+        assert raised.value.code is ServerErrorCode.INSTANCE_ALREADY_RUNNING
+        with psycopg.connect(isolated_dsn) as connection:
+            assert connection.execute(
+                "SELECT to_regclass('schema_migrations')"
+            ).fetchone() == (None,)
+    finally:
+        running.close()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    sql.Identifier(schema)
+                )
+            )

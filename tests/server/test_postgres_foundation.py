@@ -21,7 +21,7 @@ def _dsn() -> str:
     return value
 
 
-def test_database_close_releases_pool_when_unlock_fails() -> None:
+def test_database_close_is_best_effort_when_lock_session_is_lost() -> None:
     calls: list[str] = []
 
     class LockConnection:
@@ -40,8 +40,7 @@ def test_database_close_releases_pool_when_unlock_fails() -> None:
     control._lock_connection = LockConnection()  # type: ignore[assignment]
     control._pool = Pool()  # type: ignore[assignment]
 
-    with pytest.raises(RuntimeError, match="unlock failed"):
-        control.close()
+    control.close()
 
     assert calls == ["unlock", "lock", "pool"]
     assert control._lock_connection is None
@@ -74,10 +73,15 @@ def test_empty_database_migration_is_idempotent_and_healthy() -> None:
         with control.pool.connection() as connection:
             immutable = connection.execute(
                 """
-                SELECT count(*)
-                FROM pg_trigger
-                WHERE tgname = 'plan_reviews_immutable'
-                  AND NOT tgisinternal
+                    SELECT count(*)
+                    FROM pg_trigger AS trigger
+                    JOIN pg_class AS relation
+                      ON relation.oid = trigger.tgrelid
+                    JOIN pg_namespace AS namespace
+                      ON namespace.oid = relation.relnamespace
+                    WHERE tgname = 'plan_reviews_immutable'
+                      AND NOT tgisinternal
+                      AND namespace.nspname = current_schema()
                 """
             ).fetchone()
         assert immutable is not None and int(immutable[0]) == 1
@@ -100,6 +104,32 @@ def test_advisory_lock_and_boot_registration() -> None:
         with pytest.raises(ServerError) as raised:
             second.acquire_instance_lock()
         assert raised.value.code is ServerErrorCode.INSTANCE_ALREADY_RUNNING
+    finally:
+        second.close()
+        first.close()
+
+
+@pytest.mark.postgres
+def test_lost_advisory_lock_session_fail_stops_original_instance() -> None:
+    first = PostgresControlPlane(_dsn())
+    second = PostgresControlPlane(_dsn())
+    try:
+        first.open()
+        first.migrate()
+        first.acquire_instance_lock()
+        assert first._lock_connection is not None
+        first._lock_connection.close()
+
+        with pytest.raises(ServerError) as verify_error:
+            first.verify_instance_lock()
+        assert verify_error.value.code is ServerErrorCode.INSTANCE_LOCK_LOST
+        with pytest.raises(ServerError) as health_error:
+            first.health()
+        assert health_error.value.code is ServerErrorCode.INSTANCE_LOCK_LOST
+
+        second.open()
+        second.acquire_instance_lock()
+        second.verify_instance_lock()
     finally:
         second.close()
         first.close()

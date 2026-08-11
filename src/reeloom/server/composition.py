@@ -11,9 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from reeloom.adapters.journal import FilesystemJournalStore
 from reeloom.adapters.forward_filesystem import PosixForwardFilesystem
-from reeloom.adapters.folder_journal import FilesystemFolderJournalStore
 from reeloom.adapters.plan_store import FilesystemPlanStore
 from reeloom.adapters.telegram import TelegramHttpAdapter
 from reeloom.adapters.acgrip import (
@@ -29,9 +27,7 @@ from reeloom.adapters.subtitle_archive_cache import (
 from reeloom.adapters.subtitle_plan_store import (
     FilesystemSubtitleAcquisitionPlanStore,
 )
-from reeloom.executor.apply import FilesystemExecutor
 from reeloom.executor.forward import ForwardExecutor
-from reeloom.executor.folder_disposition import FolderDispositionExecutor
 from reeloom.executor.subtitle_marker_acquisition import (
     SubtitleMarkerAcquisitionExecutor,
 )
@@ -43,14 +39,17 @@ from reeloom.server.agent_repository import (
 from reeloom.server.agent_worker import (
     InitialAgentWorker,
     ModelLeaseFactory,
+    SubtitlePlanningLeaseFactory,
+    SubtitleSearchLeaseFactory,
     TmdbLeaseFactory,
+    VideoSubtitleInspectorFactory,
 )
 from reeloom.server.subtitle_acquisition import SubtitleAcquisitionPlanner
 from reeloom.server.subtitle_acquisition_service import (
     SubtitleAcquisitionCoordinator,
+    SubtitleAcquisitionExecutorFactory,
 )
 from reeloom.server.watcher import FolderSnapshot, NoFollowWatcher
-from reeloom.server.apply_service import ApplyCoordinator
 from reeloom.server.archive_directory import run_directory_io
 from reeloom.server.approval_repository import PostgresApprovalStore
 from reeloom.server.auth import AuthSettings
@@ -58,16 +57,14 @@ from reeloom.server.background import BackgroundServices
 from reeloom.server.completed_layout import (
     PostgresCompletedLayoutRepository,
 )
-from reeloom.server.folder_disposition import (
-    FolderDispositionCoordinator,
-    FolderDispositionPlanner,
-    PostgresFolderDispositionRepository,
-)
 from reeloom.server.forward_execution_service import (
     ForwardExecutionCoordinator,
 )
 from reeloom.server.forward_operation_repository import (
     PostgresForwardOperationRepository,
+)
+from reeloom.server.run_control_repository import (
+    PostgresRunControlRepository,
 )
 from reeloom.server.subtitle_lineage import PostgresSubtitleLineageGate
 from reeloom.server.forward_rescan import ForwardRescanWorker
@@ -104,6 +101,9 @@ from reeloom.server.notification_delivery import (
 from reeloom.server.notification_outbox import PostgresNotificationOutbox
 from reeloom.server.notification_projector import (
     PostgresNotificationProjector,
+)
+from reeloom.server.notification_intents import (
+    PostgresNotificationIntentWorker,
 )
 from reeloom.server.run_deletion import PostgresRunDeletionService
 from reeloom.server.scheduler_repository import (
@@ -319,6 +319,14 @@ def build_application(
     model_factory: ModelLeaseFactory | None = None,
     tmdb_factory: TmdbLeaseFactory | None = None,
     telegram_factory: SenderFactory | None = None,
+    subtitle_search_factory: SubtitleSearchLeaseFactory | None = None,
+    subtitle_planning_factory: SubtitlePlanningLeaseFactory | None = None,
+    subtitle_executor_factory: (
+        SubtitleAcquisitionExecutorFactory | None
+    ) = None,
+    video_subtitle_inspector_factory: (
+        VideoSubtitleInspectorFactory | None
+    ) = None,
 ) -> ServerApplication:
     if settings.workers != 1:
         raise ServerError(ServerErrorCode.MULTIPLE_WORKERS)
@@ -327,9 +335,9 @@ def build_application(
     database = PostgresControlPlane(settings.postgres_dsn)
     try:
         database.open()
+        database.acquire_instance_lock()
         database.migrate()
         database.health()
-        database.acquire_instance_lock()
         boot_id = f"boot-{uuid.uuid4().hex}"
         database.register_boot(boot_id)
 
@@ -337,12 +345,6 @@ def build_application(
             settings.state_root, "secrets"
         )
         plan_root = _state_subdirectory(settings.state_root, "plans")
-        journal_root = _state_subdirectory(
-            settings.state_root, "journals"
-        )
-        folder_journal_root = _state_subdirectory(
-            settings.state_root, "folder-journals"
-        )
         subtitle_plan_root = _state_subdirectory(
             settings.state_root, "subtitle-plans"
         )
@@ -357,9 +359,9 @@ def build_application(
         subtitle_plans = FilesystemSubtitleAcquisitionPlanStore(
             subtitle_plan_root
         )
-        journals = FilesystemJournalStore(journal_root)
         approvals = PostgresApprovalStore(database.pool)
         forward_operations = PostgresForwardOperationRepository(database.pool)
+        run_controls = PostgresRunControlRepository(database.pool)
         folder_housekeeping_v2 = FolderHousekeepingWorker(
             repository=PostgresFolderHousekeepingRepository(database.pool),
             configs=PostgresConfigRepository(database.pool),
@@ -369,21 +371,11 @@ def build_application(
         notification_projector = PostgresNotificationProjector(
             plans=plans,
             outbox=notification_outbox,
+            subtitle_plans=subtitle_plans,
         )
         layouts = PostgresCompletedLayoutRepository(
             database.pool,
             notifications=notification_projector,
-        )
-        executor = FilesystemExecutor(
-            plans=plans,
-            approvals=approvals,
-            journals=journals,
-        )
-        apply = ApplyCoordinator(
-            pool=database.pool,
-            approvals=approvals,
-            executor=executor,
-            completed_layouts=layouts,
         )
         forward_execution = ForwardExecutionCoordinator(
             configs=PostgresConfigRepository(database.pool),
@@ -394,29 +386,6 @@ def build_application(
             worker_id=boot_id,
             subtitle_plans=subtitle_plans,
         )
-        folder_repository = PostgresFolderDispositionRepository(
-            database.pool,
-            notifications=notification_projector,
-        )
-        folder_planner = FolderDispositionPlanner(
-            pool=database.pool,
-            plans=plans,
-            repository=folder_repository,
-        )
-        folder_dispositions = FolderDispositionCoordinator(
-            pool=database.pool,
-            plans=plans,
-            repository=folder_repository,
-            planner=folder_planner,
-            executor=FolderDispositionExecutor(
-                plans=plans,
-                approvals=folder_repository,
-                journals=FilesystemFolderJournalStore(
-                    folder_journal_root
-                ),
-            ),
-        )
-        apply.reconcile_active()
         interactions_repository = PostgresInteractionRepository(
             database.pool,
             notifications=notification_projector,
@@ -438,7 +407,7 @@ def build_application(
             subtitle_archive_cache_root
         )
 
-        def subtitle_planning_factory() -> _AcgripPlanningLease:
+        def default_subtitle_planning_factory() -> _AcgripPlanningLease:
             fetcher = AcgripSubtitleArchiveFetcher(subtitle_workspace)
             return _AcgripPlanningLease(
                 fetcher,
@@ -450,7 +419,7 @@ def build_application(
                 ),
             )
 
-        def subtitle_executor_factory() -> _AcgripExecutorLease:
+        def default_subtitle_executor_factory() -> _AcgripExecutorLease:
             fetcher = AcgripSubtitleArchiveFetcher(subtitle_workspace)
             return _AcgripExecutorLease(
                 fetcher,
@@ -465,9 +434,14 @@ def build_application(
         subtitle_acquisitions = SubtitleAcquisitionCoordinator(
             pool=database.pool,
             plans=subtitle_plans,
-            executor_factory=subtitle_executor_factory,
+            executor_factory=(
+                subtitle_executor_factory
+                if subtitle_executor_factory is not None
+                else default_subtitle_executor_factory
+            ),
             operation_approvals=approvals,
             operations=forward_operations,
+            controls=run_controls,
             worker_id=boot_id,
         )
         subtitle_acquisitions.reconcile_approved()
@@ -678,26 +652,43 @@ def build_application(
             tmdb_factory=effective_tmdb_factory,
             pool=database.pool,
             notifications=notification_projector,
-            subtitle_search_factory=lambda: _AcgripSearchLease(
-                AcgripSubtitleSearchProvider()
+            subtitle_search_factory=(
+                subtitle_search_factory
+                if subtitle_search_factory is not None
+                else lambda: _AcgripSearchLease(
+                    AcgripSubtitleSearchProvider()
+                )
             ),
-            subtitle_planning_factory=subtitle_planning_factory,
+            subtitle_planning_factory=(
+                subtitle_planning_factory
+                if subtitle_planning_factory is not None
+                else default_subtitle_planning_factory
+            ),
             subtitle_plan_sink=subtitle_acquisitions.register_plan,
             subtitle_lineage_gate=PostgresSubtitleLineageGate(database.pool),
+            run_controls=run_controls,
+            video_subtitle_inspector_factory=(
+                video_subtitle_inspector_factory
+            ),
         )
         background = BackgroundServices(
             boot_id=boot_id,
             configs=config_repository,
             scheduler=scheduler,
             worker=worker,
-            apply=apply,
-            folder_dispositions=folder_dispositions,
+            instance_guard=database.verify_instance_lock,
+            apply=None,
+            folder_dispositions=None,
             notifications=ConfiguredNotificationDelivery(
                 configs=config_repository,
                 secrets=secrets,
                 outbox=notification_outbox,
                 sender_factory=effective_telegram_factory,
                 worker_id=boot_id,
+            ),
+            notification_intents=PostgresNotificationIntentWorker(
+                pool=database.pool,
+                projector=notification_projector,
             ),
             subtitle_acquisitions=subtitle_acquisitions,
             forward_execution=forward_execution,
@@ -748,33 +739,30 @@ def build_application(
             run_id: str,
             event_sequence: int,
         ) -> dict[str, object]:
-            plan = folder_dispositions.prepare_failure(
-                run_id=run_id,
-                reason_code="user_marked_failed",
-            )
-            if plan is None:
-                raise ServerError(
-                    ServerErrorCode.INTERACTION_CONFLICT
-                )
-            scheduler.mark_needs_attention_failed(
+            run_controls.mark_failed(
                 run_id=run_id,
                 expected_event_sequence=event_sequence,
+                reason_code="user_marked_failed",
+                source_disposition="fail",
+            )
+            folder_housekeeping_v2.enqueue_failure(
+                run_id=run_id, reason_code="user_marked_failed"
             )
             return {
                 "run_id": run_id,
-                "status": "failure_planned",
-                "plan_hash": plan.plan_hash,
+                "status": "failed",
             }
 
         api = create_api(
             ApiDependencies(
                 queries=PostgresQueries(database.pool, plans=plans),
                 interactions=interactions,
-                apply=apply,
+                apply=None,
                 forward_execution=forward_execution,
-                folder_dispositions=folder_dispositions,
+                folder_dispositions=None,
                 subtitle_acquisitions=subtitle_acquisitions,
                 health=health,
+                effect_guard=database.verify_instance_lock,
                 config_update=update_config,
                 config_resolve=resolve_config,
                 provider_probe=probe_provider,

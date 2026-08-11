@@ -9,6 +9,8 @@ from psycopg_pool import ConnectionPool
 
 from reeloom.kernel.candidates import CandidateKind
 from reeloom.kernel.semantic_identity import SemanticCandidateSnapshot
+from reeloom.runtime.event_codec import encode_event
+from reeloom.runtime.events import RunFailed
 from reeloom.server.config import ServerWorkType
 from reeloom.server.config_repository import CONFIG_LOCK_ID
 from reeloom.server.errors import ServerError, ServerErrorCode
@@ -172,9 +174,291 @@ def _missing_folder_action(
     return "keep"
 
 
-def _invalidate_unclaimed(
-    connection: Any, *, discovery_id: str
+def _lock_run_effect(connection: Any, *, run_id: str) -> None:
+    connection.execute(
+        """
+        SELECT pg_advisory_xact_lock(
+            hashtextextended('reeloom-run:' || %s, 0)
+        )
+        """,
+        (run_id,),
+    )
+
+
+def _terminalize_forward_failure(
+    connection: Any,
+    *,
+    run_id: str,
+    failure_code: str,
 ) -> bool:
+    """Write every durable v2 terminal fact in the caller transaction.
+
+    The caller must hold the run effect advisory lock.  ``False`` means the
+    run is not an active semantic-v2 run and must use a legacy transition.
+    """
+
+    row = connection.execute(
+        """
+        SELECT d.watch_id, d.source_folder, d.inventory_id,
+               control.effect_plan_hash, control.operation_id,
+               state.event_sequence, state.runtime_status,
+               planning.run_id
+        FROM runs AS r
+        JOIN discoveries AS d USING (discovery_id)
+        JOIN watch_states AS w ON w.watch_id = d.watch_id
+        JOIN run_lifecycle_controls_v2 AS control
+          ON control.run_id = r.run_id
+        LEFT JOIN run_states AS state ON state.run_id = r.run_id
+        LEFT JOIN planning_terminal_results_v2 AS planning
+          ON planning.run_id = r.run_id
+        WHERE r.run_id = %s
+          AND w.semantic_v2 = true
+          AND control.mode = 'forward_v2'
+        FOR UPDATE OF r, control
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if row[4] is not None:
+        raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+    if row[7] is None and row[5] is not None and str(row[6]) != "failed":
+        sequence = int(row[5]) + 1
+        encoded = encode_event(RunFailed(failure_code))
+        connection.execute(
+            """
+            INSERT INTO run_events (run_id, sequence, event_type, payload)
+            VALUES (%s, %s, 'run_failed', %s)
+            """,
+            (run_id, sequence, encoded),
+        )
+        updated = connection.execute(
+            """
+            UPDATE run_states
+            SET event_sequence = %s,
+                phase = 'failed', runtime_status = 'failed',
+                projection_payload = projection_payload
+                    || jsonb_build_object(
+                        'event_count', %s::bigint,
+                        'phase', 'failed'::text,
+                        'status', 'failed'::text,
+                        'pending_tool_calls', '[]'::jsonb,
+                        'observed_tool_calls', '[]'::jsonb,
+                        'stop_reason', 'fatal_error'::text,
+                        'failure_code', %s::text
+                    ),
+                updated_at = clock_timestamp()
+            WHERE run_id = %s AND event_sequence = %s
+            RETURNING run_id
+            """,
+            (sequence, sequence, failure_code, run_id, int(row[5])),
+        ).fetchone()
+        if updated is None:
+            raise ServerError(ServerErrorCode.RUN_BUSY)
+    connection.execute(
+        "UPDATE runs SET status = 'failed' WHERE run_id = %s",
+        (run_id,),
+    )
+    connection.execute(
+        """
+        UPDATE jobs
+        SET status = 'failed', boot_id = NULL,
+            updated_at = clock_timestamp()
+        WHERE run_id = %s
+          AND status IN ('pending', 'running', 'completed')
+        """,
+        (run_id,),
+    )
+    connection.execute(
+        """
+        INSERT INTO planning_terminal_results_v2
+            (run_id, plan_hash, outcome, reason_code, source_disposition)
+        VALUES (%s, %s, 'agent_failed', %s, 'preserve')
+        ON CONFLICT (run_id) DO NOTHING
+        """,
+        (run_id, row[3], failure_code),
+    )
+    if row[1] is not None and row[2] is not None:
+        connection.execute(
+            """
+            INSERT INTO handled_folder_inventories_v2
+                (watch_id, source_folder, inventory_id,
+                 run_id, terminal_status)
+            VALUES (%s, %s, %s, %s, 'agent_failed')
+            ON CONFLICT DO NOTHING
+            """,
+            (str(row[0]), str(row[1]), str(row[2]), run_id),
+        )
+    return True
+
+
+def _register_run_in_transaction(
+    connection: Any,
+    *,
+    discovery_id: str,
+) -> RunRegistration:
+    """Idempotently bind a discovery to its run and job.
+
+    Folder reconciliation uses this helper before committing a newly created
+    discovery.  Keeping the binding in the same transaction removes the crash
+    window where an observation referenced a discovery that had no run.
+    """
+
+    discovery = connection.execute(
+        """
+        SELECT config_revision, work_type, watch_id, source_folder
+        FROM discoveries
+        WHERE discovery_id = %s
+        """,
+        (discovery_id,),
+    ).fetchone()
+    if discovery is None:
+        raise ServerError(ServerErrorCode.DISCOVERY_NOT_FOUND)
+    run_id = _id("run", discovery_id)
+    capability = _id("capability", run_id)
+    pending_generation = connection.execute(
+        """
+        SELECT request.request_id, request.lineage_key
+        FROM generation_requests_v2 AS request
+        WHERE request.successor_discovery_id = %s
+          AND request.state = 'accepted'
+          AND request.successor_run_id IS NULL
+        FOR UPDATE OF request
+        LIMIT 1
+        """,
+        (discovery_id,),
+    ).fetchone()
+    lineage_key = (
+        None
+        if pending_generation is None or pending_generation[1] is None
+        else str(pending_generation[1])
+    )
+    connection.execute(
+        """
+        INSERT INTO runs
+            (run_id, discovery_id, config_revision, work_type,
+             source_capability, status, subtitle_acquisition_lineage_key)
+        VALUES (%s, %s, %s, %s, %s, 'registered', %s)
+        ON CONFLICT (discovery_id) DO NOTHING
+        """,
+        (
+            run_id,
+            discovery_id,
+            int(discovery[0]),
+            str(discovery[1]),
+            capability,
+            lineage_key,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO run_lifecycle_controls_v2
+            (run_id, mode, classification_reason)
+        SELECT run.run_id,
+               CASE
+                   WHEN discovery.snapshot_id LIKE 'candidate-snapshot-v2:%%'
+                   THEN 'forward_v2'
+                   ELSE 'legacy_read_only'
+               END,
+               CASE
+                   WHEN discovery.snapshot_id LIKE 'candidate-snapshot-v2:%%'
+                   THEN 'new_semantic_run'
+                   ELSE 'new_legacy_run'
+               END
+        FROM runs AS run
+        JOIN discoveries AS discovery USING (discovery_id)
+        WHERE run.discovery_id = %s
+        ON CONFLICT (run_id) DO NOTHING
+        """,
+        (discovery_id,),
+    )
+    row = connection.execute(
+        """
+        SELECT run_id, config_revision, work_type, source_capability
+        FROM runs
+        WHERE discovery_id = %s
+        """,
+        (discovery_id,),
+    ).fetchone()
+    if row is None:
+        raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE)
+    actual_run = str(row[0])
+    if lineage_key is not None:
+        bound = connection.execute(
+            """
+            UPDATE runs
+            SET subtitle_acquisition_lineage_key = %s
+            WHERE run_id = %s
+              AND (
+                  subtitle_acquisition_lineage_key IS NULL
+                  OR subtitle_acquisition_lineage_key = %s
+              )
+            RETURNING run_id
+            """,
+            (lineage_key, actual_run, lineage_key),
+        ).fetchone()
+        if bound is None:
+            raise ServerError(ServerErrorCode.RUN_BUSY)
+    if pending_generation is not None:
+        completed_generation = connection.execute(
+            """
+            UPDATE generation_requests_v2
+            SET state = 'completed', successor_run_id = %s,
+                completed_at = clock_timestamp(),
+                updated_at = clock_timestamp()
+            WHERE request_id = %s
+              AND state = 'accepted'
+              AND successor_run_id IS NULL
+            RETURNING request_id
+            """,
+            (actual_run, str(pending_generation[0])),
+        ).fetchone()
+        if completed_generation is None:
+            raise ServerError(ServerErrorCode.RUN_BUSY)
+    actual_job = _id("job", actual_run)
+    connection.execute(
+        """
+        INSERT INTO jobs (job_id, run_id, status)
+        VALUES (%s, %s, 'pending')
+        ON CONFLICT (run_id) DO NOTHING
+        """,
+        (actual_job, actual_run),
+    )
+    connection.execute(
+        """
+        INSERT INTO scheduler_audit (event_type, subject_id)
+        SELECT 'run_registered', %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM scheduler_audit
+            WHERE event_type = 'run_registered' AND subject_id = %s
+        )
+        """,
+        (actual_run, actual_run),
+    )
+    return RunRegistration(
+        run_id=actual_run,
+        job_id=actual_job,
+        discovery_id=discovery_id,
+        config_revision=int(row[1]),
+        work_type=ServerWorkType(str(row[2])),
+        source_capability=str(row[3]),
+    )
+
+
+def _invalidate_unclaimed(
+    connection: Any,
+    *,
+    discovery_id: str,
+    failure_code: str = "generation_invalidated",
+) -> bool:
+    candidate = connection.execute(
+        "SELECT run_id FROM runs WHERE discovery_id = %s",
+        (discovery_id,),
+    ).fetchone()
+    if candidate is None:
+        return False
+    run_id = str(candidate[0])
+    _lock_run_effect(connection, run_id=run_id)
     locked = connection.execute(
         """
         SELECT r.run_id, j.job_id
@@ -191,6 +475,52 @@ def _invalidate_unclaimed(
     ).fetchone()
     if locked is None:
         return False
+    if connection.execute(
+        """
+        SELECT 1
+        FROM runs AS r
+        JOIN jobs AS j ON j.run_id = r.run_id
+        WHERE r.discovery_id = %s
+          AND r.status IN (
+              'registered', 'running', 'awaiting_approval',
+              'failed', 'rolled_back'
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM approval_claims AS claim
+              JOIN approvals AS approval USING (approval_id)
+              LEFT JOIN approval_settlements AS settlement USING (approval_id)
+              WHERE approval.run_id = r.run_id
+                AND settlement.approval_id IS NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM run_operations AS operation
+              WHERE operation.run_id = r.run_id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM subtitle_acquisition_requests AS request
+              WHERE request.run_id = r.run_id
+                AND request.status IN ('planned', 'approved')
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM folder_disposition_claims AS claim
+              JOIN folder_disposition_approvals AS approval USING (approval_id)
+              LEFT JOIN folder_disposition_transactions AS txn
+                USING (approval_id)
+              WHERE approval.run_id = r.run_id
+                AND (txn.status IS NULL OR txn.status <> 'blocked')
+          )
+        """,
+        (discovery_id,),
+    ).fetchone() is None:
+        return False
+    if _terminalize_forward_failure(
+        connection,
+        run_id=run_id,
+        failure_code=failure_code,
+    ):
+        return True
     return (
         connection.execute(
             """
@@ -932,11 +1262,20 @@ class PostgresSchedulerRepository:
                                     (str(row[8]),),
                                 ).fetchone()
                                 if run is None:
-                                    raise ServerError(
-                                        ServerErrorCode.DATABASE_UNAVAILABLE
+                                    repaired = _register_run_in_transaction(
+                                        connection,
+                                        discovery_id=str(row[8]),
+                                    )
+                                    run = (
+                                        repaired.run_id,
+                                        "registered",
+                                        False,
+                                        False,
+                                        False,
                                     )
                                 unchanged = (
-                                    (
+                                    int(row[1]) == config_revision
+                                    and (
                                         semantic_v2
                                         or (
                                             row[2] == folder.device
@@ -1287,6 +1626,30 @@ class PostgresSchedulerRepository:
                         if inserted is not None:
                             connection.execute(
                                 """
+                                UPDATE generation_requests_v2
+                                SET successor_discovery_id = %s,
+                                    updated_at = %s
+                                WHERE request_id = (
+                                    SELECT request_id
+                                    FROM generation_requests_v2
+                                    WHERE watch_id = %s
+                                      AND source_folder = %s
+                                      AND state = 'accepted'
+                                      AND successor_discovery_id IS NULL
+                                    ORDER BY created_at, request_id
+                                    LIMIT 1
+                                )
+                                """,
+                                (
+                                    str(discovery_row[0]),
+                                    observed_at,
+                                    watch_id,
+                                    folder.name,
+                                ),
+                            )
+                        if inserted is not None:
+                            connection.execute(
+                                """
                                 INSERT INTO scheduler_audit
                                     (event_type, subject_id)
                                 VALUES ('folder_discovery_stable', %s)
@@ -1296,6 +1659,10 @@ class PostgresSchedulerRepository:
                                 (str(discovery_row[0]),),
                             )
                             mutated = True
+                        _register_run_in_transaction(
+                            connection,
+                            discovery_id=str(discovery_row[0]),
+                        )
                         discoveries.append(
                             Discovery(
                                 discovery_id=str(discovery_row[0]),
@@ -1328,122 +1695,9 @@ class PostgresSchedulerRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
-                    discovery = connection.execute(
-                        """
-                        SELECT config_revision, work_type,
-                               watch_id, source_folder
-                        FROM discoveries
-                        WHERE discovery_id = %s
-                        """,
-                        (discovery_id,),
-                    ).fetchone()
-                    if discovery is None:
-                        raise ServerError(
-                            ServerErrorCode.DISCOVERY_NOT_FOUND
-                    )
-                    run_id = _id("run", discovery_id)
-                    capability = _id("capability", run_id)
-                    pending_forward = connection.execute(
-                        """
-                        SELECT request.operation_id,
-                               origin.subtitle_acquisition_lineage_key
-                        FROM execution_rescan_outbox_v2 AS request
-                        JOIN execution_operations_v2 AS operation
-                          ON operation.operation_id = request.operation_id
-                        JOIN runs AS origin ON origin.run_id = request.run_id
-                        JOIN discoveries AS origin_discovery
-                          ON origin_discovery.discovery_id =
-                             origin.discovery_id
-                        WHERE operation.operation_kind = 'subtitle_acquire'
-                          AND request.state = 'completed'
-                          AND request.successor_run_id IS NULL
-                          AND origin.subtitle_acquisition_lineage_key
-                              IS NOT NULL
-                          AND origin_discovery.watch_id = %s
-                          AND origin_discovery.source_folder = %s
-                        ORDER BY request.created_at, request.operation_id
-                        FOR UPDATE OF request SKIP LOCKED
-                        LIMIT 1
-                        """,
-                        (str(discovery[2]), str(discovery[3])),
-                    ).fetchone()
-                    lineage_key = (
-                        None
-                        if pending_forward is None
-                        else str(pending_forward[1])
-                    )
-                    connection.execute(
-                        """
-                        INSERT INTO runs
-                            (run_id, discovery_id, config_revision, work_type,
-                             source_capability, status,
-                             subtitle_acquisition_lineage_key)
-                        VALUES (%s, %s, %s, %s, %s, 'registered', %s)
-                        ON CONFLICT (discovery_id) DO NOTHING
-                        """,
-                        (
-                            run_id,
-                            discovery_id,
-                            int(discovery[0]),
-                            str(discovery[1]),
-                            capability,
-                            lineage_key,
-                        ),
-                    )
-                    row = connection.execute(
-                        """
-                        SELECT run_id, config_revision, work_type,
-                               source_capability
-                        FROM runs
-                        WHERE discovery_id = %s
-                        """,
-                        (discovery_id,),
-                    ).fetchone()
-                    actual_run = str(row[0])
-                    if pending_forward is not None:
-                        completed_forward = connection.execute(
-                            """
-                            UPDATE execution_rescan_outbox_v2
-                            SET successor_run_id = %s,
-                                updated_at = clock_timestamp()
-                            WHERE operation_id = %s
-                              AND state = 'completed'
-                              AND successor_run_id IS NULL
-                            RETURNING operation_id
-                            """,
-                            (actual_run, str(pending_forward[0])),
-                        ).fetchone()
-                        if completed_forward is None:
-                            raise ServerError(ServerErrorCode.RUN_BUSY)
-                    actual_job = _id("job", actual_run)
-                    connection.execute(
-                        """
-                        INSERT INTO jobs (job_id, run_id, status)
-                        VALUES (%s, %s, 'pending')
-                        ON CONFLICT (run_id) DO NOTHING
-                        """,
-                        (actual_job, actual_run),
-                    )
-                    connection.execute(
-                        """
-                        INSERT INTO scheduler_audit
-                            (event_type, subject_id)
-                        SELECT 'run_registered', %s
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM scheduler_audit
-                            WHERE event_type = 'run_registered'
-                              AND subject_id = %s
-                        )
-                        """,
-                        (actual_run, actual_run),
-                    )
-                    return RunRegistration(
-                        run_id=actual_run,
-                        job_id=actual_job,
+                    return _register_run_in_transaction(
+                        connection,
                         discovery_id=discovery_id,
-                        config_revision=int(row[1]),
-                        work_type=ServerWorkType(str(row[2])),
-                        source_capability=str(row[3]),
                     )
         except ServerError:
             raise
@@ -1660,6 +1914,22 @@ class PostgresSchedulerRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    orphan_discoveries = connection.execute(
+                        """
+                        SELECT discovery.discovery_id
+                        FROM discoveries AS discovery
+                        LEFT JOIN runs AS run USING (discovery_id)
+                        WHERE run.run_id IS NULL
+                        ORDER BY discovery.discovered_at,
+                                 discovery.discovery_id
+                        FOR UPDATE OF discovery
+                        """
+                    ).fetchall()
+                    for orphan in orphan_discoveries:
+                        _register_run_in_transaction(
+                            connection,
+                            discovery_id=str(orphan[0]),
+                        )
                     terminal = connection.execute(
                         """
                         UPDATE jobs AS job
@@ -1717,7 +1987,11 @@ class PostgresSchedulerRepository:
                             """,
                             (event_type, job_id),
                         )
-                    return len(terminal) + len(pending)
+                    return (
+                        len(orphan_discoveries)
+                        + len(terminal)
+                        + len(pending)
+                    )
         except Exception:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
@@ -1927,6 +2201,13 @@ class PostgresSchedulerRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    _lock_run_effect(connection, run_id=run_id)
+                    if _terminalize_forward_failure(
+                        connection,
+                        run_id=run_id,
+                        failure_code="internal_error",
+                    ):
+                        return
                     row = connection.execute(
                         """
                         UPDATE runs
@@ -1953,7 +2234,13 @@ class PostgresSchedulerRepository:
     def terminalize_run_failure(
         self, *, run_id: str, failure_code: str
     ) -> None:
-        """Fail the runtime and preserve a semantic source in one direction."""
+        """Atomically fail one unstarted v2 run and preserve its source.
+
+        The run event, runtime projection, lifecycle terminal fact, handled
+        inventory and scheduler rows share the same run fence as operation
+        authorization.  Whichever transition obtains the fence first wins;
+        a terminal run can therefore never acquire a new filesystem effect.
+        """
 
         if (
             not isinstance(failure_code, str)
@@ -1961,42 +2248,26 @@ class PostgresSchedulerRepository:
             or len(failure_code.encode("utf-8")) > 128
         ):
             raise ValueError("invalid failure code")
-        from reeloom.runtime.events import RunFailed
-        from reeloom.runtime.state import RunStatus
-        from reeloom.server.runtime_store import PostgresEventStore
-
-        store = PostgresEventStore(self._pool, run_id=run_id)
-        state = store.state
-        if state is None:
-            raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
-        if state.status not in {RunStatus.COMPLETED, RunStatus.FAILED}:
-            store.append(RunFailed(failure_code))
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
-                    row = connection.execute(
-                        """
-                        SELECT d.watch_id, d.source_folder, d.inventory_id
-                        FROM runs AS r
-                        JOIN discoveries AS d USING (discovery_id)
-                        JOIN watch_states AS w ON w.watch_id = d.watch_id
-                        WHERE r.run_id = %s
-                          AND d.folder_generation_id IS NOT NULL
-                          AND w.semantic_v2 = true
-                        """,
-                        (run_id,),
-                    ).fetchone()
-                    if row is not None:
-                        connection.execute(
-                            """
-                            INSERT INTO handled_folder_inventories_v2
-                                (watch_id, source_folder, inventory_id,
-                                 run_id, terminal_status)
-                            VALUES (%s, %s, %s, %s, 'agent_failed')
-                            ON CONFLICT DO NOTHING
-                            """,
-                            (str(row[0]), str(row[1]), str(row[2]), run_id),
+                    _lock_run_effect(connection, run_id=run_id)
+                    if not _terminalize_forward_failure(
+                        connection,
+                        run_id=run_id,
+                        failure_code=failure_code,
+                    ):
+                        exists = connection.execute(
+                            "SELECT 1 FROM runs WHERE run_id = %s",
+                            (run_id,),
+                        ).fetchone()
+                        raise ServerError(
+                            ServerErrorCode.RUN_NOT_FOUND
+                            if exists is None
+                            else ServerErrorCode.INTERACTION_CONFLICT
                         )
+        except ServerError:
+            raise
         except Exception:
             raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
@@ -2149,6 +2420,197 @@ class PostgresSchedulerRepository:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
+
+    def accept_generation_request(
+        self,
+        *,
+        request_id: str,
+        worker_id: str,
+        attempt_count: int,
+        lease_expires_at: datetime,
+        now: datetime,
+    ) -> None:
+        """Atomically force one semantic generation, even if inventory matches."""
+
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        """
+                        SELECT request.watch_id, request.source_folder,
+                               origin.discovery_id,
+                               observation.discovery_id,
+                               request.lineage_key,
+                               origin.config_revision,
+                               origin_discovery.watch_id,
+                               origin_discovery.source_folder,
+                               origin_discovery.inventory_id,
+                               request.expected_inventory_id,
+                               watch.config_revision,
+                               observation.config_revision
+                        FROM generation_requests_v2 AS request
+                        JOIN runs AS origin
+                          ON origin.run_id = request.origin_run_id
+                        JOIN discoveries AS origin_discovery
+                          ON origin_discovery.discovery_id =
+                             origin.discovery_id
+                        JOIN watch_states AS watch
+                          ON watch.watch_id = request.watch_id
+                        JOIN watch_folder_observations AS observation
+                          ON observation.watch_id = request.watch_id
+                         AND observation.folder_name = request.source_folder
+                        WHERE request.request_id = %s
+                          AND request.state = 'leased'
+                          AND request.attempt_count = %s
+                          AND request.lease_owner = %s
+                          AND request.lease_expires_at = %s
+                          AND request.lease_expires_at > %s
+                          AND watch.semantic_v2 = true
+                        FOR UPDATE OF request, observation
+                        """,
+                        (
+                            request_id,
+                            attempt_count,
+                            worker_id,
+                            lease_expires_at,
+                            now,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+                    if (
+                        str(row[0]) != str(row[6])
+                        or str(row[1]) != str(row[7])
+                        or int(row[10]) != int(row[11])
+                        or (
+                            row[9] is not None
+                            and str(row[9]) != str(row[8])
+                        )
+                    ):
+                        raise ServerError(ServerErrorCode.STALE_WATCH_SCAN)
+                    if row[3] is not None and str(row[3]) != str(row[2]):
+                        successor = connection.execute(
+                            """
+                            SELECT discovery.config_revision, run.run_id
+                            FROM discoveries AS discovery
+                            LEFT JOIN runs AS run USING (discovery_id)
+                            WHERE discovery.discovery_id = %s
+                              AND discovery.watch_id = %s
+                              AND discovery.source_folder = %s
+                            FOR UPDATE OF discovery
+                            """,
+                            (str(row[3]), str(row[0]), str(row[1])),
+                        ).fetchone()
+                        if successor is None or int(successor[0]) != int(row[10]):
+                            raise ServerError(ServerErrorCode.STALE_WATCH_SCAN)
+                        if successor[1] is None:
+                            registration = _register_run_in_transaction(
+                                connection,
+                                discovery_id=str(row[3]),
+                            )
+                            successor_run_id = registration.run_id
+                        else:
+                            successor_run_id = str(successor[1])
+                        if row[4] is not None:
+                            lineage = str(row[4])
+                            adopted = connection.execute(
+                                """
+                                UPDATE runs
+                                SET subtitle_acquisition_lineage_key = %s
+                                WHERE run_id = %s
+                                  AND (
+                                      subtitle_acquisition_lineage_key IS NULL
+                                      OR subtitle_acquisition_lineage_key = %s
+                                  )
+                                RETURNING run_id
+                                """,
+                                (lineage, successor_run_id, lineage),
+                            ).fetchone()
+                            if adopted is None:
+                                raise ServerError(ServerErrorCode.RUN_BUSY)
+                        completed = connection.execute(
+                            """
+                            UPDATE generation_requests_v2
+                            SET state = 'completed', accepted_at = %s,
+                                completed_at = %s,
+                                successor_discovery_id = %s,
+                                successor_run_id = %s, warning = NULL,
+                                lease_owner = NULL, lease_expires_at = NULL,
+                                updated_at = %s
+                            WHERE request_id = %s AND state = 'leased'
+                              AND attempt_count = %s AND lease_owner = %s
+                              AND lease_expires_at = %s
+                            RETURNING request_id
+                            """,
+                            (
+                                now,
+                                now,
+                                str(row[3]),
+                                successor_run_id,
+                                now,
+                                request_id,
+                                attempt_count,
+                                worker_id,
+                                lease_expires_at,
+                            ),
+                        ).fetchone()
+                        if completed is None:
+                            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+                        connection.execute(
+                            """
+                            INSERT INTO scheduler_audit
+                                (event_type, subject_id)
+                            VALUES ('generation_request_adopted', %s)
+                            ON CONFLICT (event_type, subject_id) DO NOTHING
+                            """,
+                            (request_id,),
+                        )
+                        return
+                    observation = connection.execute(
+                        """
+                        UPDATE watch_folder_observations
+                        SET discovery_id = NULL, status = 'settling',
+                            first_observed_at = %s, stable_at = NULL,
+                            blocked_reason = NULL, retry_count = 0
+                        WHERE watch_id = %s AND folder_name = %s
+                        RETURNING folder_name
+                        """,
+                        (now, str(row[0]), str(row[1])),
+                    ).fetchone()
+                    accepted = connection.execute(
+                        """
+                        UPDATE generation_requests_v2
+                        SET state = 'accepted', accepted_at = %s,
+                            lease_owner = NULL, lease_expires_at = NULL,
+                            updated_at = %s
+                        WHERE request_id = %s AND state = 'leased'
+                          AND attempt_count = %s AND lease_owner = %s
+                          AND lease_expires_at = %s
+                        RETURNING request_id
+                        """,
+                        (
+                            now,
+                            now,
+                            request_id,
+                            attempt_count,
+                            worker_id,
+                            lease_expires_at,
+                        ),
+                    ).fetchone()
+                    if observation is None or accepted is None:
+                        raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+                    connection.execute(
+                        """
+                        INSERT INTO scheduler_audit (event_type, subject_id)
+                        VALUES ('generation_request_accepted', %s)
+                        ON CONFLICT (event_type, subject_id) DO NOTHING
+                        """,
+                        (request_id,),
+                    )
+        except ServerError:
+            raise
+        except Exception:
+            raise ServerError(ServerErrorCode.DATABASE_UNAVAILABLE) from None
 
     def retry_folder_generation(
         self,

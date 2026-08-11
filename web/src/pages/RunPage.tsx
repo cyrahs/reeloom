@@ -40,8 +40,8 @@ import { HashLink } from "../router";
 import {
   applyResultSchema,
   attentionControlResultSchema,
+  boundRunActionResultSchema,
   folderDispositionResultSchema,
-  forwardExecutionResultSchema,
   interactionsSchema,
   interactionResultSchema,
   lineageSchema,
@@ -49,7 +49,6 @@ import {
   reapplyResultSchema,
   recoveryResultSchema,
   runSchema,
-  subtitleAcquisitionActionResultSchema,
   type Preview,
   type Run,
   type RunEvent,
@@ -93,20 +92,20 @@ type FolderAttempt = {
   approvalId?: string;
   key: string;
 };
-type SubtitleAttempt = {
-  planHash: string;
-  key: string;
-};
 type AttentionAttempt = {
   kind: "retry" | "fail";
   eventSequence: number;
+  key: string;
+};
+type BoundActionAttempt = {
+  actionId: string;
+  message?: string;
   key: string;
 };
 type UncertainAttempt =
   | { type: "action"; value: ActionAttempt }
   | { type: "apply"; value: ApplyAttempt }
   | { type: "recover"; value: RecoveryAttempt }
-  | { type: "subtitle"; value: SubtitleAttempt }
   | { type: "folder"; value: FolderAttempt }
   | { type: "attention"; value: AttentionAttempt };
 
@@ -134,6 +133,19 @@ export function RunPage({ runId }: { runId: string }) {
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.request(`/api/v1/runs/${encodedRunId}`, runSchema),
+    refetchInterval: (query) => {
+      const lifecycle = query.state.data?.lifecycle;
+      if (!lifecycle) return false;
+      return !lifecycle.terminal ||
+        ["queued", "leased", "accepted"].includes(
+          lifecycle.rescan_state ?? "",
+        ) ||
+        ["queued", "leased", "retry_wait"].includes(
+          lifecycle.housekeeping.state ?? "",
+        )
+        ? 2_000
+        : false;
+    },
   });
   const lineage = useQuery({
     queryKey: ["lineage", runId],
@@ -272,6 +284,32 @@ export function RunPage({ runId }: { runId: string }) {
     }
   };
 
+  const boundAction = useMutation({
+    mutationFn: async ({ actionId, message, key }: BoundActionAttempt) =>
+      api.request(
+        `/api/v1/runs/${encodedRunId}/actions/${encodeURIComponent(actionId)}`,
+        boundRunActionResultSchema,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": key },
+          body: { message: message ?? null },
+        },
+      ),
+    onSuccess: async (result) => {
+      setActionNotice(
+        result.assistant_reply ??
+          (result.kind === "request_rescan"
+            ? "已提交当前来源目录的重新扫描请求。"
+            : "请求已按服务端当前状态处理。"),
+      );
+      await invalidateRun();
+      if (result.kind === "delete_run") window.location.hash = "/";
+    },
+    onError: async () => {
+      await invalidateRun();
+    },
+  });
+
   const action = useMutation({
     mutationFn: async ({
       kind,
@@ -403,55 +441,6 @@ export function RunPage({ runId }: { runId: string }) {
     },
   });
 
-  const forwardExecution = useMutation({
-    mutationFn: async ({ planHash }: { planHash: string }) =>
-      api.request(
-        `/api/v1/runs/${encodedRunId}/execute`,
-        forwardExecutionResultSchema,
-        {
-          method: "POST",
-          headers: { "If-Match": planHash },
-          body: {},
-        },
-      ),
-    onSuccess: async () => {
-      closeApprove();
-      setActionNotice(
-        "执行已按当前文件状态结算；已完成项不会因其他项失败而回滚。",
-      );
-      await invalidateRun();
-    },
-    onError: async (error) => {
-      closeApprove();
-      if (error instanceof ApiError && error.code === "network_uncertain") {
-        setActionNotice(
-          "请求结果不确定；服务端会用同一 operation 自动对账，页面正在重新读取。",
-        );
-      }
-      await invalidateRun();
-    },
-  });
-
-  const forwardRescan = useMutation({
-    mutationFn: async ({ planHash }: { planHash: string }) =>
-      api.request(
-        `/api/v1/runs/${encodedRunId}/rescan`,
-        forwardExecutionResultSchema,
-        {
-          method: "POST",
-          headers: { "If-Match": planHash },
-          body: {},
-        },
-      ),
-    onSuccess: async () => {
-      setActionNotice("已提交当前来源目录的重新扫描请求。");
-      await invalidateRun();
-    },
-    onError: async () => {
-      await invalidateRun();
-    },
-  });
-
   const folderDisposition = useMutation({
     mutationFn: async ({
       planHash,
@@ -528,37 +517,6 @@ export function RunPage({ runId }: { runId: string }) {
     },
   });
 
-  const subtitleAcquisition = useMutation({
-    mutationFn: async ({ planHash, key }: SubtitleAttempt) =>
-      api.request(
-        `/api/v1/runs/${encodedRunId}/subtitle-acquisition/approve`,
-        subtitleAcquisitionActionResultSchema,
-        {
-          method: "POST",
-          headers: {
-            "If-Match": planHash,
-            "Idempotency-Key": key,
-          },
-          body: {},
-        },
-      ),
-    onSuccess: async () => {
-      setUncertainAttempt(null);
-      await invalidateRun();
-    },
-    onError: async (error, attempt) => {
-      if (error instanceof ApiError && error.code === "network_uncertain") {
-        setActionNotice(
-          "字幕获取结果不确定；已读取服务端持久化状态，只允许复用原请求键。",
-        );
-        await reconcileUncertain({ type: "subtitle", value: attempt });
-      } else {
-        setUncertainAttempt(null);
-        await invalidateRun();
-      }
-    },
-  });
-
   if (run.isLoading) {
     return <main className="page"><p>正在读取运行…</p></main>;
   }
@@ -566,7 +524,13 @@ export function RunPage({ runId }: { runId: string }) {
     return <main className="page"><PageError code={run.error.code} /></main>;
   }
   if (!run.data) return null;
-  const available = new Set(run.data.available_actions);
+  const currentControl = run.data.lifecycle != null;
+  const currentActions = new Map(
+    (run.data.lifecycle?.actions ?? []).map((item) => [item.kind, item]),
+  );
+  const available = new Set(
+    currentControl ? [] : run.data.available_actions,
+  );
   const displayStatus = runStatusForDisplay(
     run.data.status,
     run.data.recovery_approval_id,
@@ -585,23 +549,21 @@ export function RunPage({ runId }: { runId: string }) {
       run.data.plan_hash,
       currentPreview?.plan_hash ?? null,
     );
-  const canExecuteForward =
-    available.has("execute") &&
-    canApproveCurrentPlan(
-      run.data.plan_hash,
-      currentPreview?.plan_hash ?? null,
-    );
+  const canExecuteBoundMedia =
+    currentActions.has("execute") &&
+    run.data.lifecycle?.active_plan?.family === "media_move" &&
+    currentPreview != null;
+  const executeIsSubtitle =
+    run.data.lifecycle?.active_plan?.family === "subtitle_acquire";
   const blocked =
     resyncing ||
     uncertainAttempt !== null ||
     action.isPending ||
     apply.isPending ||
-    forwardExecution.isPending ||
-    forwardRescan.isPending ||
     recover.isPending ||
-    subtitleAcquisition.isPending ||
     folderDisposition.isPending ||
-    attentionControl.isPending;
+    attentionControl.isPending ||
+    boundAction.isPending;
 
   const retryUncertain = () => {
     if (!uncertainAttempt || resyncing) return;
@@ -611,8 +573,6 @@ export function RunPage({ runId }: { runId: string }) {
       apply.mutate(uncertainAttempt.value);
     } else if (uncertainAttempt.type === "recover") {
       recover.mutate(uncertainAttempt.value);
-    } else if (uncertainAttempt.type === "subtitle") {
-      subtitleAcquisition.mutate(uncertainAttempt.value);
     } else if (uncertainAttempt.type === "attention") {
       attentionControl.mutate(uncertainAttempt.value);
     } else {
@@ -941,7 +901,6 @@ export function RunPage({ runId }: { runId: string }) {
                     action.isPending ||
                     apply.isPending ||
                     recover.isPending ||
-                    subtitleAcquisition.isPending ||
                     folderDisposition.isPending ||
                     attentionControl.isPending
                   }
@@ -951,7 +910,9 @@ export function RunPage({ runId }: { runId: string }) {
                 </button>
               </div>
             ) : null}
-            {run.data.recovery_approval_id && available.has("recover") ? (
+            {!currentControl &&
+            run.data.recovery_approval_id &&
+            available.has("recover") ? (
               <div className="recovery-box">
                 <strong>需要恢复</strong>
                 <p>
@@ -977,6 +938,111 @@ export function RunPage({ runId }: { runId: string }) {
                 role="group"
                 aria-label="可用操作"
               >
+                {currentActions.has("retry_agent") ? (
+                  <button
+                    className="secondary wide"
+                    disabled={blocked}
+                    onClick={() =>
+                      boundAction.mutate({
+                        actionId: currentActions.get("retry_agent")!.action_id,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    {boundAction.isPending ? "正在安排重试…" : "重新尝试"}
+                  </button>
+                ) : null}
+                {currentActions.has("mark_failed") ? (
+                  <button
+                    className="danger-button wide"
+                    disabled={blocked}
+                    onClick={() =>
+                      boundAction.mutate({
+                        actionId: currentActions.get("mark_failed")!.action_id,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    标记失败
+                  </button>
+                ) : null}
+                {(["ask_agent", "revise_plan"] as const).map((kind) => {
+                  const current = currentActions.get(kind);
+                  if (!current) return null;
+                  return (
+                    <InteractionForm
+                      key={kind}
+                      kind={kind === "ask_agent" ? "question" : "revision"}
+                      pending={boundAction.isPending || blocked}
+                      onSubmit={(message) =>
+                        boundAction.mutate({
+                          actionId: current.action_id,
+                          message,
+                          key: idempotencyKey(),
+                        })
+                      }
+                    />
+                  );
+                })}
+                {currentActions.has("execute") ? (
+                  <button
+                    ref={approveButtonRef}
+                    className="primary wide"
+                    disabled={blocked}
+                    onClick={() => {
+                      if (
+                        run.data.lifecycle?.active_plan?.family ===
+                          "media_move"
+                      ) {
+                        setApproveOpen(true);
+                        return;
+                      }
+                      boundAction.mutate({
+                        actionId: currentActions.get("execute")!.action_id,
+                        key: idempotencyKey(),
+                      });
+                    }}
+                  >
+                    {executeIsSubtitle ? "审批并获取字幕" : "审批并执行此计划"}
+                  </button>
+                ) : null}
+                {currentActions.has("request_rescan") ? (
+                  <button
+                    className="secondary wide"
+                    disabled={blocked}
+                    onClick={() =>
+                      boundAction.mutate({
+                        actionId:
+                          currentActions.get("request_rescan")!.action_id,
+                        key: idempotencyKey(),
+                      })
+                    }
+                  >
+                    {boundAction.isPending
+                      ? "正在提交重新扫描…"
+                      : "重新扫描当前目录"}
+                  </button>
+                ) : null}
+                {run.data.lifecycle?.housekeeping.state === "warning" ? (
+                  <div className="notice" role="status">
+                    媒体操作已经终结，但来源文件夹收尾失败：
+                    {run.data.lifecycle.housekeeping.warning ?? "未知原因"}
+                  </div>
+                ) : null}
+                {currentActions.has("delete_run") ? (
+                  <div className="danger-zone">
+                    <p className="danger-zone-note">
+                      仅隐藏控制台记录，不改动媒体文件；点两次确认，且无法撤销。
+                    </p>
+                    <RunDeletionAction
+                      runId={runId}
+                      actionId={currentActions.get("delete_run")!.action_id}
+                      disabled={blocked}
+                      redirectOnSuccess
+                      className="danger-outline wide"
+                    />
+                  </div>
+                ) : null}
                 {available.has("retry_run") ? (
                   <button
                     className="secondary wide"
@@ -1040,33 +1106,6 @@ export function RunPage({ runId }: { runId: string }) {
                     审批并执行此计划
                   </button>
                 ) : null}
-                {canExecuteForward && currentPreview ? (
-                  <button
-                    ref={canApprove ? undefined : approveButtonRef}
-                    className="primary wide"
-                    disabled={blocked}
-                    onClick={() => setApproveOpen(true)}
-                  >
-                    审批并执行此计划
-                  </button>
-                ) : null}
-                {available.has("approve_subtitle_acquisition") &&
-                run.data.subtitle_acquisition ? (
-                  <button
-                    className="primary wide"
-                    disabled={blocked || subtitleAcquisition.isPending}
-                    onClick={() =>
-                      subtitleAcquisition.mutate({
-                        planHash: run.data.subtitle_acquisition!.plan_hash,
-                        key: idempotencyKey(),
-                      })
-                    }
-                  >
-                    {subtitleAcquisition.isPending
-                      ? "正在获取并发布字幕…"
-                      : "审批并获取字幕"}
-                  </button>
-                ) : null}
                 {run.data.folder_disposition &&
                 (available.has("settle_folder") ||
                   available.has("dispose_failed_folder")) ? (
@@ -1101,21 +1140,6 @@ export function RunPage({ runId }: { runId: string }) {
                     恢复文件夹事务
                   </button>
                 ) : null}
-                {available.has("rescan") && run.data.plan_hash ? (
-                  <button
-                    className="secondary wide"
-                    disabled={blocked || forwardRescan.isPending}
-                    onClick={() =>
-                      forwardRescan.mutate({
-                        planHash: run.data.plan_hash!,
-                      })
-                    }
-                  >
-                    {forwardRescan.isPending
-                      ? "正在提交重新扫描…"
-                      : "重新扫描当前目录"}
-                  </button>
-                ) : null}
                 {available.has("delete_run") ? (
                   <div className="danger-zone">
                     <p className="danger-zone-note">
@@ -1137,14 +1161,11 @@ export function RunPage({ runId }: { runId: string }) {
             {action.error instanceof ApiError ? (
               <PageError code={action.error.code} />
             ) : null}
+            {boundAction.error instanceof ApiError ? (
+              <PageError code={boundAction.error.code} />
+            ) : null}
             {apply.error instanceof ApiError ? (
               <PageError code={apply.error.code} />
-            ) : null}
-            {forwardExecution.error instanceof ApiError ? (
-              <PageError code={forwardExecution.error.code} />
-            ) : null}
-            {forwardRescan.error instanceof ApiError ? (
-              <PageError code={forwardRescan.error.code} />
             ) : null}
             {recover.error instanceof ApiError ? (
               <PageError
@@ -1154,9 +1175,6 @@ export function RunPage({ runId }: { runId: string }) {
             ) : null}
             {folderDisposition.error instanceof ApiError ? (
               <PageError code={folderDisposition.error.code} />
-            ) : null}
-            {subtitleAcquisition.error instanceof ApiError ? (
-              <PageError code={subtitleAcquisition.error.code} />
             ) : null}
             {attentionControl.error instanceof ApiError ? (
               <PageError code={attentionControl.error.code} />
@@ -1185,20 +1203,22 @@ export function RunPage({ runId }: { runId: string }) {
         </aside>
       </div>
 
-      {approveOpen && currentPreview && (canApprove || canExecuteForward) ? (
+      {approveOpen && currentPreview && (canApprove || canExecuteBoundMedia) ? (
         <ApproveDialog
           preview={currentPreview}
           folderDisposition={
-            canExecuteForward ? null : run.data.folder_disposition
+            canExecuteBoundMedia ? null : run.data.folder_disposition
           }
-          forwardOnly={canExecuteForward}
-          pending={apply.isPending || forwardExecution.isPending || blocked}
+          forwardOnly={canExecuteBoundMedia}
+          pending={apply.isPending || boundAction.isPending || blocked}
           onCancel={closeApprove}
           onConfirm={() => {
-            if (canExecuteForward) {
-              forwardExecution.mutate({
-                planHash: currentPreview.plan_hash,
+            if (canExecuteBoundMedia) {
+              boundAction.mutate({
+                actionId: currentActions.get("execute")!.action_id,
+                key: idempotencyKey(),
               });
+              closeApprove();
             } else {
               apply.mutate({
                 planHash: currentPreview.plan_hash,

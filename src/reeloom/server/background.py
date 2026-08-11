@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -39,6 +40,9 @@ from reeloom.server.folder_housekeeping_v2 import FolderHousekeepingWorker
 from reeloom.server.notification_delivery import (
     ConfiguredNotificationDelivery,
 )
+from reeloom.server.notification_intents import (
+    PostgresNotificationIntentWorker,
+)
 from reeloom.server.scheduler_repository import (
     PostgresSchedulerRepository,
 )
@@ -72,14 +76,16 @@ class BackgroundServices:
     configs: PostgresConfigRepository
     scheduler: PostgresSchedulerRepository
     worker: InitialAgentWorker
-    apply: ApplyCoordinator
+    instance_guard: Callable[[], None] | None = None
+    apply: ApplyCoordinator | None = None
     folder_dispositions: FolderDispositionCoordinator | None = None
     notifications: ConfiguredNotificationDelivery | None = None
+    notification_intents: PostgresNotificationIntentWorker | None = None
     subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
     forward_execution: ForwardExecutionCoordinator | None = None
     forward_rescans: ForwardRescanWorker | None = None
     folder_housekeeping_v2: FolderHousekeepingWorker | None = None
-    legacy_effects_enabled: bool = True
+    legacy_effects_enabled: bool = False
     watcher: NoFollowWatcher = NoFollowWatcher()
     idle_seconds: float = 0.25
     _stop: threading.Event = field(
@@ -130,6 +136,8 @@ class BackgroundServices:
         while not self._stop.is_set():
             progressed = False
             try:
+                if self.instance_guard is not None:
+                    self.instance_guard()
                 config = self.configs.head()
                 if config is not None:
                     self._configure(config)
@@ -150,6 +158,11 @@ class BackgroundServices:
                     progressed = True
                     self._execute_job(claimed.job_id, claimed.run_id)
                 if self.notifications is not None:
+                    if self.notification_intents is not None:
+                        progressed = (
+                            self.notification_intents.process_one()
+                            or progressed
+                        )
                     progressed = self.notifications.run_once() or progressed
                 if self.forward_execution is not None:
                     progressed = (
@@ -173,7 +186,10 @@ class BackgroundServices:
                 if (
                     isinstance(error, ServerError)
                     and error.code
-                    is ServerErrorCode.DATABASE_UNAVAILABLE
+                    in {
+                        ServerErrorCode.DATABASE_UNAVAILABLE,
+                        ServerErrorCode.INSTANCE_LOCK_LOST,
+                    }
                 ):
                     self._fatal.set()
                     self._stop.set()
@@ -307,6 +323,10 @@ class BackgroundServices:
                 work.kind is AgentWorkKind.SUBTITLE_ACQUISITION
             )
             if subtitle_work:
+                # M14.6 plan handoff owns the planning-job terminal write.
+                job_already_settled = (
+                    getattr(self.worker, "run_controls", None) is not None
+                )
                 if self.subtitle_acquisitions is None:
                     raise RuntimeError(
                         "subtitle acquisition service unavailable"
@@ -333,15 +353,20 @@ class BackgroundServices:
                     watch.subtitle_acquisition.policy.value
                     == "automatic"
                 ):
-                    request = self.subtitle_acquisitions.approve_and_execute(
+                    self.subtitle_acquisitions.approve_and_execute(
                         run_id=run_id,
                         plan_hash=plan_hash,
                         automatic=True,
                     )
-                    job_already_settled = request.status in {
-                        "published",
-                        "blocked",
-                    }
+                    # The first execution attempt belongs to the same
+                    # automatic job.  The periodic reconciler is only the
+                    # crash/restart safety net; waiting for its 30-second
+                    # cadence here makes a healthy operation look stuck in
+                    # ``authorized`` immediately after Agent completion.
+                    self.subtitle_acquisitions.reconcile_approved()
+                    # Both the v1 coordinator and the v2 control handoff own
+                    # their planning-job settlement in automatic mode.
+                    job_already_settled = True
                 succeeded = True
                 return
             config = self.configs.get(
@@ -355,6 +380,11 @@ class BackgroundServices:
                 )
             )
             if forward_v2:
+                # The canonical effect head was committed by the Agent worker;
+                # effect execution now has an independent durable lease.
+                job_already_settled = (
+                    getattr(self.worker, "run_controls", None) is not None
+                )
                 if config.apply_policy is ApplyPolicy.AUTOMATIC:
                     self.forward_execution.execute_automatic(
                         run_id=run_id,
@@ -362,7 +392,7 @@ class BackgroundServices:
                     )
                 succeeded = True
                 return
-            if not self.legacy_effects_enabled:
+            if not self.legacy_effects_enabled or self.apply is None:
                 raise RuntimeError("legacy_effect_superseded")
             disposition = (
                 None
@@ -567,7 +597,7 @@ class BackgroundServices:
                         succeeded = True
                     else:
                         retry = False
-            _LOG.error(
+            _LOG.exception(
                 "agent_job_failed run_id=%s error_type=%s error_code=%s "
                 "error_context=%s",
                 run_id,

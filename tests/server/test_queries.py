@@ -29,6 +29,7 @@ from reeloom.kernel.plan_review import (
     PlanReviewVerification,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.api_models import RunResponse
 from reeloom.server.queries import PostgresQueries, _safe_event
 
 
@@ -38,6 +39,9 @@ class _Cursor:
 
     def fetchone(self) -> tuple[object, ...]:
         return self._row
+
+    def fetchall(self) -> tuple[tuple[object, ...], ...]:
+        return (self._row,)
 
 
 class _Connection:
@@ -122,6 +126,80 @@ def _completed_run_row(
     return tuple(row)
 
 
+def test_list_runs_uses_canonical_housekeeping_projection() -> None:
+    row: list[object] = [None] * 29
+    row[:8] = (
+        "run-housekeeping",
+        "failed",
+        "anime",
+        datetime(2026, 8, 9, tzinfo=UTC),
+        "failed",
+        None,
+        "incoming",
+        True,
+    )
+    row[8] = "forward_v2"
+    row[9] = 1
+    row[17] = "stopped"
+    row[18] = 2
+    row[19] = "failed"
+    row[21] = True
+    row[22] = 0
+    row[23] = True
+    row[24] = "completed"
+    row[26] = "agent_failed"
+    row[27] = "warning"
+    row[28] = "archive_failed"
+
+    items = PostgresQueries(
+        _Pool(tuple(row), "folder_housekeeping_v2")  # type: ignore[arg-type]
+    ).list_runs(before=None, limit=10)
+
+    assert len(items) == 1
+    assert items[0]["status"] == "failed"
+    assert items[0]["available_actions"] == ["delete_run"]
+    lifecycle = items[0]["lifecycle"]
+    assert isinstance(lifecycle, dict)
+    assert lifecycle["housekeeping"] == {
+        "state": "warning",
+        "warning": "archive_failed",
+    }
+
+
+def test_list_runs_uses_real_active_interaction_fact() -> None:
+    row: list[object] = [None] * 30
+    row[:8] = (
+        "run-active-interaction",
+        "awaiting_approval",
+        "anime",
+        datetime(2026, 8, 9, tzinfo=UTC),
+        "awaiting_approval",
+        "sha256:" + "a" * 64,
+        "incoming",
+        False,
+    )
+    row[8] = "forward_v2"
+    row[9] = 1
+    row[10] = "media_move"
+    row[11] = row[5]
+    row[12] = "manual"
+    row[17] = "stopped"
+    row[18] = 2
+    row[20] = True
+    row[22] = 0
+    row[24] = "completed"
+    row[29] = True
+
+    items = PostgresQueries(
+        _Pool(  # type: ignore[arg-type]
+            tuple(row), "FROM interactions AS active_interaction"
+        )
+    ).list_runs(before=None, limit=10)
+
+    assert len(items) == 1
+    assert items[0]["lifecycle"]["actions"] == []
+
+
 def test_v2_run_uses_operation_actions_and_hides_legacy_recovery() -> None:
     row = list(_completed_run_row(layout_matches_current_plan=False))
     row[1] = "awaiting_approval"
@@ -176,6 +254,123 @@ def test_v2_run_uses_operation_actions_and_hides_legacy_recovery() -> None:
         "rescan_state": "queued",
         "successor_run_id": None,
     }
+
+
+def test_generation_accepted_state_validates_through_run_api_schema() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[50] = "operation:m14"
+    row[51] = row[10]
+    row[52] = "partial"
+    row[53] = 1
+    row[54] = ["collision"]
+    row[55] = [
+        {
+            "source_id": "video:1",
+            "outcome": "collision",
+            "diagnostic": "collision",
+        }
+    ]
+    row[56] = []
+    row[57] = True
+    row[58] = "accepted"
+    row[60] = True
+    row[62] = "media_move"
+    row.extend(
+        [
+            "forward_v2",
+            2,
+            "media_move",
+            row[10],
+            "manual",
+            "operation:m14",
+            None,
+            None,
+            None,
+        ]
+    )
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    response = RunResponse.model_validate(run)
+    assert response.execution is not None
+    assert response.execution.rescan_state == "accepted"
+    assert response.lifecycle.rescan_state == "accepted"
+
+
+def test_canonical_control_overrides_stale_agent_approval_projection() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "awaiting_approval"
+    row[3] = "awaiting_approval"
+    row[4] = "stopped"
+    row[50] = "operation:m14"
+    row[51] = row[10]
+    row[52] = "completed"
+    row[53] = 1
+    row[54] = ["satisfied"]
+    row[55] = [
+        {
+            "source_id": "video:1",
+            "outcome": "satisfied",
+            "diagnostic": "checked_rename",
+        }
+    ]
+    row[56] = []
+    row[57] = False
+    row[60] = True
+    row.extend(
+        [
+            "forward_v2",
+            2,
+            "media_move",
+            row[10],
+            "manual",
+            "operation:m14",
+            None,
+            None,
+            None,
+        ]
+    )
+    queries = PostgresQueries(cast(ConnectionPool, _Pool(tuple(row))))
+
+    run = queries.get_run("run-1")
+
+    assert run is not None
+    assert run["status"] == "completed"
+    assert run["phase"] == "completed"
+    assert run["available_actions"] == ["delete_run"]
+    assert run["lifecycle"]["state"] == "completed"
+
+
+def test_active_interaction_suppresses_canonical_run_actions() -> None:
+    row = list(_completed_run_row(layout_matches_current_plan=False))
+    row[1] = "awaiting_approval"
+    row[3] = "awaiting_approval"
+    row[60] = True
+    row.extend(
+        [
+            "forward_v2",
+            2,
+            "media_move",
+            row[10],
+            "manual",
+            None,
+            None,
+            None,
+            None,
+            True,
+        ]
+    )
+
+    run = PostgresQueries(
+        cast(ConnectionPool, _Pool(tuple(row)))
+    ).get_run("run-1")
+
+    assert run is not None
+    assert run["lifecycle"]["state"] == "awaiting_approval"
+    assert run["lifecycle"]["actions"] == []
+    assert run["available_actions"] == []
 
 
 def test_manual_v2_plan_exposes_only_shared_execute_action() -> None:

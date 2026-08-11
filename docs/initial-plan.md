@@ -4,7 +4,8 @@
 
 日期：2026-08-08
 
-当前进度：M0-M13、M14.0-M14.5 已完成。M14.5 已收口字幕垂直链和跨层测试。
+当前进度：M0-M13、M14.0-M14.6 已完成。M14.6 已收口运行 lifecycle、控制动作、
+通知与 successor generation 的统一真相。
 v1 effect 历史保留只读，生产写路径已关闭；其物理代码删除须等部署后的稳定观察窗口结束。
 M0 建立纯领域契约；M1 建立 typed runtime events、预算和真实 Agents SDK tool loop；M2
 建立安全 scanner、immutable
@@ -785,6 +786,59 @@ best-effort housekeeping，不再决定 media operation 终态。
     消费 legacy subtitle scan outbox，successor 不会再次开放字幕获取工具。
   - API/Web contract 对每种 `available_action` 做 schema 和命令准入验证；自动模式无待审批或
     recovery UI，terminal subtitle operation 显示具体 outcome、successor、rescan/delete。
+- M14.6（完成）：控制面不再把 `runs.status`、Agent phase、旧 approval/recovery 与 operation
+  状态分别解释为当前事实。新增显式、不可变的 `run_lifecycle_controls_v2` effect mode/head，
+  由一个纯 lifecycle projector 生成兼容状态和绑定 current revision 的 opaque action；API
+  只能执行服务端刚刚公布的 action ID，浏览器不再提交 plan、approval 或自动审批选择。
+  - media、subtitle、plan-only、人工结束和 operation lease exhaustion 统一写 terminal
+    projection、handled inventory、job/run 状态与 notification intent；terminal operation 不会
+    因旧 Agent phase 再显示“等待审批”，自动模式也不会产生 plan-ready 通知。
+    正在执行的 media/subtitle operation 使用数据库 CAS heartbeat 续约；慢 FUSE effect 不会因
+    固定一分钟 lease 到期而被另一实例并发接管，续约丢失则不伪造结算，仍由当前状态收敛。
+  - `generation_requests_v2` 取代“重置旧 outbox”语义；每个请求有 generation nonce，watcher
+    可在来源 inventory 未变时接纳一次 fresh discovery，并在注册 successor 时原子绑定 lineage。
+    已排队的 rescan 不重复显示动作，用户始终保留删除出口。
+  - migration 0041 将既有 run 显式分类为 `forward_v2` 或 `legacy_read_only`。0042 以 additive
+    repair 终结 0041 后遗留的无 operation failed run、取消已绑定 operation 的陈旧 plan-ready，
+    并把因同目录 generation 竞争而未迁入的 media rescan 显式记录为 blocked，而不是静默丢弃。
+    0043 进一步修正 0039 为 v1 历史补 binding 导致的误分类：所有非 semantic-v2 snapshot
+    永久隔离为 `legacy_read_only`，取消旧通知和 coordination lock，不重新执行或修改文件。
+    0044 终结在两次分类之间逃逸的 active interaction，确保 legacy 历史恢复 delete 出口；服务
+    在 migration 前先获取数据库 lifetime instance lock，旧实例仍运行时不得修改 schema 或事实；
+    后台与 API effect 在每次循环/命令前验证同一锁会话，连接丢失便 fail-stop，禁止旧实例透明
+    重连后与新实例并发执行。
+    旧 M13/M14 字幕
+    publication 只迁移为普通 generation handoff；同一 watch/source 存在竞争 lineage 时隔离并
+    fail closed，不恢复旧文件系统 effect、不伪造 approval/settlement，也不修改媒体文件。
+    旧 media rescan 同样迁入 `generation_requests_v2`；quarantine run 的未启动 operation 直接
+    标为 `superseded`，active claim 必须精确 join 当前 `forward_v2` control，不能穿透隔离。
+  - production composition 不再构造 v1 filesystem executor、journal 或 folder disposition
+    coordinator；旧 route 仅返回 `legacy_effect_superseded`，旧实现不进入 production effect
+    graph。已有 canonical lifecycle 的 run 也拒绝旧 interaction/retry/fail/reapply 命令，所有
+    当前控制动作只能提交 read model 返回的 opaque action ID。
+  - durable notification intent 在投影前重新读取 current control revision；过期、自动审批、
+    quarantined 或已经绑定 authorized/running operation 的 plan-ready intent 被取消，避免升级后
+    补发陈旧“等待审批”。字幕通知依据每个 watch 的 subtitle policy，不能被全局 media
+    apply policy 误抑制；legacy-read-only request 会显式终结，不再由自动 reconciler 周期签发
+    approval。投影从 canonical
+    plan 计算真实 move/member 数量；无法读取或验证的 poison intent 进入 `dead`，不会堵住队列。
+    manual subtitle lifecycle 只公开 execute，不把 media-only revision 伪装为可执行动作；字幕
+    successor 的兼容字段直接投影 canonical generation 状态。watch 配置 revision 改变时，旧
+    generation 先等待 watcher 生成当前 revision 的 observation，再绑定同一 durable 请求，不把
+    历史 origin revision 当作永久 freshness 条件。0045 允许 active marker publisher 把 bounded
+    publication reason 持久化为 v2 failure diagnostic；完成通知从 canonical subtitle plan 计算
+    member 数量，而不是把整次 publication operation 误计为一个文件。
+  - 无 operation 的 plan-only、Agent/internal failure 和用户结束都必须先写 planning terminal
+    fact 与 handled inventory，再公开 delete action；旧 effect/recovery endpoint 只保留不可见
+    的兼容处理，不进入公开 OpenAPI。终态写入与 operation authorization 使用同一 run fence，
+    两者只能有一个赢家；损坏的 automatic media/subtitle plan、config 或 approval head 有界终结
+    并让出队首。operation 结算若遇到同目录 active generation，不回滚 effect 终态，而是保存
+    当前 operation 自己的 blocked generation 诊断；active owner 结束后只重投 generation。
+  - 强制验收覆盖 pure lifecycle 全矩阵、opaque action 过期、semantic watcher→Agent→media/
+    subtitle operation→generation successor 的 production PostgreSQL journey、lease exhaustion、
+    list/detail/API schema 一致性、通知重校验，以及 production graph 的 legacy constructor 闸门。
+    heartbeat 验收还覆盖续约调用永久不返回：数据库 timeout 与有界线程退出必须让 worker 可继续
+    调度；macOS E2E 使用解析后的真实临时目录，标准命令无需额外 `TMPDIR` 绕过 symlink 检查。
 
 完整决策、已接受的完整性取舍与 M14.0 副作用边界见
 [ADR 0008](adr/0008-m14-forward-convergence.md)。

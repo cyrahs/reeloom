@@ -243,6 +243,77 @@ run，不能推导 folder generation retry 或 fail housekeeping。lease 重领�
 approval、共享 operation、marker 发布与 read model/API schema；禁止用手工 v1 RootBinding
 替代这条测试。InMemory/PostgreSQL semantic discovery 必须遵守相同契约。
 
+## M14.6 控制面单一真相
+
+M14.5 虽然统一了文件系统 effect，read model、通知、浏览器 action、planning job 与
+successor outbox 仍可能分别依据 `runs.status`、Agent phase、旧 approval 或 operation
+状态。这允许已经 terminal 的 operation 被陈旧 phase 重新展示成“等待审批”，也允许一个
+无效恢复入口遮住删除/重扫出口。
+
+M14.6 增加显式 `run_lifecycle_controls_v2` fact：run 的 effect mode、current plan family/hash、
+policy、operation binding 和单调 revision 只能在同一个 run advisory lock 下切换。当前
+operation 一旦绑定便不可替换；operation terminal fact 高于历史 Agent projection。plan-only
+和人工结束使用独立 immutable planning terminal fact，不制造空 operation 或虚假审批。
+终态 transition 与 operation authorization 使用同一 `reeloom-run:<run_id>` advisory fence，
+并在一个事务中写 runtime event/projection、planning terminal、handled inventory 和 run/job；
+并发时只能有一个 transition 获胜。
+
+所有 active v2 control surface 使用同一个纯 lifecycle projector。projector 返回兼容状态、
+终态、successor/rescan 状态和绑定当前 facts 的 opaque action ID；命令入口重新读取同一
+projection，action 已过期便返回 `action_stale`。浏览器不能自行选择 policy、plan hash 或
+approval ID。已有 canonical lifecycle 的 run 通过旧 interaction/retry/fail/reapply 入口时
+返回 `action_api_required`；旧 filesystem API 在迁移观察期只返回
+`legacy_effect_superseded`，production composition
+不再构造其 executor、journal 和 folder transaction graph。
+
+fresh scan 使用 `generation_requests_v2`。generation nonce 明确授权 watcher 对相同 semantic
+inventory 生成一次 successor，因而“修复目标侧 collision 后重扫”不再是 no-op；successor
+注册和 lineage handoff 在数据库事务中完成。旧 subtitle outbox 与旧 media rescan 都只
+backfill 为这种普通 generation intent，竞争 lineage 隔离而不猜测。quarantine run 的旧
+authorized/running operation 被数据库终结为 `superseded`，claim 必须绑定 exact forward-v2
+control。migration 只处理数据库事实，不访问媒体根。
+
+通知改为 durable semantic intent，并在真正投影前重读 control revision。manual plan-ready、
+plan-only generated、operation terminal 与 attention 使用同一 lifecycle；automatic、stale 或
+legacy-quarantined plan-ready intent 必须取消。由此 Dashboard、详情页和 Telegram 不再对同一
+run 给出互相矛盾的状态。字幕 plan-ready 使用 watch 自己的字幕审批策略，不再从全局 media
+apply policy 反推。plan-ready 计数来自重新验证的 canonical plan；无法投影的 durable
+intent 进入 `dead`，不会成为全局队首阻塞。无 operation 的终态必须先写 planning terminal
+fact 与 handled inventory，projector 才能公开 delete action。
+只要 control 已绑定 operation，审批即已消费，queued/retry_wait 的 plan-ready 也必须在最终发送
+边界取消；0042 对已应用 0041 的数据库执行相同修复，并将目录 generation 冲突保留为可诊断的
+blocked request。
+
+0043 修复 0039/0041 对历史 media binding 的组合误判：非 semantic-v2 snapshot 即使存在由
+旧 `plan_lineage` 补出的 binding，也只能是 `legacy_read_only`。迁移取消其 plan-ready、清除
+旧 coordination lock，并保留完成/失败历史；不会加载旧 plan 或产生文件系统 effect。旧的
+planned/approved 字幕 request 同步变成只读 blocked 历史，active automatic reconciler 只查询
+`forward_v2` control。
+
+0044 终结在 0041 误分类、0043 重分类之间逃逸的 active interaction，使该类 v1 历史重新满足
+只读删除准入；interaction 只保留 `legacy_effect_superseded` 审计结果，不恢复旧 effect。服务启动
+必须先取得数据库 lifetime instance lock，之后才允许执行 migration，避免旧 worker 与一次性
+quarantine 并发。锁使用独立 PostgreSQL session 持有；background cycle、API effect command 与
+health 都必须验证该 session 仍持有 exact advisory lock。session 丢失是不可恢复的进程级
+fail-stop 条件，不允许原实例透明重连或重新获取锁。
+
+operation worker 使用短期数据库 lease，并在 effect 执行期间以 exact operation/attempt/owner/
+expiry CAS 续约。另一实例只有在最新 lease 真正过期后才能接管；heartbeat 丢失时当前 worker
+不得写 terminal settlement，重启仍按 source/destination 当前状态前向收敛。续约 SQL 使用有界
+statement/lock timeout，heartbeat 退出也使用有界 join；数据库调用失联不能永久阻塞执行线程。
+
+operation terminal settlement 与 generation enqueue 也采用前向边界：同一 watch/source 已有
+active generation 时，operation result、handled inventory 和 run/job 终态仍在原事务提交，新
+operation 获得自己的 `blocked(active_generation_conflict)` request。用户或后台随后只重投该
+generation，不重新消费审批或执行文件 effect。automatic subtitle 的确定性审批损坏与 media
+使用相同 planning terminalizer；只有数据库存储失败保留为可重试基础设施故障。
+
+generation 的 origin revision 只用于审计，不是后继扫描的永久 freshness 条件。配置变更后，
+watcher 必须先把 folder observation 刷新到 current watch revision；同一 generation request 随后
+只校验 current observation/watch 一致并继续前向 handoff。字幕 publication 的 bounded reason
+使用 schema-version 2 diagnostic 持久化；完成通知通过 canonical subtitle plan 重新验证并统计
+member，不能以 operation outcome 数量代替发布文件数。
+
 ## 后果
 
 - 牺牲跨文件全有或全无和自动 rollback，换取 forward progress、FUSE 兼容与可退出状态。

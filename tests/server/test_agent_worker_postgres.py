@@ -21,6 +21,7 @@ from reeloom.adapters.subtitle_archive_cache import (
 from reeloom.executor.subtitle_marker_acquisition import (
     SubtitleMarkerAcquisitionExecutor,
 )
+from reeloom.executor.errors import ApprovalError, ApprovalErrorCode
 from reeloom.kernel.subtitle_publication import SUBTITLE_PUBLICATION_MARKER
 from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
 from reeloom.kernel.forward_execution import ExecutionOperation
@@ -366,6 +367,12 @@ class _ExecutorLease:
         return None
 
 
+class _PoisonApprovalStore:
+    def issue_or_reuse(self, approval: object) -> object:
+        del approval
+        raise ApprovalError(ApprovalErrorCode.INVALID_RECORD)
+
+
 def _model() -> ScriptedModel:
     return ScriptedModel(
         (
@@ -496,7 +503,11 @@ def _subtitle_model() -> ScriptedModel:
         ),
         (SubtitleAcquisitionPolicy.MANUAL, "marker_crash"),
         (SubtitleAcquisitionPolicy.AUTOMATIC, "success"),
+        (SubtitleAcquisitionPolicy.AUTOMATIC, "existing_successor"),
+        (SubtitleAcquisitionPolicy.AUTOMATIC, "generation_conflict"),
+        (SubtitleAcquisitionPolicy.AUTOMATIC, "publication_collision"),
         (SubtitleAcquisitionPolicy.AUTOMATIC, "lease_exhausted"),
+        (SubtitleAcquisitionPolicy.AUTOMATIC, "approval_poison"),
     ),
 )
 def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
@@ -589,9 +600,22 @@ def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
         ).discoveries[0]
         assert discovery.source_folder_device is None
         assert discovery.source_folder_inode is None
+        with control.pool.connection() as connection:
+            atomic_registration = connection.execute(
+                """
+                SELECT run.run_id, job.status
+                FROM runs AS run
+                JOIN jobs AS job USING (run_id)
+                WHERE run.discovery_id = %s
+                """,
+                (discovery.discovery_id,),
+            ).fetchone()
+        assert atomic_registration is not None
+        assert atomic_registration[1] == "pending"
         registration = scheduler.register_run(
             discovery_id=discovery.discovery_id
         )
+        assert registration.run_id == atomic_registration[0]
         subtitle_plans = FilesystemSubtitleAcquisitionPlanStore(
             AuthorizedRoot.create(subtitle_plan_root)
         )
@@ -727,25 +751,90 @@ def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
         assert b'"mtime"' not in canonical
         assert b'"ctime"' not in canonical
         request = None
-        if scenario == "success":
+        if scenario == "approval_poison":
+            poisoned = SubtitleAcquisitionCoordinator(
+                pool=control.pool,
+                plans=subtitle_plans,
+                executor_factory=lambda: _ExecutorLease(marker_executor),
+                operation_approvals=_PoisonApprovalStore(),  # type: ignore[arg-type]
+                operations=operations,
+                worker_id="subtitle-poison-worker",
+            )
+
+            assert poisoned.reconcile_approved() == 0
+            assert poisoned.reconcile_approved() == 0
+            request = poisoned.resolve(
+                run_id=registration.run_id,
+                plan_hash=result.plan_hash,
+            )
+            assert request is not None
+            assert request.status == "blocked"
+            assert request.failure_code == (
+                "automatic_subtitle_start_approval_unavailable"
+            )
+            with pytest.raises(ForwardOperationError) as missing:
+                operations.get(
+                    execution_operation_id(
+                        run_id=registration.run_id,
+                        plan_hash=result.plan_hash,
+                    )
+                )
+            assert missing.value.code is (
+                ForwardOperationErrorCode.OPERATION_NOT_FOUND
+            )
+            response = RunResponse.model_validate(
+                PostgresQueries(control.pool).get_run(registration.run_id)
+            )
+            assert response.status == "failed"
+            assert "delete_run" in response.available_actions
+            assert_no_legacy_subtitle_effects()
+            return
+        if scenario == "generation_conflict":
+            with control.pool.connection() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO generation_requests_v2
+                        (request_id, request_kind, origin_run_id, watch_id,
+                         source_folder, expected_inventory_id,
+                         generation_nonce)
+                    VALUES (%s, 'legacy_handoff', %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"generation-active-{uuid.uuid4().hex}",
+                        registration.run_id,
+                        watch_id,
+                        plan.source_folder,
+                        plan.inventory_id,
+                        f"generation-active-nonce-{uuid.uuid4().hex}",
+                    ),
+                )
+        if scenario == "publication_collision":
+            collision = release / plan.destination_directory.as_posix()
+            collision.mkdir()
+            (collision / "unexpected.txt").write_text(
+                "occupied", encoding="utf-8"
+            )
+        if scenario in {
+            "success",
+            "existing_successor",
+            "generation_conflict",
+            "publication_collision",
+        }:
             request = coordinator.approve_and_execute(
                 run_id=registration.run_id,
                 plan_hash=result.plan_hash,
                 automatic=True,
             )
-        else:
-            scheduler.settle_job(
-                job_id=registration.job_id,
-                boot_id=boot_id,
-                succeeded=True,
-            )
+        # The v2 plan handoff atomically settles the planning job.  A caller
+        # must not perform a second, independently inferred settlement.
         before = RunResponse.model_validate(
             PostgresQueries(control.pool).get_run(registration.run_id)
         )
         if subtitle_policy is SubtitleAcquisitionPolicy.MANUAL:
-            assert before.available_actions == [
-                "approve_subtitle_acquisition"
-            ]
+            assert "execute" in before.available_actions
+            assert "approve_subtitle_acquisition" not in (
+                before.available_actions
+            )
         else:
             assert "approve_subtitle_acquisition" not in (
                 before.available_actions
@@ -853,6 +942,11 @@ def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
                     is SubtitleAcquisitionPolicy.AUTOMATIC
                 ),
             )
+            restarted.reconcile_approved()
+            request = restarted.resolve(
+                run_id=registration.run_id,
+                plan_hash=result.plan_hash,
+            )
             with control.pool.connection() as connection:
                 approval_count = connection.execute(
                     """
@@ -879,11 +973,44 @@ def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
                 PostgresQueries(control.pool).get_run(registration.run_id)
             )
             assert exhausted_response.status == "failed"
-            assert "rescan" in exhausted_response.available_actions
+            assert exhausted_response.lifecycle.rescan_state == "queued"
+            assert "rescan" not in exhausted_response.available_actions
+            assert "delete_run" in exhausted_response.available_actions
             assert "delete_run" in exhausted_response.available_actions
             assert_no_legacy_subtitle_effects()
             return
+        if scenario in {
+            "success",
+            "existing_successor",
+            "generation_conflict",
+            "publication_collision",
+        }:
+            coordinator.reconcile_approved()
+            request = coordinator.resolve(
+                run_id=registration.run_id,
+                plan_hash=result.plan_hash,
+            )
         assert request is not None
+        if scenario == "publication_collision":
+            assert request.status == "blocked"
+            assert request.failure_code == "destination_collision"
+            assert request.failure_diagnostic == {
+                "schema_version": 2,
+                "stage": "publication",
+                "reason": "unexpected_entry",
+            }
+            response = RunResponse.model_validate(
+                PostgresQueries(control.pool).get_run(registration.run_id)
+            )
+            assert response.subtitle_acquisition is not None
+            assert response.subtitle_acquisition.failure_diagnostic is not None
+            assert (
+                response.subtitle_acquisition.failure_diagnostic.reason
+                == "unexpected_entry"
+            )
+            assert "delete_run" in response.available_actions
+            assert_no_legacy_subtitle_effects()
+            return
         assert request.status == "published"
         publication = release / plan.destination_directory.as_posix()
         assert (publication / plan.members[0].destination_name).is_file()
@@ -896,7 +1023,35 @@ def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
         )
         assert operation.status.value == "completed"
         view = operations.get_view(operation.operation_id)
-        assert view.rescan_state == "queued"
+        assert view.rescan_state == (
+            "blocked" if scenario == "generation_conflict" else "queued"
+        )
+        if scenario == "generation_conflict":
+            response = RunResponse.model_validate(
+                PostgresQueries(control.pool).get_run(registration.run_id)
+            )
+            assert response.status == "completed"
+            assert "rescan" in response.available_actions
+            with control.pool.connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE generation_requests_v2
+                    SET state = 'blocked', warning = 'test_owner_released'
+                    WHERE watch_id = %s AND source_folder = %s
+                      AND operation_id IS NULL AND state = 'queued'
+                    """,
+                    (watch_id, plan.source_folder),
+                )
+            operations.requeue_rescan(
+                run_id=registration.run_id,
+                plan_hash=plan.plan_hash,
+                now=datetime.now(UTC),
+            )
+            assert operations.get_view(operation.operation_id).rescan_state == (
+                "queued"
+            )
+            assert_no_legacy_subtitle_effects()
+            return
         with control.pool.connection() as connection:
             row = connection.execute(
                 """
@@ -938,16 +1093,50 @@ def test_semantic_subtitle_selection_builds_and_persists_v2_plan(
             operations=operations,
             scheduler=scheduler,
         )
+        if scenario == "existing_successor":
+            successor_scan = watcher.scan_folders(
+                AuthorizedRoot.create(incoming)
+            )
+            successor_observed = datetime.now(UTC)
+            scheduler.reconcile_folders(
+                watch_id=watch_id,
+                config_revision=revision.revision,
+                fence=revision.revision,
+                observed_at=successor_observed,
+                scan=successor_scan,
+            )
+            successor_discovery = scheduler.reconcile_folders(
+                watch_id=watch_id,
+                config_revision=revision.revision,
+                fence=revision.revision,
+                observed_at=successor_observed + timedelta(seconds=1),
+                scan=successor_scan,
+            ).discoveries[0]
+            successor = scheduler.register_run(
+                discovery_id=successor_discovery.discovery_id
+            )
+
+            assert rescan_worker.process_one(
+                worker_id=f"subtitle-rescan-{uuid.uuid4().hex}"
+            )
+            adopted = operations.get_view(operation.operation_id)
+            assert adopted.rescan_state == "completed"
+            assert adopted.successor_run_id == successor.run_id
+            assert not PostgresSubtitleLineageGate(
+                control.pool
+            ).lineage_allows_automatic_acquisition(successor.run_id)
+            assert_no_legacy_subtitle_effects()
+            return
         for _ in range(20):
             if operations.get_view(operation.operation_id).rescan_state == (
-                "completed"
+                "accepted"
             ):
                 break
             assert rescan_worker.process_one(
                 worker_id=f"subtitle-rescan-{uuid.uuid4().hex}"
             )
         else:
-            pytest.fail("subtitle forward rescan did not complete")
+            pytest.fail("subtitle generation request was not accepted")
 
         successor_scan = watcher.scan_folders(AuthorizedRoot.create(incoming))
         successor_observed = datetime.now(UTC)

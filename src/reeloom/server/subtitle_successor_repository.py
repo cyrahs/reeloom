@@ -632,6 +632,16 @@ class PostgresSubtitleSuccessorOutbox:
                     )
                     connection.execute(
                         """
+                        INSERT INTO run_lifecycle_controls_v2
+                            (run_id, mode, classification_reason)
+                        VALUES (%s, 'forward_v2',
+                                'legacy_successor_handoff')
+                        ON CONFLICT (run_id) DO NOTHING
+                        """,
+                        (run_id,),
+                    )
+                    connection.execute(
+                        """
                         INSERT INTO jobs (job_id, run_id, status)
                         VALUES (%s, %s, 'pending')
                         """,

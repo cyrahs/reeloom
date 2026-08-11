@@ -108,6 +108,8 @@ class ForwardExecutor:
         self,
         plan: RenamePlanV2 | MovieRenamePlanV2,
         lease: ExecutionOperationLease,
+        *,
+        lease_provider: Callable[[], ExecutionOperationLease] | None = None,
     ) -> ForwardExecutionResult:
         if (
             not isinstance(plan, (RenamePlanV2, MovieRenamePlanV2))
@@ -121,9 +123,13 @@ class ForwardExecutor:
         items: list[ForwardExecutionItemResult] = []
         warnings: set[str] = set()
         for move in plan.draft.moves:
+            if lease_provider is not None:
+                lease = lease_provider()
             result, move_warnings = self._execute_move(plan, move)
             items.append(result)
             warnings.update(move_warnings)
+        if lease_provider is not None:
+            lease = lease_provider()
         operation = lease.settle(
             tuple(item.outcome for item in items),
             now=self.clock(),

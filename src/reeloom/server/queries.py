@@ -29,6 +29,14 @@ from reeloom.server.archive_report import archive_report_from_projection
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.forward_actions import forward_available_actions
+from reeloom.server.run_lifecycle import (
+    RunActionKind,
+    RunEffectKind,
+    RunEffectMode,
+    RunLifecycleFacts,
+    RunLifecycleState,
+    derive_run_lifecycle,
+)
 from reeloom.server.run_deletion_policy import RUN_DELETION_READY_SQL
 
 
@@ -478,6 +486,8 @@ class PostgresQueries:
                            acquisition.transaction_id,
                            acquisition.failure_code,
                            COALESCE(
+                               forward.rescan_state,
+                               legacy_generation.state,
                                publication_scan.state,
                                successor.state
                            ),
@@ -499,7 +509,21 @@ class PostgresQueries:
                            forward.successor_run_id,
                            d.snapshot_id LIKE 'candidate-snapshot-v2:%%',
                            legacy.run_id IS NOT NULL,
-                           forward.operation_kind
+                           forward.operation_kind,
+                           control.mode, control.revision,
+                           control.effect_kind,
+                           control.effect_plan_hash,
+                           control.effect_policy,
+                           control.operation_id,
+                           planning_terminal.outcome,
+                           housekeeping.state,
+                           housekeeping.warning,
+                           EXISTS (
+                               SELECT 1
+                               FROM interactions AS active_interaction
+                               WHERE active_interaction.run_id = r.run_id
+                                 AND active_interaction.status = 'active'
+                           )
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
@@ -508,6 +532,13 @@ class PostgresQueries:
                     LEFT JOIN jobs AS job ON job.run_id = r.run_id
                     LEFT JOIN legacy_effect_supersessions_v2 AS legacy
                       ON legacy.run_id = r.run_id
+                    LEFT JOIN run_lifecycle_controls_v2 AS control
+                      ON control.run_id = r.run_id
+                    LEFT JOIN planning_terminal_results_v2
+                        AS planning_terminal
+                      ON planning_terminal.run_id = r.run_id
+                    LEFT JOIN folder_housekeeping_v2 AS housekeeping
+                      ON housekeeping.run_id = r.run_id
                     LEFT JOIN run_states AS s ON s.run_id = r.run_id
                     LEFT JOIN LATERAL (
                         SELECT c.approval_id
@@ -587,6 +618,16 @@ class PostgresQueries:
                     LEFT JOIN subtitle_scan_requests_v2 AS publication_scan
                       ON publication_scan.lineage_key =
                          publication_settlement.lineage_key
+                    LEFT JOIN LATERAL (
+                        SELECT generation.state,
+                               generation.successor_run_id
+                        FROM generation_requests_v2 AS generation
+                        WHERE generation.origin_run_id = r.run_id
+                          AND generation.request_kind = 'legacy_handoff'
+                        ORDER BY generation.created_at DESC,
+                                 generation.request_id DESC
+                        LIMIT 1
+                    ) AS legacy_generation ON true
                     LEFT JOIN watch_folder_observations AS observation
                       ON observation.discovery_id = d.discovery_id
                     LEFT JOIN LATERAL (
@@ -594,34 +635,15 @@ class PostgresQueries:
                                o.attempt_count, o.outcomes, o.operation_kind,
                                result.items, result.warnings,
                                result.fresh_scan_required,
-                               rescan.state AS rescan_state,
-                               COALESCE(
-                                   rescan.successor_run_id,
-                                   (
-                                       SELECT successor_run.run_id
-                                       FROM discoveries AS successor_discovery
-                                       JOIN runs AS successor_run
-                                         ON successor_run.discovery_id =
-                                            successor_discovery.discovery_id
-                                       WHERE successor_discovery.watch_id =
-                                             d.watch_id
-                                         AND successor_discovery.source_folder =
-                                             d.source_folder
-                                         AND successor_discovery.discovered_at >
-                                             d.discovered_at
-                                       ORDER BY
-                                           successor_discovery.discovered_at,
-                                           successor_discovery.discovery_id
-                                       LIMIT 1
-                                   )
-                               ) AS successor_run_id
+                               generation.state AS rescan_state,
+                               generation.successor_run_id
+                                   AS successor_run_id
                         FROM execution_operations_v2 AS o
                         LEFT JOIN execution_operation_results_v2 AS result
                           ON result.operation_id = o.operation_id
-                        LEFT JOIN execution_rescan_outbox_v2 AS rescan
-                          ON rescan.operation_id = o.operation_id
-                        WHERE o.run_id = r.run_id
-                        ORDER BY o.authorized_at DESC, o.operation_id DESC
+                        LEFT JOIN generation_requests_v2 AS generation
+                          ON generation.operation_id = o.operation_id
+                        WHERE o.operation_id = control.operation_id
                         LIMIT 1
                     ) AS forward ON true
                     WHERE r.run_id = %s
@@ -644,7 +666,11 @@ class PostgresQueries:
         recovery_approval_id = row[11]
         apply_policy = str(row[12])
         job_status = None if row[48] is None else str(row[48])
-        busy = bool(row[13]) or job_status in {"pending", "running"}
+        busy = (
+            bool(row[13])
+            or (len(row) > 72 and bool(row[72]))
+            or job_status in {"pending", "running"}
+        )
         interaction_budget_available = bool(row[36])
         folder_status = None if row[28] is None else str(row[28])
         folder_action = None if row[24] is None else str(row[24])
@@ -709,6 +735,9 @@ class PostgresQueries:
                 for item in forward_available_actions(
                     policy=ApplyPolicy(apply_policy),
                     operation_status=forward_status,
+                    rescan_state=(
+                        None if row[58] is None else str(row[58])
+                    ),
                 )
             )
         if not busy and plan_hash is not None and not semantic_v2:
@@ -769,6 +798,129 @@ class PostgresQueries:
             actions.append("approve_subtitle_acquisition")
         if bool(row[32]):
             actions.append("delete_run")
+        lifecycle: dict[str, object] | None = None
+        if len(row) > 63 and row[63] is not None:
+            effect_kind = (
+                None
+                if row[65] is None
+                else RunEffectKind(str(row[65]))
+            )
+            effect_policy = (
+                None if row[67] is None else ApplyPolicy(str(row[67]))
+            )
+            facts = RunLifecycleFacts(
+                run_id=str(row[0]),
+                mode=RunEffectMode(str(row[63])),
+                revision=int(row[64]),
+                stored_status=stored_status,
+                runtime_status=(
+                    None if row[4] is None else str(row[4])
+                ),
+                runtime_phase=phase,
+                event_sequence=0 if row[5] is None else int(row[5]),
+                effect_kind=effect_kind,
+                effect_plan_hash=(
+                    None if row[66] is None else str(row[66])
+                ),
+                effect_policy=effect_policy,
+                operation_id=(
+                    None
+                    if row[68] is None or forward_status is None
+                    else str(row[68])
+                ),
+                operation_status=forward_status,
+                planning_terminal_outcome=(
+                    None if row[69] is None else str(row[69])
+                ),
+                rescan_state=(
+                    None if row[58] is None else str(row[58])
+                ),
+                successor_run_id=(
+                    None if row[59] is None else str(row[59])
+                ),
+                needs_attention=needs_attention,
+                interaction_budget_available=interaction_budget_available,
+                retry_count=min(int(row[46]), 3),
+                retry_limit=3,
+                can_retry_agent=(
+                    bool(row[45])
+                    and bool(row[47])
+                    and row[48] == "completed"
+                ),
+                can_mark_failed=(
+                    bool(row[45])
+                    and bool(row[47])
+                    and row[48] == "completed"
+                ),
+                active_interaction=(len(row) > 72 and bool(row[72])),
+            )
+            presentation = derive_run_lifecycle(facts)
+            compatibility_status = {
+                RunLifecycleState.PLANNING: "running",
+                RunLifecycleState.NEEDS_ATTENTION: "needs_attention",
+                RunLifecycleState.AWAITING_APPROVAL: "awaiting_approval",
+                RunLifecycleState.EXECUTION_QUEUED: "running",
+                RunLifecycleState.EXECUTING: "running",
+                RunLifecycleState.COMPLETED: "completed",
+                RunLifecycleState.FAILED: "failed",
+                RunLifecycleState.LEGACY_READ_ONLY: stored_status,
+                RunLifecycleState.DELETED: "deleted",
+            }[presentation.state]
+            compatibility_actions = {
+                RunActionKind.ASK_AGENT: "question",
+                RunActionKind.REVISE_PLAN: "revision",
+                RunActionKind.EXECUTE: "execute",
+                RunActionKind.REQUEST_RESCAN: "rescan",
+                RunActionKind.RETRY_AGENT: "retry_run",
+                RunActionKind.MARK_FAILED: "fail_run",
+                RunActionKind.DELETE_RUN: "delete_run",
+            }
+            status = compatibility_status
+            phase = presentation.state.value
+            plan_hash = presentation.effect_plan_hash
+            if presentation.effect_policy is not None:
+                apply_policy = presentation.effect_policy.value
+            actions = [
+                compatibility_actions[item.kind]
+                for item in presentation.actions
+            ]
+            lifecycle = {
+                "schema_version": presentation.schema_version,
+                "mode": presentation.mode.value,
+                "state": presentation.state.value,
+                "terminal": presentation.terminal,
+                "revision": presentation.revision,
+                "active_plan": (
+                    None
+                    if presentation.effect_plan_hash is None
+                    else {
+                        "family": presentation.effect_kind.value,
+                        "plan_hash": presentation.effect_plan_hash,
+                    }
+                ),
+                "operation_id": presentation.operation_id,
+                "operation_status": (
+                    None
+                    if presentation.operation_status is None
+                    else presentation.operation_status.value
+                ),
+                "rescan_state": presentation.rescan_state,
+                "successor_run_id": presentation.successor_run_id,
+                "housekeeping": {
+                    "state": None if row[70] is None else str(row[70]),
+                    "warning": None if row[71] is None else str(row[71]),
+                },
+                "actions": [
+                    {
+                        "action_id": item.action_id,
+                        "kind": item.kind.value,
+                        "input": item.input.value,
+                        "destructive": item.destructive,
+                    }
+                    for item in presentation.actions
+                ],
+                "etag": presentation.etag,
+            }
         return {
             "run_id": str(row[0]),
             "status": status,
@@ -788,6 +940,7 @@ class PostgresQueries:
             ),
             "apply_policy": apply_policy,
             "available_actions": actions,
+            "lifecycle": lifecycle,
             "settlement": (
                 None
                 if row[14] is None
@@ -919,11 +1072,59 @@ class PostgresQueries:
                            END,
                            r.work_type, r.created_at,
                            s.phase, s.plan_hash, d.source_folder,
-                           ({RUN_DELETION_READY_SQL}) AS deletion_ready
+                           ({RUN_DELETION_READY_SQL}) AS deletion_ready,
+                           control.mode, control.revision,
+                           control.effect_kind,
+                           control.effect_plan_hash,
+                           control.effect_policy,
+                           control.operation_id,
+                           operation.status,
+                           generation.state,
+                           generation.successor_run_id,
+                           s.runtime_status, s.event_sequence,
+                           s.projection_payload->>'stop_reason',
+                           COALESCE(
+                               s.model_turns < s.max_model_turns
+                               AND s.model_tokens < s.max_total_tokens
+                               AND s.tool_calls < s.max_tool_calls
+                               AND s.failures < s.max_failures,
+                               false
+                           ),
+                           d.folder_generation_id IS NOT NULL,
+                           COALESCE(observation.retry_count, 3),
+                           COALESCE(observation.status = 'active', false),
+                           job.status,
+                           EXISTS (
+                               SELECT 1 FROM run_operations AS active
+                               WHERE active.run_id = r.run_id
+                           ),
+                           planning_terminal.outcome,
+                           housekeeping.state,
+                           housekeeping.warning,
+                           EXISTS (
+                               SELECT 1
+                               FROM interactions AS active_interaction
+                               WHERE active_interaction.run_id = r.run_id
+                                 AND active_interaction.status = 'active'
+                           )
                     FROM runs AS r
                     JOIN discoveries AS d
                       ON d.discovery_id = r.discovery_id
                     LEFT JOIN run_states AS s ON s.run_id = r.run_id
+                    LEFT JOIN jobs AS job ON job.run_id = r.run_id
+                    LEFT JOIN run_lifecycle_controls_v2 AS control
+                      ON control.run_id = r.run_id
+                    LEFT JOIN execution_operations_v2 AS operation
+                      ON operation.operation_id = control.operation_id
+                    LEFT JOIN generation_requests_v2 AS generation
+                      ON generation.operation_id = operation.operation_id
+                    LEFT JOIN planning_terminal_results_v2
+                        AS planning_terminal
+                      ON planning_terminal.run_id = r.run_id
+                    LEFT JOIN folder_housekeeping_v2 AS housekeeping
+                      ON housekeeping.run_id = r.run_id
+                    LEFT JOIN watch_folder_observations AS observation
+                      ON observation.discovery_id = d.discovery_id
                     WHERE (
                         %s::text IS NULL
                         OR (r.created_at, r.run_id) < (
@@ -943,8 +1144,9 @@ class PostgresQueries:
             raise ServerError(
                 ServerErrorCode.DATABASE_UNAVAILABLE
             ) from None
-        return tuple(
-            {
+        summaries: list[dict[str, object]] = []
+        for row in rows:
+            summary: dict[str, object] = {
                 "run_id": str(row[0]),
                 "status": str(row[1]),
                 "work_type": str(row[2]),
@@ -957,9 +1159,136 @@ class PostgresQueries:
                 "available_actions": (
                     ["delete_run"] if bool(row[7]) else []
                 ),
+                "lifecycle": None,
             }
-            for row in rows
-        )
+            if row[8] is not None:
+                operation_status = (
+                    None
+                    if row[14] is None
+                    else ExecutionOperationStatus(str(row[14]))
+                )
+                facts = RunLifecycleFacts(
+                    run_id=str(row[0]),
+                    mode=RunEffectMode(str(row[8])),
+                    revision=int(row[9]),
+                    stored_status=str(row[1]),
+                    runtime_status=(
+                        None if row[17] is None else str(row[17])
+                    ),
+                    runtime_phase=(
+                        None if row[4] is None else str(row[4])
+                    ),
+                    event_sequence=(
+                        0 if row[18] is None else int(row[18])
+                    ),
+                    effect_kind=(
+                        None
+                        if row[10] is None
+                        else RunEffectKind(str(row[10]))
+                    ),
+                    effect_plan_hash=(
+                        None if row[11] is None else str(row[11])
+                    ),
+                    effect_policy=(
+                        None
+                        if row[12] is None
+                        else ApplyPolicy(str(row[12]))
+                    ),
+                    operation_id=(
+                        None
+                        if row[13] is None or operation_status is None
+                        else str(row[13])
+                    ),
+                    operation_status=operation_status,
+                    planning_terminal_outcome=(
+                        None if row[26] is None else str(row[26])
+                    ),
+                    rescan_state=(
+                        None if row[15] is None else str(row[15])
+                    ),
+                    successor_run_id=(
+                        None if row[16] is None else str(row[16])
+                    ),
+                    needs_attention=(
+                        str(row[19]) == "needs_attention"
+                        and row[5] is None
+                    ),
+                    interaction_budget_available=bool(row[20]),
+                    retry_count=min(int(row[22]), 3),
+                    can_retry_agent=(
+                        bool(row[21])
+                        and bool(row[23])
+                        and row[24] == "completed"
+                    ),
+                    can_mark_failed=(
+                        bool(row[21])
+                        and bool(row[23])
+                        and row[24] == "completed"
+                    ),
+                    active_interaction=(len(row) > 29 and bool(row[29])),
+                )
+                presentation = derive_run_lifecycle(facts)
+                summary["status"] = {
+                    RunLifecycleState.PLANNING: "running",
+                    RunLifecycleState.NEEDS_ATTENTION: "needs_attention",
+                    RunLifecycleState.AWAITING_APPROVAL: "awaiting_approval",
+                    RunLifecycleState.EXECUTION_QUEUED: "running",
+                    RunLifecycleState.EXECUTING: "running",
+                    RunLifecycleState.COMPLETED: "completed",
+                    RunLifecycleState.FAILED: "failed",
+                    RunLifecycleState.LEGACY_READ_ONLY: str(row[1]),
+                    RunLifecycleState.DELETED: "deleted",
+                }[presentation.state]
+                summary["phase"] = presentation.state.value
+                summary["plan_hash"] = presentation.effect_plan_hash
+                summary["available_actions"] = [
+                    "delete_run"
+                    for action in presentation.actions
+                    if action.kind is RunActionKind.DELETE_RUN
+                ]
+                summary["lifecycle"] = {
+                    "schema_version": 1,
+                    "mode": presentation.mode.value,
+                    "state": presentation.state.value,
+                    "terminal": presentation.terminal,
+                    "revision": presentation.revision,
+                    "active_plan": (
+                        None
+                        if presentation.effect_plan_hash is None
+                        else {
+                            "family": presentation.effect_kind.value,
+                            "plan_hash": presentation.effect_plan_hash,
+                        }
+                    ),
+                    "operation_id": presentation.operation_id,
+                    "operation_status": (
+                        None
+                        if presentation.operation_status is None
+                        else presentation.operation_status.value
+                    ),
+                    "rescan_state": presentation.rescan_state,
+                    "successor_run_id": presentation.successor_run_id,
+                    "housekeeping": {
+                        "state": (
+                            None if row[27] is None else str(row[27])
+                        ),
+                        "warning": (
+                            None if row[28] is None else str(row[28])
+                        ),
+                    },
+                    "actions": [
+                        {
+                            "action_id": item.action_id,
+                            "kind": item.kind.value,
+                            "input": item.input.value,
+                            "destructive": item.destructive,
+                        }
+                        for item in presentation.actions
+                    ],
+                    "etag": presentation.etag,
+                }
+            summaries.append(summary)
+        return tuple(summaries)
 
     def list_discoveries(
         self,

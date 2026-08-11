@@ -5,7 +5,6 @@ from datetime import datetime
 
 from psycopg_pool import ConnectionPool
 
-from reeloom.server.config_repository import CONFIG_LOCK_ID
 from reeloom.server.errors import ServerError, ServerErrorCode
 from reeloom.server.run_deletion_policy import RUN_DELETION_READY_SQL
 
@@ -19,8 +18,12 @@ class PostgresRunDeletionService:
             with self._pool.connection() as connection:
                 with connection.transaction():
                     connection.execute(
-                        "SELECT pg_advisory_xact_lock(%s)",
-                        (CONFIG_LOCK_ID,),
+                        """
+                        SELECT pg_advisory_xact_lock(
+                            hashtextextended('reeloom-run:' || %s, 0)
+                        )
+                        """,
+                        (run_id,),
                     )
                     row = connection.execute(
                         f"""

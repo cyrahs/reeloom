@@ -73,6 +73,28 @@ def test_database_unavailable_stops_background_fail_closed() -> None:
     assert background.fatal
 
 
+def test_instance_lock_loss_stops_background_before_other_work() -> None:
+    def lost_lock() -> None:
+        raise ServerError(ServerErrorCode.INSTANCE_LOCK_LOST)
+
+    background = BackgroundServices(
+        boot_id="boot-test",
+        configs=object(),  # type: ignore[arg-type]
+        scheduler=object(),  # type: ignore[arg-type]
+        worker=object(),  # type: ignore[arg-type]
+        instance_guard=lost_lock,
+        idle_seconds=0.001,
+    )
+
+    background.start()
+    deadline = time.monotonic() + 1
+    while not background.fatal and time.monotonic() < deadline:
+        time.sleep(0.001)
+    background.close(timeout_seconds=1)
+
+    assert background.fatal
+
+
 class _SettlingScheduler:
     def __init__(self) -> None:
         self.settled: list[bool] = []
@@ -172,6 +194,7 @@ def test_database_failure_is_rethrown_without_settling_job(
         scheduler=scheduler,  # type: ignore[arg-type]
         worker=worker,  # type: ignore[arg-type]
         apply=apply,  # type: ignore[arg-type]
+        legacy_effects_enabled=True,
     )
 
     with pytest.raises(ServerError) as raised:
@@ -330,6 +353,7 @@ class _SubtitleConfigs:
 class _SubtitleCoordinator:
     def __init__(self) -> None:
         self.executed: list[tuple[str, str, bool]] = []
+        self.reconciled = 0
 
     def approve_and_execute(self, **kwargs: object) -> object:
         self.executed.append(
@@ -340,6 +364,10 @@ class _SubtitleCoordinator:
             )
         )
         return SimpleNamespace(status="published")
+
+    def reconcile_approved(self) -> int:
+        self.reconciled += 1
+        return 1
 
     def resolve(self, **kwargs: object) -> object:
         del kwargs
@@ -383,6 +411,7 @@ def test_subtitle_acquisition_uses_independent_policy_and_never_media_apply(
     background._execute_job("job-test", "run-test")
 
     assert len(coordinator.executed) == expected_execution
+    assert coordinator.reconciled == expected_execution
     assert tuple(scheduler.settled) == expected_settlement
 
 
@@ -467,6 +496,7 @@ def test_settled_preflight_source_drift_restarts_without_recovery() -> None:
         scheduler=scheduler,  # type: ignore[arg-type]
         worker=_SuccessfulWorker(),  # type: ignore[arg-type]
         apply=_SettledSourceDriftApply(),  # type: ignore[arg-type]
+        legacy_effects_enabled=True,
     )
 
     background._execute_job("job-test", "run-test")

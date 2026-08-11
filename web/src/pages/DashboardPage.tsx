@@ -58,12 +58,20 @@ export function DashboardPage() {
   });
   const noConfig =
     config.error instanceof ApiError && config.error.status === 404;
+  const [selected, setSelected] = useState<string[]>([]);
   const runItems = runs.data?.items ?? [];
   const truncated = runItems.length >= PAGE_LIMIT;
   const deletableIds = runItems
     .filter((run) => run.available_actions.includes("delete_run"))
     .map((run) => run.run_id);
-  const [selected, setSelected] = useState<string[]>([]);
+  const deletionTargets = runItems
+    .filter((run) => selected.includes(run.run_id))
+    .map((run) => ({
+      runId: run.run_id,
+      actionId: run.lifecycle?.actions.find(
+        (action) => action.kind === "delete_run",
+      )?.action_id,
+    }));
   /* A run may stop being deletable (or disappear) on any refresh; the
      selection must never outlive what the server still offers. */
   const deletableKey = deletableIds.join("\u0000");
@@ -233,7 +241,7 @@ export function DashboardPage() {
                 取消选择
               </button>
               <RunBulkDeletionAction
-                runIds={selected}
+                targets={deletionTargets}
                 onDeleted={(deleted) =>
                   setSelected((prev) =>
                     prev.filter((id) => !deleted.includes(id)),
@@ -325,6 +333,9 @@ export function DashboardPage() {
                       {deletable ? (
                         <RunDeletionAction
                           runId={run.run_id}
+                          actionId={run.lifecycle?.actions.find(
+                            (action) => action.kind === "delete_run",
+                          )?.action_id}
                           className="danger-outline compact"
                         />
                       ) : (

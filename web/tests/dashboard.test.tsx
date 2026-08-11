@@ -9,6 +9,7 @@ import { DashboardPage } from "../src/pages/DashboardPage";
 test("offers deletion for eligible runs directly from the dashboard", async () => {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "admin-token");
   let deleted = false;
+  const deleteActionId = `runaction-v1:${"d".repeat(64)}`;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/session") {
@@ -33,6 +34,26 @@ test("offers deletion for eligible runs directly from the dashboard", async () =
             plan_hash: null,
             source_folder: "folder-a",
             available_actions: ["delete_run"],
+            lifecycle: {
+              schema_version: 1,
+              mode: "forward_v2",
+              state: "failed",
+              terminal: true,
+              revision: 1,
+              active_plan: null,
+              operation_id: null,
+              operation_status: null,
+              rescan_state: null,
+              successor_run_id: null,
+              housekeeping: { state: null, warning: null },
+              actions: [{
+                action_id: deleteActionId,
+                kind: "delete_run",
+                input: "confirmation",
+                destructive: true,
+              }],
+              etag: `runpresentation-v1:${"e".repeat(64)}`,
+            },
           },
           {
             run_id: "run-active",
@@ -48,16 +69,20 @@ test("offers deletion for eligible runs directly from the dashboard", async () =
       });
     }
     if (
-      path === "/api/v1/runs/run-deletable" &&
-      init?.method === "DELETE"
+      path ===
+        `/api/v1/runs/run-deletable/actions/${encodeURIComponent(deleteActionId)}` &&
+      init?.method === "POST"
     ) {
       expect(
         (init.headers as Record<string, string>)["Idempotency-Key"],
       ).toMatch(/^ui-v1-/);
+      expect(JSON.parse(String(init.body))).toEqual({ message: null });
       deleted = true;
       return jsonResponse({
-        run_id: "run-deletable",
-        deleted_at: "2026-07-28T12:30:00Z",
+        action_id: deleteActionId,
+        kind: "delete_run",
+        run: null,
+        assistant_reply: null,
       });
     }
     if (path.startsWith("/api/v1/discoveries?")) {

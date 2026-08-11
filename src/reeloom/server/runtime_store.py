@@ -113,7 +113,7 @@ class PostgresEventStore:
                         connection.execute(
                             """
                             SELECT pg_advisory_xact_lock(
-                                hashtextextended(%s, 0)
+                                hashtextextended('reeloom-run:' || %s, 0)
                             )
                             """,
                             (self.run_id,),

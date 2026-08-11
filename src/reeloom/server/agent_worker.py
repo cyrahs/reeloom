@@ -49,6 +49,7 @@ from reeloom.server.agent_repository import (
     PostgresAgentDefinitionRepository,
 )
 from reeloom.server.config import (
+    ApplyPolicy,
     ConfigRevision,
     ServerWorkType,
     SubtitleAcquisitionPolicy,
@@ -65,6 +66,10 @@ from reeloom.server.job_outcome import (
 )
 from reeloom.server.provider import ModelLease
 from reeloom.server.runtime_store import PostgresEventStore
+from reeloom.server.run_control_repository import (
+    PostgresRunControlRepository,
+)
+from reeloom.server.run_lifecycle import RunEffectKind
 from reeloom.server.notification_projector import (
     PostgresNotificationProjector,
 )
@@ -180,6 +185,7 @@ class InitialAgentWorker:
     video_subtitle_inspector_factory: (
         VideoSubtitleInspectorFactory | None
     ) = None
+    run_controls: PostgresRunControlRepository | None = None
 
     async def run(self, *, run_id: str) -> str:
         result = await self.run_result(run_id=run_id)
@@ -232,6 +238,21 @@ class InitialAgentWorker:
             and state.rename_plan is not None
             and state.plan_hash is not None
         ):
+            if (
+                self.run_controls is not None
+                and semantic_snapshot is not None
+                and config.apply_policy is ApplyPolicy.PLAN_ONLY
+            ):
+                self.run_controls.handoff_effect(
+                    run_id=run_id,
+                    plan_hash=state.plan_hash,
+                    effect_kind=RunEffectKind.MEDIA_MOVE,
+                    policy=config.apply_policy,
+                    event_sequence=state.event_count,
+                )
+                return AgentWorkResult(
+                    AgentWorkKind.MEDIA_PLAN, state.plan_hash
+                )
             state = event_store.append(
                 ApprovalRequested(plan_hash=state.plan_hash)
             )
@@ -240,6 +261,18 @@ class InitialAgentWorker:
             and state.phase is Phase.AWAITING_APPROVAL
             and state.plan_hash is not None
         ):
+            if self.run_controls is not None and semantic_snapshot is not None:
+                self.run_controls.handoff_effect(
+                    run_id=run_id,
+                    plan_hash=state.plan_hash,
+                    effect_kind=RunEffectKind.MEDIA_MOVE,
+                    policy=config.apply_policy,
+                    event_sequence=state.event_count,
+                )
+                if config.apply_policy is ApplyPolicy.PLAN_ONLY:
+                    return AgentWorkResult(
+                        AgentWorkKind.MEDIA_PLAN, state.plan_hash
+                    )
             if state.status is not RunStatus.STOPPED:
                 event_store.append(
                     RunStopped(reason=StopReason.AWAITING_APPROVAL)
@@ -406,6 +439,14 @@ class InitialAgentWorker:
                 or result.state.plan_hash is None
             ):
                 raise ValueError("initial agent did not produce an approvable plan")
+            if self.run_controls is not None and semantic_snapshot is not None:
+                self.run_controls.handoff_effect(
+                    run_id=run_id,
+                    plan_hash=result.state.plan_hash,
+                    effect_kind=RunEffectKind.MEDIA_MOVE,
+                    policy=config.apply_policy,
+                    event_sequence=result.state.event_count,
+                )
             return AgentWorkResult(
                 AgentWorkKind.MEDIA_PLAN,
                 result.state.plan_hash,

@@ -9,6 +9,7 @@ from reeloom.executor.forward import (
     ForwardExecutionResult,
     ForwardExecutor,
 )
+from reeloom.executor.errors import ApprovalError, ApprovalErrorCode
 from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
 from reeloom.kernel.forward_execution import (
     ExecutionOperation,
@@ -23,6 +24,8 @@ from reeloom.ports.subtitle_acquisition import SubtitleAcquisitionPlanStore
 from reeloom.server.approval_repository import PostgresApprovalStore
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.config_repository import PostgresConfigRepository
+from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.execution_lease_heartbeat import ExecutionLeaseHeartbeat
 from reeloom.server.forward_operation_repository import (
     ForwardOperationError,
     ForwardOperationErrorCode,
@@ -38,6 +41,10 @@ from reeloom.server.forward_actions import (
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+_OPERATION_LEASE_FOR = timedelta(minutes=1)
+_OPERATION_HEARTBEAT_INTERVAL = timedelta(seconds=20)
 
 
 class ForwardExecutionServiceError(RuntimeError):
@@ -140,6 +147,7 @@ class ForwardExecutionCoordinator:
         if ForwardAvailableAction.RESCAN not in forward_available_actions(
             policy=policy,
             operation_status=view.operation.status,
+            rescan_state=view.rescan_state,
         ):
             raise ForwardExecutionServiceError("rescan_not_allowed")
         self._operations.requeue_rescan(
@@ -167,7 +175,7 @@ class ForwardExecutionCoordinator:
             raise ForwardExecutionServiceError("invalid_v2_plan") from None
         if plan.run_id != run_id:
             raise ForwardExecutionServiceError("invalid_v2_plan")
-        config = self._configs.get(plan.config_revision)
+        config = self._load_config(plan.config_revision)
         watch = next(
             (
                 item
@@ -183,11 +191,31 @@ class ForwardExecutionCoordinator:
     def reconcile_one(self) -> ForwardExecutionCommandResult | None:
         """Lease one unfinished operation without consulting browser state."""
 
+        unstarted = self._operations.find_unstarted_automatic(
+            operation_kind="media_move"
+        )
+        if unstarted is not None:
+            try:
+                return self.execute_automatic(
+                    run_id=unstarted[0], plan_hash=unstarted[1]
+                )
+            except (
+                ForwardExecutionServiceError,
+                ForwardOperationError,
+            ) as error:
+                reason = str(error) or type(error).__name__
+                self._operations.fail_unstarted_automatic(
+                    run_id=unstarted[0],
+                    plan_hash=unstarted[1],
+                    reason_code=("automatic_start_" + reason)[:128],
+                    now=self._clock(),
+                )
+                return None
         now = self._clock()
         lease = self._operations.claim_next(
             worker_id=self._worker_id,
             now=now,
-            lease_for=timedelta(minutes=1),
+            lease_for=_OPERATION_LEASE_FOR,
         )
         if lease is None:
             return None
@@ -226,7 +254,7 @@ class ForwardExecutionCoordinator:
                 )
             ):
                 raise ForwardExecutionServiceError("execution_not_allowed")
-            return self._run_existing(plan)
+            return ForwardExecutionCommandResult(existing)
         if (
             required_policy is ApplyPolicy.MANUAL
             and ForwardAvailableAction.EXECUTE
@@ -237,16 +265,36 @@ class ForwardExecutionCoordinator:
         ):
             raise ForwardExecutionServiceError("execution_not_allowed")
         now = self._clock()
-        approval = self._approvals.issue_or_reuse(
-            ApprovalRecord.create(
-                run_id=run_id,
-                plan_hash=plan_hash,
-                scope=ApprovalScope.APPLY,
-                expires_at=now + timedelta(minutes=15),
-                nonce=secrets.token_urlsafe(32),
+        try:
+            approval = self._approvals.issue_or_reuse(
+                ApprovalRecord.create(
+                    run_id=run_id,
+                    plan_hash=plan_hash,
+                    scope=ApprovalScope.APPLY,
+                    expires_at=now + timedelta(minutes=15),
+                    nonce=secrets.token_urlsafe(32),
+                )
             )
-        )
-        self._operations.authorize(
+        except ApprovalError as error:
+            if error.code is ApprovalErrorCode.ALREADY_CLAIMED:
+                try:
+                    existing = self._operations.get(operation_id)
+                except ForwardOperationError as operation_error:
+                    if (
+                        operation_error.code
+                        is not ForwardOperationErrorCode.OPERATION_NOT_FOUND
+                    ):
+                        raise
+                else:
+                    return ForwardExecutionCommandResult(existing)
+            if error.code is ApprovalErrorCode.STORE_FAILURE:
+                raise ServerError(
+                    ServerErrorCode.DATABASE_UNAVAILABLE
+                ) from None
+            raise ForwardExecutionServiceError(
+                "approval_" + error.code.value
+            ) from None
+        operation = self._operations.authorize(
             ExecutionOperation.authorized(
                 operation_id=operation_id,
                 run_id=run_id,
@@ -255,7 +303,7 @@ class ForwardExecutionCoordinator:
             approval_id=approval.approval_id,
             now=now,
         )
-        return self._run_existing(plan)
+        return ForwardExecutionCommandResult(operation)
 
     def _run_existing(
         self, plan: RenamePlanV2 | MovieRenamePlanV2
@@ -271,7 +319,7 @@ class ForwardExecutionCoordinator:
             operation_id,
             worker_id=self._worker_id,
             now=now,
-            lease_for=timedelta(minutes=1),
+            lease_for=_OPERATION_LEASE_FOR,
         )
         if lease is None:
             return ForwardExecutionCommandResult(
@@ -284,7 +332,24 @@ class ForwardExecutionCoordinator:
         plan: RenamePlanV2 | MovieRenamePlanV2,
         lease: ExecutionOperationLease,
     ) -> ForwardExecutionCommandResult:
-        result = self._executor.execute(plan, lease)
+        heartbeat = ExecutionLeaseHeartbeat(
+            lease,
+            renew=lambda current, now, lease_for: (
+                self._operations.renew_lease(
+                    current, now=now, lease_for=lease_for
+                )
+            ),
+            clock=self._clock,
+            lease_for=_OPERATION_LEASE_FOR,
+            interval=_OPERATION_HEARTBEAT_INTERVAL,
+        )
+        with heartbeat:
+            result = self._executor.execute(
+                plan,
+                lease,
+                lease_provider=heartbeat.current,
+            )
+        lease = heartbeat.current()
         settled = self._operations.settle_result(
             lease,
             result,
@@ -295,15 +360,20 @@ class ForwardExecutionCoordinator:
     def _load(
         self, *, run_id: str, plan_hash: str
     ) -> tuple[RenamePlanV2 | MovieRenamePlanV2, ConfigRevision]:
-        plan = parse_initial_plan(
-            self._plans.load(plan_hash), plan_hash=plan_hash
-        )
+        try:
+            plan = parse_initial_plan(
+                self._plans.load(plan_hash), plan_hash=plan_hash
+            )
+        except ServerError:
+            raise
+        except Exception:
+            raise ForwardExecutionServiceError("invalid_v2_plan") from None
         if (
             not isinstance(plan, (RenamePlanV2, MovieRenamePlanV2))
             or plan.run_id != run_id
         ):
             raise ForwardExecutionServiceError("invalid_v2_plan")
-        config = self._configs.get(plan.config_revision)
+        config = self._load_config(plan.config_revision)
         watch = next(
             (
                 item
@@ -315,3 +385,13 @@ class ForwardExecutionCoordinator:
         if watch is None:
             raise ForwardExecutionServiceError("watch_unavailable")
         return plan, config
+
+    def _load_config(self, revision: int) -> ConfigRevision:
+        try:
+            return self._configs.get(revision)
+        except ServerError as error:
+            if error.code is ServerErrorCode.DATABASE_UNAVAILABLE:
+                raise
+            raise ForwardExecutionServiceError(error.code.value) from None
+        except Exception:
+            raise ForwardExecutionServiceError("invalid_config") from None

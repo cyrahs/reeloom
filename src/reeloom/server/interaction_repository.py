@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
@@ -413,6 +414,14 @@ class PostgresInteractionRepository:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    connection.execute(
+                        """
+                        SELECT pg_advisory_xact_lock(
+                            hashtextextended('reeloom-run:' || %s, 0)
+                        )
+                        """,
+                        (reservation.run_id,),
+                    )
                     row = connection.execute(
                         """
                         SELECT status,
@@ -808,6 +817,72 @@ class PostgresInteractionRepository:
                                 reservation.run_id,
                             ),
                         )
+                        control = connection.execute(
+                            """
+                            SELECT mode, revision, effect_plan_hash,
+                                   effect_policy, operation_id
+                            FROM run_lifecycle_controls_v2
+                            WHERE run_id = %s
+                            FOR UPDATE
+                            """,
+                            (reservation.run_id,),
+                        ).fetchone()
+                        if control is not None and str(control[0]) == "forward_v2":
+                            if (
+                                control[4] is not None
+                                or str(control[2]) != reservation.plan_hash
+                            ):
+                                raise ServerError(
+                                    ServerErrorCode.INTERACTION_CONFLICT
+                                )
+                            rebound = connection.execute(
+                                """
+                                UPDATE run_lifecycle_controls_v2
+                                SET effect_plan_hash = %s,
+                                    handoff_event_sequence = %s,
+                                    revision = revision + 1,
+                                    updated_at = clock_timestamp()
+                                WHERE run_id = %s AND revision = %s
+                                  AND operation_id IS NULL
+                                RETURNING revision, effect_policy
+                                """,
+                                (
+                                    execution.plan_hash,
+                                    int(runtime[0]) + 1,
+                                    reservation.run_id,
+                                    int(control[1]),
+                                ),
+                            ).fetchone()
+                            if rebound is None:
+                                raise ServerError(ServerErrorCode.RUN_BUSY)
+                            if str(rebound[1]) == "manual":
+                                digest = hashlib.sha256(
+                                    (
+                                        reservation.run_id
+                                        + "\0"
+                                        + execution.plan_hash
+                                    ).encode("utf-8")
+                                ).hexdigest()
+                                connection.execute(
+                                    """
+                                    INSERT INTO notification_intents_v2
+                                        (intent_id, run_id, control_revision,
+                                         intent_kind, semantic_key)
+                                    VALUES (%s, %s, %s, 'plan_ready', %s)
+                                    ON CONFLICT (semantic_key) DO NOTHING
+                                    """,
+                                    (
+                                        f"notification-intent-v2-{digest}",
+                                        reservation.run_id,
+                                        int(rebound[0]),
+                                        (
+                                            "plan_ready:"
+                                            + reservation.run_id
+                                            + ":"
+                                            + execution.plan_hash
+                                        ),
+                                    ),
+                                )
                     connection.execute(
                         """
                         UPDATE interactions

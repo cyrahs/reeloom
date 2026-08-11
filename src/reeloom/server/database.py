@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 
 import psycopg
@@ -44,6 +45,8 @@ class PostgresControlPlane:
         self._dsn = dsn
         self._pool: ConnectionPool | None = None
         self._lock_connection: psycopg.Connection | None = None
+        self._lock_guard = threading.RLock()
+        self._instance_lock_expected = False
 
     def open(self) -> None:
         if self._pool is not None:
@@ -125,6 +128,7 @@ class PostgresControlPlane:
                 )
 
     def health(self) -> DatabaseHealth:
+        self.verify_instance_lock()
         pool = self._require_pool()
         try:
             with pool.connection() as connection:
@@ -150,31 +154,74 @@ class PostgresControlPlane:
         )
 
     def acquire_instance_lock(self) -> None:
-        if self._lock_connection is not None:
-            return
-        self._require_pool()
-        try:
-            connection = psycopg.connect(
-                self._dsn,
-                autocommit=True,
-                connect_timeout=5,
-            )
-            acquired = bool(
-                connection.execute(
-                    "SELECT pg_try_advisory_lock(%s)",
-                    (_INSTANCE_LOCK_ID,),
-                ).fetchone()[0]
-            )
-        except Exception:
-            raise ServerError(
-                ServerErrorCode.DATABASE_UNAVAILABLE
-            ) from None
-        if not acquired:
-            connection.close()
-            raise ServerError(
-                ServerErrorCode.INSTANCE_ALREADY_RUNNING
-            )
-        self._lock_connection = connection
+        with self._lock_guard:
+            if self._lock_connection is not None:
+                return
+            if self._instance_lock_expected:
+                raise ServerError(ServerErrorCode.INSTANCE_LOCK_LOST)
+            self._require_pool()
+            try:
+                connection = psycopg.connect(
+                    self._dsn,
+                    autocommit=True,
+                    connect_timeout=5,
+                )
+                acquired = bool(
+                    connection.execute(
+                        "SELECT pg_try_advisory_lock(%s)",
+                        (_INSTANCE_LOCK_ID,),
+                    ).fetchone()[0]
+                )
+            except Exception:
+                raise ServerError(
+                    ServerErrorCode.DATABASE_UNAVAILABLE
+                ) from None
+            if not acquired:
+                connection.close()
+                raise ServerError(
+                    ServerErrorCode.INSTANCE_ALREADY_RUNNING
+                )
+            self._lock_connection = connection
+            self._instance_lock_expected = True
+
+    def verify_instance_lock(self) -> None:
+        """Fail closed if the lifetime lock session has disappeared."""
+
+        with self._lock_guard:
+            if not self._instance_lock_expected:
+                return
+            connection = self._lock_connection
+            if connection is None:
+                raise ServerError(ServerErrorCode.INSTANCE_LOCK_LOST)
+            class_id = (_INSTANCE_LOCK_ID >> 32) & 0xFFFFFFFF
+            object_id = _INSTANCE_LOCK_ID & 0xFFFFFFFF
+            try:
+                row = connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_locks
+                        WHERE locktype = 'advisory'
+                          AND pid = pg_backend_pid()
+                          AND granted = true
+                          AND classid = %s
+                          AND objid = %s
+                          AND objsubid = 1
+                    )
+                    """,
+                    (class_id, object_id),
+                ).fetchone()
+                owned = row is not None and bool(row[0])
+            except Exception:
+                owned = False
+            if owned:
+                return
+            try:
+                connection.close()
+            except Exception:
+                pass
+            self._lock_connection = None
+            raise ServerError(ServerErrorCode.INSTANCE_LOCK_LOST)
 
     def register_boot(self, boot_id: str) -> str:
         if (
@@ -224,17 +271,22 @@ class PostgresControlPlane:
 
     def close(self) -> None:
         try:
-            if self._lock_connection is not None:
-                try:
-                    self._lock_connection.execute(
-                        "SELECT pg_advisory_unlock(%s)",
-                        (_INSTANCE_LOCK_ID,),
-                    )
-                finally:
+            with self._lock_guard:
+                connection = self._lock_connection
+                self._lock_connection = None
+                self._instance_lock_expected = False
+                if connection is not None:
                     try:
-                        self._lock_connection.close()
-                    finally:
-                        self._lock_connection = None
+                        connection.execute(
+                            "SELECT pg_advisory_unlock(%s)",
+                            (_INSTANCE_LOCK_ID,),
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
         finally:
             if self._pool is not None:
                 try:

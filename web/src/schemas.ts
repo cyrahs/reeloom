@@ -20,6 +20,85 @@ export const healthSchema = z
   })
   .strict();
 
+const boundRunActionSchema = z
+  .object({
+    action_id: z.string(),
+    kind: z.enum([
+      "ask_agent",
+      "revise_plan",
+      "execute",
+      "request_rescan",
+      "retry_agent",
+      "mark_failed",
+      "delete_run",
+    ]),
+    input: z.enum(["none", "message", "confirmation"]),
+    destructive: z.boolean(),
+  })
+  .strict();
+
+const runLifecycleSchema = z
+  .object({
+    schema_version: z.literal(1),
+    mode: z.enum(["forward_v2", "legacy_read_only"]),
+    state: z.enum([
+      "planning",
+      "needs_attention",
+      "awaiting_approval",
+      "execution_queued",
+      "executing",
+      "completed",
+      "failed",
+      "legacy_read_only",
+      "deleted",
+    ]),
+    terminal: z.boolean(),
+    revision: z.number().int().nonnegative(),
+    active_plan: z
+      .object({
+        family: z.enum(["media_move", "subtitle_acquire"]),
+        plan_hash: z.string(),
+      })
+      .strict()
+      .nullable(),
+    operation_id: z.string().nullable(),
+    operation_status: z
+      .enum([
+        "authorized",
+        "running",
+        "completed",
+        "partial",
+        "stale",
+        "collision",
+        "unsafe",
+        "unavailable",
+        "superseded",
+      ])
+      .nullable(),
+    rescan_state: z
+      .enum([
+        "queued",
+        "leased",
+        "accepted",
+        "retry_wait",
+        "completed",
+        "blocked",
+      ])
+      .nullable(),
+    successor_run_id: z.string().nullable(),
+    housekeeping: z
+      .object({
+        state: z
+          .enum(["queued", "leased", "retry_wait", "completed", "warning"])
+          .nullable(),
+        warning: z.string().nullable(),
+      })
+      .strict(),
+    actions: z.array(boundRunActionSchema),
+    etag: z.string(),
+  })
+  .strict();
+
 export const runSummarySchema = z
   .object({
     run_id: z.string(),
@@ -30,6 +109,7 @@ export const runSummarySchema = z
     plan_hash: z.string().nullable(),
     source_folder: z.string().nullable(),
     available_actions: z.array(z.literal("delete_run")),
+    lifecycle: runLifecycleSchema.nullable().default(null),
   })
   .strict();
 
@@ -191,7 +271,14 @@ const forwardExecutionSchema = z
     warnings: z.array(z.string()).max(1_000),
     fresh_scan_required: z.boolean(),
     rescan_state: z
-      .enum(["queued", "leased", "retry_wait", "completed", "blocked"])
+      .enum([
+        "queued",
+        "leased",
+        "accepted",
+        "retry_wait",
+        "completed",
+        "blocked",
+      ])
       .nullable(),
     successor_run_id: z.string().nullable(),
   })
@@ -230,6 +317,7 @@ export const runSchema = z
         "delete_run",
       ]),
     ),
+    lifecycle: runLifecycleSchema.nullable().default(null),
     settlement: z
       .object({
         approval_id: z.string(),
@@ -309,13 +397,30 @@ export const runSchema = z
           .nullable()
           .default(null),
         successor_status: z
-          .enum(["queued", "retry_wait", "leased", "dispatched", "completed", "blocked"])
+          .enum([
+            "queued",
+            "retry_wait",
+            "leased",
+            "accepted",
+            "dispatched",
+            "completed",
+            "blocked",
+          ])
           .nullable()
           .default(null),
       })
       .strict()
       .nullable()
       .default(null),
+  })
+  .strict();
+
+export const boundRunActionResultSchema = z
+  .object({
+    action_id: z.string(),
+    kind: boundRunActionSchema.shape.kind,
+    run: runSchema.nullable(),
+    assistant_reply: z.string().nullable(),
   })
   .strict();
 
@@ -626,7 +731,15 @@ export const subtitleAcquisitionResultSchema = z
       .nullable()
       .default(null),
     successor_status: z
-      .enum(["queued", "retry_wait", "leased", "dispatched", "completed", "blocked"])
+      .enum([
+        "queued",
+        "retry_wait",
+        "leased",
+        "accepted",
+        "dispatched",
+        "completed",
+        "blocked",
+      ])
       .nullable()
       .default(null),
   })

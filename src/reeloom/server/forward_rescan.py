@@ -24,7 +24,7 @@ class ForwardRescanWorker:
 
     def process_one(self, *, worker_id: str, now: datetime | None = None) -> bool:
         current = datetime.now(UTC) if now is None else now
-        claim = self.operations.claim_rescan(
+        claim = self.operations.claim_generation_request(
             worker_id=worker_id,
             now=current,
             lease_for=_LEASE,
@@ -32,38 +32,37 @@ class ForwardRescanWorker:
         if claim is None:
             return False
         try:
-            self.scheduler.acknowledge_forward_rescan(
-                run_id=claim.run_id,
-                audit_event="forward_operation_rescan",
-            )
-            self.operations.complete_rescan(
-                claim,
-                now=datetime.now(UTC) if now is None else now,
+            self.scheduler.accept_generation_request(
+                request_id=claim.request_id,
+                worker_id=claim.worker_id,
+                attempt_count=claim.attempt_count,
+                lease_expires_at=claim.lease_expires_at,
+                now=current,
             )
         except ServerError as error:
             if error.code is ServerErrorCode.DATABASE_UNAVAILABLE:
                 raise
-            self.operations.retry_rescan(
+            self.operations.retry_generation_request(
                 claim,
                 now=datetime.now(UTC) if now is None else now,
                 delay=_RETRY,
-                error=error.code.value,
+                warning=error.code.value,
             )
             _LOG.warning(
-                "forward_rescan_retry operation_id=%s error=%s",
-                claim.operation_id,
+                "forward_rescan_retry request_id=%s error=%s",
+                claim.request_id,
                 error.code.value,
             )
         except Exception as error:
-            self.operations.retry_rescan(
+            self.operations.retry_generation_request(
                 claim,
                 now=datetime.now(UTC) if now is None else now,
                 delay=_RETRY,
-                error=type(error).__name__[:128],
+                warning=type(error).__name__[:128],
             )
             _LOG.warning(
-                "forward_rescan_retry operation_id=%s error_type=%s",
-                claim.operation_id,
+                "forward_rescan_retry request_id=%s error_type=%s",
+                claim.request_id,
                 type(error).__name__,
             )
         return True

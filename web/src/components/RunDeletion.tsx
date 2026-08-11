@@ -3,7 +3,11 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, idempotencyKey } from "../api";
 import { useAuth } from "../auth";
-import { runDeletionSchema, runSchema } from "../schemas";
+import {
+  boundRunActionResultSchema,
+  runDeletionSchema,
+  runSchema,
+} from "../schemas";
 import { cursorKey } from "../sse";
 import { IconTrash } from "./Icon";
 import { errorMessage } from "./Status";
@@ -71,11 +75,13 @@ function useForgetRuns() {
 
 export function RunDeletionAction({
   runId,
+  actionId,
   disabled = false,
   redirectOnSuccess = false,
   className = "danger-button",
 }: {
   runId: string;
+  actionId?: string;
   disabled?: boolean;
   redirectOnSuccess?: boolean;
   className?: string;
@@ -92,15 +98,23 @@ export function RunDeletionAction({
   };
 
   const deletion = useMutation({
-    mutationFn: async (key: string) =>
-      api.request(
-        `/api/v1/runs/${encodedRunId}`,
-        runDeletionSchema,
-        {
-          method: "DELETE",
-          headers: { "Idempotency-Key": key },
-        },
-      ),
+    mutationFn: async (key: string) => {
+      if (actionId) {
+        return api.request(
+          `/api/v1/runs/${encodedRunId}/actions/${encodeURIComponent(actionId)}`,
+          boundRunActionResultSchema,
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": key },
+            body: { message: null },
+          },
+        );
+      }
+      return api.request(`/api/v1/runs/${encodedRunId}`, runDeletionSchema, {
+        method: "DELETE",
+        headers: { "Idempotency-Key": key },
+      });
+    },
     onSuccess: finish,
     onError: async (error) => {
       if (!(error instanceof ApiError) || error.code !== "network_uncertain") {
@@ -176,12 +190,12 @@ export function RunDeletionAction({
  * succeed deleted, and reports the rest instead of claiming the whole batch.
  */
 export function RunBulkDeletionAction({
-  runIds,
+  targets,
   disabled = false,
   className = "danger-outline compact",
   onDeleted,
 }: {
-  runIds: string[];
+  targets: Array<{ runId: string; actionId?: string }>;
   disabled?: boolean;
   className?: string;
   onDeleted?: (deleted: string[]) => void;
@@ -191,19 +205,34 @@ export function RunBulkDeletionAction({
   const [notice, setNotice] = useState("");
 
   const deletion = useMutation({
-    mutationFn: async (targets: string[]) => {
+    mutationFn: async (
+      currentTargets: Array<{ runId: string; actionId?: string }>,
+    ) => {
       const deleted: string[] = [];
       const failures: string[] = [];
-      for (const runId of targets) {
+      for (const { runId, actionId } of currentTargets) {
         try {
-          await api.request(
-            `/api/v1/runs/${encodeURIComponent(runId)}`,
-            runDeletionSchema,
-            {
-              method: "DELETE",
-              headers: { "Idempotency-Key": idempotencyKey() },
-            },
-          );
+          const encodedRunId = encodeURIComponent(runId);
+          if (actionId) {
+            await api.request(
+              `/api/v1/runs/${encodedRunId}/actions/${encodeURIComponent(actionId)}`,
+              boundRunActionResultSchema,
+              {
+                method: "POST",
+                headers: { "Idempotency-Key": idempotencyKey() },
+                body: { message: null },
+              },
+            );
+          } else {
+            await api.request(
+              `/api/v1/runs/${encodedRunId}`,
+              runDeletionSchema,
+              {
+                method: "DELETE",
+                headers: { "Idempotency-Key": idempotencyKey() },
+              },
+            );
+          }
           deleted.push(runId);
         } catch (error) {
           if (error instanceof ApiError && error.status === 404) {
@@ -227,14 +256,14 @@ export function RunBulkDeletionAction({
   });
 
   const { armed, click, disarm } = useArmedAction(() =>
-    deletion.mutate(runIds),
+    deletion.mutate(targets),
   );
 
   return (
     <>
       <button
         className={armed ? `${className} armed` : className}
-        disabled={disabled || !runIds.length || deletion.isPending}
+        disabled={disabled || !targets.length || deletion.isPending}
         aria-live="polite"
         onClick={() => {
           if (!armed) setNotice("");
@@ -246,8 +275,8 @@ export function RunBulkDeletionAction({
         {deletion.isPending
           ? "正在删除…"
           : armed
-            ? `再点一次删除 ${runIds.length} 条`
-            : `删除所选 ${runIds.length} 条`}
+            ? `再点一次删除 ${targets.length} 条`
+            : `删除所选 ${targets.length} 条`}
       </button>
       {notice ? <p className="form-error" role="status">{notice}</p> : null}
     </>

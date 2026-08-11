@@ -5,61 +5,58 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.forward_operation_repository import ForwardRescanClaim
+from reeloom.server.forward_operation_repository import GenerationRequestClaim
 from reeloom.server.forward_rescan import ForwardRescanWorker
 
 _NOW = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
 
 
 class _Operations:
-    def __init__(self, claim: ForwardRescanClaim | None) -> None:
+    def __init__(self, claim: GenerationRequestClaim | None) -> None:
         self.claim = claim
         self.completed: list[str] = []
         self.retried: list[tuple[str, str]] = []
 
-    def claim_rescan(self, **_: object) -> ForwardRescanClaim | None:
+    def claim_generation_request(
+        self, **_: object
+    ) -> GenerationRequestClaim | None:
         claim, self.claim = self.claim, None
         return claim
 
-    def complete_rescan(
-        self, claim: ForwardRescanClaim, **_: object
-    ) -> None:
-        self.completed.append(claim.operation_id)
-
-    def retry_rescan(
+    def retry_generation_request(
         self,
-        claim: ForwardRescanClaim,
+        claim: GenerationRequestClaim,
         *,
-        error: str,
+        warning: str,
         **_: object,
     ) -> None:
-        self.retried.append((claim.operation_id, error))
+        self.retried.append((claim.request_id, warning))
 
 
 class _Scheduler:
     def __init__(self, error: ServerError | None = None) -> None:
         self.error = error
-        self.calls: list[tuple[str, str | None]] = []
+        self.calls: list[str] = []
 
-    def acknowledge_forward_rescan(
-        self, *, run_id: str, audit_event: str | None = None
+    def accept_generation_request(
+        self, *, request_id: str, **_: object
     ) -> None:
-        self.calls.append((run_id, audit_event))
+        self.calls.append(request_id)
         if self.error is not None:
             raise self.error
 
 
-def _claim() -> ForwardRescanClaim:
-    return ForwardRescanClaim(
-        operation_id="operation:1",
-        run_id="run:1",
+def _claim() -> GenerationRequestClaim:
+    return GenerationRequestClaim(
+        request_id="generation:1",
+        origin_run_id="run:1",
         worker_id="worker:1",
         attempt_count=1,
         lease_expires_at=_NOW + timedelta(minutes=1),
     )
 
 
-def test_forward_rescan_dispatches_once_and_completes_outbox() -> None:
+def test_forward_rescan_accepts_one_truthful_generation_request() -> None:
     operations = _Operations(_claim())
     scheduler = _Scheduler()
     worker = ForwardRescanWorker(operations, scheduler)  # type: ignore[arg-type]
@@ -67,8 +64,7 @@ def test_forward_rescan_dispatches_once_and_completes_outbox() -> None:
     assert worker.process_one(worker_id="worker:1", now=_NOW)
     assert not worker.process_one(worker_id="worker:1", now=_NOW)
 
-    assert scheduler.calls == [("run:1", "forward_operation_rescan")]
-    assert operations.completed == ["operation:1"]
+    assert scheduler.calls == ["generation:1"]
     assert operations.retried == []
 
 
@@ -83,7 +79,7 @@ def test_forward_rescan_retries_control_plane_conflict() -> None:
 
     assert operations.completed == []
     assert operations.retried == [
-        ("operation:1", "interaction_conflict")
+        ("generation:1", "interaction_conflict")
     ]
 
 

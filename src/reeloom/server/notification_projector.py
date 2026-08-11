@@ -16,7 +16,10 @@ from reeloom.kernel.movie_plan import MovieRenamePlan
 from reeloom.kernel.movie_forward_execution import MovieRenamePlanV2
 from reeloom.kernel.rename_plan import RenamePlan
 from reeloom.kernel.forward_execution import RenamePlanV2
+from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlanV2
 from reeloom.ports.plans import PlanStore
+from reeloom.ports.subtitle_acquisition import SubtitleAcquisitionPlanStore
 from reeloom.server.config import ApplyPolicy, ConfigRevision
 from reeloom.server.notification_outbox import PostgresNotificationOutbox
 from reeloom.server.notifications import (
@@ -76,9 +79,11 @@ class PostgresNotificationProjector:
         *,
         plans: PlanStore,
         outbox: PostgresNotificationOutbox,
+        subtitle_plans: SubtitleAcquisitionPlanStore | None = None,
     ) -> None:
         self._plans = plans
         self._outbox = outbox
+        self._subtitle_plans = subtitle_plans
 
     def plan_ready(
         self,
@@ -87,7 +92,23 @@ class PostgresNotificationProjector:
         run_id: str,
         plan_hash: str,
     ) -> None:
-        if not self._enabled(connection, run_id, NotificationType.PLAN_READY):
+        semantic = connection.execute(
+            """
+            SELECT discovery.snapshot_id LIKE 'candidate-snapshot-v2:%%'
+            FROM runs AS run
+            JOIN discoveries AS discovery USING (discovery_id)
+            WHERE run.run_id = %s
+            """,
+            (run_id,),
+        ).fetchone()
+        if semantic is not None and bool(semantic[0]):
+            # M14.6 plan handoff creates a revision-bound intent instead.
+            return
+        if not self._enabled(
+            connection,
+            run_id,
+            NotificationType.PLAN_READY,
+        ):
             return
         plan = self._plan(run_id, plan_hash)
         videos, subtitles = self._counts(plan)
@@ -101,6 +122,111 @@ class PostgresNotificationProjector:
                 subtitle_count=subtitles,
                 unmapped_count=len(plan.draft.unmapped_candidate_ids),
                 plan_hash=plan_hash,
+            ),
+        )
+
+    def plan_ready_from_projection(
+        self,
+        connection: SqlConnection,
+        *,
+        run_id: str,
+        plan_hash: str,
+        scope_label: str,
+        effect_kind: str,
+    ) -> None:
+        if not self._enabled(
+            connection,
+            run_id,
+            NotificationType.PLAN_READY,
+            effect_kind=effect_kind,
+        ):
+            return
+        if effect_kind == "subtitle_acquire":
+            if self._subtitle_plans is None:
+                raise ValueError("subtitle notification plan store unavailable")
+            plan = SubtitleAcquisitionPlanV2.from_canonical_bytes(
+                self._subtitle_plans.load(plan_hash),
+                plan_hash=plan_hash,
+            )
+            if plan.run_id != run_id:
+                raise ValueError("notification plan binding mismatch")
+            videos = 0
+            subtitles = len(plan.members)
+            unmapped = 0
+        elif effect_kind == "media_move":
+            plan = self._plan(run_id, plan_hash)
+            videos, subtitles = self._counts(plan)
+            unmapped = len(plan.draft.unmapped_candidate_ids)
+        else:
+            raise ValueError("invalid notification effect kind")
+        self._enqueue(
+            connection,
+            dedupe_key=f"plan_ready:{plan_hash}",
+            payload=PlanReadyNotification(
+                subject=self._projection_subject(connection, run_id),
+                scope_label=scope_label,
+                video_count=videos,
+                subtitle_count=subtitles,
+                unmapped_count=unmapped,
+                plan_hash=plan_hash,
+            ),
+        )
+
+    def operation_completed_from_projection(
+        self,
+        connection: SqlConnection,
+        *,
+        run_id: str,
+        operation_id: str,
+        applied_count: int,
+        effect_kind: str,
+        plan_hash: str | None,
+    ) -> None:
+        if not self._enabled(
+            connection, run_id, NotificationType.ARCHIVE_COMPLETED
+        ):
+            return
+        if effect_kind == "subtitle_acquire":
+            if self._subtitle_plans is None or plan_hash is None:
+                raise ValueError("subtitle notification plan unavailable")
+            plan = SubtitleAcquisitionPlanV2.from_canonical_bytes(
+                self._subtitle_plans.load(plan_hash),
+                plan_hash=plan_hash,
+            )
+            if plan.run_id != run_id:
+                raise ValueError("notification plan binding mismatch")
+            applied_count = len(plan.members)
+        self._enqueue(
+            connection,
+            dedupe_key=f"archive_completed:{operation_id}",
+            payload=ArchiveCompletedNotification(
+                subject=self._projection_subject(connection, run_id),
+                applied_count=applied_count,
+                unmapped_count=0,
+                folder_outcome=FolderOutcome.NOT_APPLICABLE,
+                transaction_id=operation_id,
+            ),
+        )
+
+    def attention_from_projection(
+        self,
+        connection: SqlConnection,
+        *,
+        run_id: str,
+        operation_id: str,
+        kind: AttentionKind,
+    ) -> None:
+        if not self._enabled(
+            connection, run_id, NotificationType.ATTENTION_REQUIRED
+        ):
+            return
+        self._enqueue(
+            connection,
+            dedupe_key=f"attention_required:{operation_id}:{kind.value}",
+            payload=AttentionNotification(
+                subject=self._projection_subject(connection, run_id),
+                kind=kind,
+                event_id=operation_id,
             ),
         )
 
@@ -289,6 +415,8 @@ class PostgresNotificationProjector:
         connection: SqlConnection,
         run_id: str,
         notification_type: NotificationType,
+        *,
+        effect_kind: str | None = None,
     ) -> bool:
         row = connection.execute(
             """
@@ -309,6 +437,7 @@ class PostgresNotificationProjector:
             and not (
                 notification_type is NotificationType.PLAN_READY
                 and config.apply_policy is ApplyPolicy.AUTOMATIC
+                and effect_kind != "subtitle_acquire"
             )
         )
 
@@ -363,6 +492,42 @@ class PostgresNotificationProjector:
             year=identity.release_year,
             work_type=plan.work_type,
             tmdb_id=identity.tmdb_id,
+            poster=poster,
+        )
+
+    @staticmethod
+    def _projection_subject(
+        connection: SqlConnection,
+        run_id: str,
+    ) -> NotificationSubject:
+        row = connection.execute(
+            """
+            SELECT run.work_type,
+                   state.projection_payload->'selected_series',
+                   state.projection_payload->'selected_movie',
+                   state.projection_payload->>'selected_poster_path'
+            FROM runs AS run
+            JOIN run_states AS state USING (run_id)
+            WHERE run.run_id = %s
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("notification run projection unavailable")
+        identity = row[1] if isinstance(row[1], dict) else row[2]
+        if not isinstance(identity, dict):
+            raise ValueError("notification identity unavailable")
+        poster = None if row[3] is None else TmdbPosterRef(str(row[3]))
+        year = identity.get("year", identity.get("release_year"))
+        return NotificationSubject(
+            title=str(identity["title_zh_cn"]),
+            year=None if year is None else int(year),
+            work_type=TmdbWorkType(str(row[0])),
+            tmdb_id=(
+                None
+                if identity.get("tmdb_id") is None
+                else int(identity["tmdb_id"])
+            ),
             poster=poster,
         )
 

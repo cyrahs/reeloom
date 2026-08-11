@@ -15,6 +15,7 @@ def forward_available_actions(
     *,
     policy: ApplyPolicy,
     operation_status: ExecutionOperationStatus | None,
+    rescan_state: str | None = None,
 ) -> tuple[ForwardAvailableAction, ...]:
     """One policy function shared by v2 command admission and read models."""
 
@@ -36,7 +37,10 @@ def forward_available_actions(
         ExecutionOperationStatus.COLLISION,
         ExecutionOperationStatus.UNSAFE,
         ExecutionOperationStatus.UNAVAILABLE,
-    }:
+    } or (
+        operation_status is ExecutionOperationStatus.COMPLETED
+        and rescan_state == "blocked"
+    ):
         return (ForwardAvailableAction.RESCAN,)
     if operation_status in {
         ExecutionOperationStatus.AUTHORIZED,

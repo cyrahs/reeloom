@@ -11,6 +11,7 @@ class ServerErrorCode(StrEnum):
     SCHEMA_MISMATCH = "schema_mismatch"
     MIGRATION_CHECKSUM_DRIFT = "migration_checksum_drift"
     INSTANCE_ALREADY_RUNNING = "instance_already_running"
+    INSTANCE_LOCK_LOST = "instance_lock_lost"
     UNSAFE_STATE_ROOT = "unsafe_state_root"
     INVALID_CONFIG = "invalid_config"
     CONFIG_CONFLICT = "config_conflict"

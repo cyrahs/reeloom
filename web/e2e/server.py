@@ -234,7 +234,8 @@ def main() -> None:
     models = deque(_movie_model() for _ in range(8))
     with tempfile.TemporaryDirectory(
         prefix="reeloom-browser-e2e-",
-    ) as root:
+    ) as temporary_root:
+        root = Path(temporary_root).resolve(strict=True)
         state = Path(root) / "state"
         incoming = Path(root) / "incoming"
         archive = Path(root) / "archive"

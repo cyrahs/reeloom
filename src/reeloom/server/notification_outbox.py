@@ -51,6 +51,7 @@ class OutboxState(StrEnum):
     RETRY_WAIT = "retry_wait"
     SENT = "sent"
     DEAD = "dead"
+    CANCELLED = "cancelled"
 
 
 class DeliveryErrorCode(StrEnum):
@@ -425,6 +426,50 @@ class PostgresNotificationOutbox:
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
+                    # Revalidate old and newly projected approval notices at
+                    # the final delivery boundary. A pre-cutover writer or a
+                    # crash between lifecycle settlement and migration must
+                    # not resurrect a stale "waiting for approval" message.
+                    connection.execute(
+                        """
+                        UPDATE notification_outbox AS notification
+                        SET state = 'cancelled', lease_owner = NULL,
+                            lease_expires_at = NULL,
+                            last_error_code = NULL, updated_at = %s
+                        WHERE notification.notification_type = 'plan_ready'
+                          AND notification.state IN (
+                              'queued', 'retry_wait'
+                          )
+                          AND EXISTS (
+                              SELECT 1
+                              FROM effect_plan_bindings_v2 AS binding
+                              JOIN run_lifecycle_controls_v2 AS control
+                                ON control.run_id = binding.run_id
+                              LEFT JOIN execution_operations_v2 AS operation
+                                ON operation.operation_id =
+                                   control.operation_id
+                              LEFT JOIN planning_terminal_results_v2 AS terminal
+                                ON terminal.run_id = control.run_id
+                              WHERE binding.plan_hash =
+                                    notification.payload_json->>'plan_hash'
+                                AND (
+                                    control.mode = 'legacy_read_only'
+                                    OR control.effect_policy
+                                       IS DISTINCT FROM 'manual'
+                                    OR control.effect_plan_hash
+                                       IS DISTINCT FROM binding.plan_hash
+                                    OR control.operation_id IS NOT NULL
+                                    OR terminal.run_id IS NOT NULL
+                                    OR operation.status IN (
+                                        'completed', 'partial', 'stale',
+                                        'collision', 'unsafe', 'unavailable',
+                                        'superseded'
+                                    )
+                                )
+                          )
+                        """,
+                        (now,),
+                    )
                     row = connection.execute(
                         """
                         SELECT notification_id, dedupe_key,

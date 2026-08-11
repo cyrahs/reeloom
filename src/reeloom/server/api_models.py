@@ -59,6 +59,7 @@ class RunSummary(_StrictModel):
     plan_hash: str | None
     source_folder: str | None = None
     available_actions: list[Literal["delete_run"]]
+    lifecycle: RunLifecycleView | None = None
 
 
 class RunsResponse(_StrictModel):
@@ -150,7 +151,12 @@ class ForwardExecutionView(_StrictModel):
     warnings: list[str] = Field(max_length=1_000)
     fresh_scan_required: bool
     rescan_state: Literal[
-        "queued", "leased", "retry_wait", "completed", "blocked"
+        "queued",
+        "leased",
+        "accepted",
+        "retry_wait",
+        "completed",
+        "blocked",
     ] | None
     successor_run_id: str | None
 
@@ -200,6 +206,76 @@ class ArchiveReport(_StrictModel):
     observed_at: str
 
 
+class BoundRunActionView(_StrictModel):
+    action_id: str = Field(min_length=1, max_length=128)
+    kind: Literal[
+        "ask_agent",
+        "revise_plan",
+        "execute",
+        "request_rescan",
+        "retry_agent",
+        "mark_failed",
+        "delete_run",
+    ]
+    input: Literal["none", "message", "confirmation"]
+    destructive: bool
+
+
+class RunActivePlanView(_StrictModel):
+    family: Literal["media_move", "subtitle_acquire"]
+    plan_hash: str
+
+
+class RunHousekeepingView(_StrictModel):
+    state: Literal[
+        "queued", "leased", "retry_wait", "completed", "warning"
+    ] | None
+    warning: str | None
+
+
+class RunLifecycleView(_StrictModel):
+    schema_version: Literal[1]
+    mode: Literal["forward_v2", "legacy_read_only"]
+    state: Literal[
+        "planning",
+        "needs_attention",
+        "awaiting_approval",
+        "execution_queued",
+        "executing",
+        "completed",
+        "failed",
+        "legacy_read_only",
+        "deleted",
+    ]
+    terminal: bool
+    revision: int = Field(ge=0)
+    active_plan: RunActivePlanView | None
+    operation_id: str | None
+    operation_status: Literal[
+        "authorized",
+        "running",
+        "completed",
+        "partial",
+        "stale",
+        "collision",
+        "unsafe",
+        "unavailable",
+        "superseded",
+    ] | None
+    rescan_state: Literal[
+        "queued",
+        "leased",
+        "accepted",
+        "retry_wait",
+        "completed",
+        "blocked",
+    ] | None
+    successor_run_id: str | None
+    housekeeping: RunHousekeepingView
+    actions: list[BoundRunActionView]
+    etag: str
+
+
 class RunResponse(_StrictModel):
     run_id: str
     status: str
@@ -232,12 +308,32 @@ class RunResponse(_StrictModel):
             "delete_run",
         ]
     ]
+    lifecycle: RunLifecycleView | None = None
     settlement: RunSettlement | None
     execution: ForwardExecutionView | None = None
     source_folder: str | None = None
     folder_disposition: FolderDispositionView | None = None
     archive_report: ArchiveReport | None
     subtitle_acquisition: SubtitleAcquisitionView | None = None
+
+
+class RunActionRequest(_StrictModel):
+    message: str | None = Field(default=None, max_length=16_384)
+
+
+class RunActionResponse(_StrictModel):
+    action_id: str
+    kind: Literal[
+        "ask_agent",
+        "revise_plan",
+        "execute",
+        "request_rescan",
+        "retry_agent",
+        "mark_failed",
+        "delete_run",
+    ]
+    run: RunResponse | None
+    assistant_reply: str | None = None
 
 
 class SubtitleFailureDiagnostic(_StrictModel):
@@ -303,7 +399,8 @@ class SubtitleAcquisitionView(_StrictModel):
         SubtitleFailureDiagnostic | SubtitlePublicationFailureDiagnostic | None
     ) = None
     successor_status: Literal[
-        "queued", "retry_wait", "leased", "dispatched", "completed", "blocked"
+        "queued", "retry_wait", "leased", "accepted", "dispatched",
+        "completed", "blocked"
     ] | None = None
 
 
@@ -635,8 +732,7 @@ class AttentionRetryResponse(_StrictModel):
 
 class AttentionFailResponse(_StrictModel):
     run_id: str
-    status: Literal["failure_planned"]
-    plan_hash: str
+    status: Literal["failed"]
 
 
 class ReapplyRequest(_StrictModel):

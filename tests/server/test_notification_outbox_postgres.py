@@ -7,7 +7,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from reeloom.kernel.approval import ApprovalRecord, ApprovalScope
+from reeloom.server.approval_repository import PostgresApprovalStore
 from reeloom.server.database import PostgresControlPlane
+from reeloom.server.config_repository import PostgresConfigRepository
 from reeloom.server.notification_outbox import (
     DeliveryErrorCode,
     DeliveryResult,
@@ -17,7 +20,12 @@ from reeloom.server.notification_outbox import (
     PostgresNotificationOutbox,
     RetryPolicy,
 )
-from reeloom.server.notifications import TelegramTestNotification
+from reeloom.kernel.tmdb import TmdbWorkType
+from reeloom.server.notifications import (
+    NotificationSubject,
+    PlanReadyNotification,
+    TelegramTestNotification,
+)
 
 
 def _dsn() -> str:
@@ -229,5 +237,265 @@ def test_transactional_enqueue_rolls_back_with_durable_fact() -> None:
         with pytest.raises(NotificationOutboxError) as raised:
             repository.get(notification_id)
         assert raised.value.code == "notification_not_found"
+    finally:
+        control.close()
+
+
+@pytest.mark.postgres
+def test_delivery_boundary_cancels_quarantined_plan_ready() -> None:
+    control = PostgresControlPlane(_dsn())
+    now = datetime.now(UTC)
+    suffix = uuid.uuid4().hex
+    run_id = f"run-notification-quarantine-{suffix}"
+    plan_hash = "sha256:" + suffix.ljust(64, "0")[:64]
+    notification_id = f"notification-quarantine-{suffix}"
+    try:
+        control.open()
+        control.migrate()
+        config = PostgresConfigRepository(control.pool).head()
+        assert config is not None
+        watch_id = f"watch-notification-{suffix}"
+        discovery_id = f"discovery-notification-{suffix}"
+        with control.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    INSERT INTO watch_states
+                        (watch_id, config_revision, fence, work_type,
+                         settle_interval_seconds, semantic_v2)
+                    VALUES (%s, %s, %s, 'anime', 1, true)
+                    """,
+                    (watch_id, config.revision, config.revision),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO discoveries
+                        (discovery_id, watch_id, config_revision,
+                         snapshot_id, snapshot_payload, work_type,
+                         discovered_at)
+                    VALUES (%s, %s, %s, %s, '{}'::jsonb,
+                            'anime', %s)
+                    """,
+                    (
+                        discovery_id,
+                        watch_id,
+                        config.revision,
+                        "candidate-snapshot-v2:" + "1" * 64,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runs
+                        (run_id, discovery_id, config_revision, work_type,
+                         source_capability, status)
+                    VALUES (%s, %s, %s, 'anime', %s, 'superseded')
+                    """,
+                    (run_id, discovery_id, config.revision, f"source-{suffix}"),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO plan_lineage
+                        (run_id, version, plan_hash, plan_kind)
+                    VALUES (%s, 1, %s, 'initial')
+                    """,
+                    (run_id, plan_hash),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO run_lifecycle_controls_v2
+                        (run_id, mode, classification_reason)
+                    VALUES (%s, 'legacy_read_only', 'test_quarantine')
+                    """,
+                    (run_id,),
+                )
+        repository = PostgresNotificationOutbox(control.pool)
+        repository.enqueue(
+            notification_id=notification_id,
+            dedupe_key=f"plan_ready:{plan_hash}",
+            payload=PlanReadyNotification(
+                subject=NotificationSubject(
+                    title="测试动画",
+                    year=2026,
+                    work_type=TmdbWorkType.ANIME,
+                    tmdb_id=1,
+                ),
+                scope_label="媒体整理",
+                video_count=1,
+                subtitle_count=0,
+                unmapped_count=0,
+                plan_hash=plan_hash,
+            ),
+            available_at=now,
+        )
+
+        assert repository.claim(
+            worker_id="notification-worker",
+            now=now,
+            lease_for=timedelta(seconds=30),
+        ) is None
+        assert repository.get(notification_id).state is OutboxState.CANCELLED
+    finally:
+        control.close()
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("operation_status", ["authorized", "running"])
+def test_delivery_boundary_cancels_plan_ready_after_authorization(
+    operation_status: str,
+) -> None:
+    control = PostgresControlPlane(_dsn())
+    now = datetime.now(UTC)
+    suffix = uuid.uuid4().hex
+    run_id = f"run-notification-authorized-{suffix}"
+    plan_hash = "sha256:" + uuid.uuid4().hex * 2
+    operation_id = f"operation-notification-{suffix}"
+    notification_id = f"notification-authorized-{suffix}"
+    try:
+        control.open()
+        control.migrate()
+        with control.pool.connection() as connection:
+            revision = int(
+                connection.execute(
+                    "SELECT COALESCE(max(revision), 0) FROM config_revisions"
+                ).fetchone()[0]
+            )
+            if revision == 0:
+                revision = 1
+                connection.execute(
+                    """
+                    INSERT INTO config_revisions
+                        (revision_id, revision, payload, created_at)
+                    VALUES (%s, 1, '{}'::jsonb, %s)
+                    """,
+                    (f"config-notification-{suffix}", now),
+                )
+        watch_id = f"watch-notification-authorized-{suffix}"
+        discovery_id = f"discovery-notification-authorized-{suffix}"
+        approval = ApprovalRecord.create(
+            run_id=run_id,
+            plan_hash=plan_hash,
+            scope=ApprovalScope.APPLY,
+            expires_at=now + timedelta(minutes=5),
+            nonce=uuid.uuid4().hex,
+        )
+        with control.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    INSERT INTO watch_states
+                        (watch_id, config_revision, fence, work_type,
+                         settle_interval_seconds, semantic_v2)
+                    VALUES (%s, %s, %s, 'anime', 1, true)
+                    """,
+                    (watch_id, revision, revision),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO discoveries
+                        (discovery_id, watch_id, config_revision,
+                         snapshot_id, snapshot_payload, work_type,
+                         discovered_at)
+                    VALUES (%s, %s, %s, %s, '{}'::jsonb, 'anime', %s)
+                    """,
+                    (
+                        discovery_id,
+                        watch_id,
+                        revision,
+                        "candidate-snapshot-v2:" + uuid.uuid4().hex * 2,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runs
+                        (run_id, discovery_id, config_revision, work_type,
+                         source_capability, status)
+                    VALUES (%s, %s, %s, 'anime', %s, 'applying')
+                    """,
+                    (run_id, discovery_id, revision, f"source-{suffix}"),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO plan_lineage
+                        (run_id, version, plan_hash, plan_kind)
+                    VALUES (%s, 1, %s, 'initial')
+                    """,
+                    (run_id, plan_hash),
+                )
+        PostgresApprovalStore(control.pool).issue(approval)
+        with control.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    INSERT INTO execution_operations_v2
+                        (operation_id, schema_version, run_id, plan_hash,
+                         approval_id, operation_kind, status, attempt_count,
+                         lease_owner, lease_expires_at)
+                    VALUES (%s, 2, %s, %s, %s, 'media_move', %s, 0,
+                            CASE WHEN %s = 'running' THEN 'worker:test' END,
+                            CASE WHEN %s = 'running'
+                                 THEN %s + interval '1 minute' END)
+                    """,
+                    (
+                        operation_id,
+                        run_id,
+                        plan_hash,
+                        approval.approval_id,
+                        operation_status,
+                        operation_status,
+                        operation_status,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO run_lifecycle_controls_v2
+                        (run_id, mode, classification_reason, revision,
+                         effect_kind, effect_plan_hash, effect_policy,
+                         operation_id, handoff_event_sequence)
+                    VALUES (%s, 'forward_v2', 'test_authorized_notice', 1,
+                            'media_move', %s, 'manual', %s, 1)
+                    """,
+                    (run_id, plan_hash, operation_id),
+                )
+        repository = PostgresNotificationOutbox(control.pool)
+        repository.enqueue(
+            notification_id=notification_id,
+            dedupe_key=f"plan_ready:{plan_hash}",
+            payload=PlanReadyNotification(
+                subject=NotificationSubject(
+                    title="已批准动画",
+                    year=2026,
+                    work_type=TmdbWorkType.ANIME,
+                    tmdb_id=1,
+                ),
+                scope_label="媒体整理",
+                video_count=1,
+                subtitle_count=0,
+                unmapped_count=0,
+                plan_hash=plan_hash,
+            ),
+            available_at=now,
+        )
+
+        assert repository.claim(
+            worker_id="notification-worker",
+            now=now,
+            lease_for=timedelta(seconds=30),
+        ) is None
+        assert repository.get(notification_id).state is OutboxState.CANCELLED
+        with control.pool.connection() as connection:
+            connection.execute(
+                """
+                UPDATE execution_operations_v2
+                SET status = 'superseded', outcomes = '[]'::jsonb,
+                    lease_owner = NULL, lease_expires_at = NULL,
+                    updated_at = clock_timestamp()
+                WHERE operation_id = %s
+                  AND status IN ('authorized', 'running')
+                """,
+                (operation_id,),
+            )
     finally:
         control.close()

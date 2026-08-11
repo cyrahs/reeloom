@@ -46,6 +46,16 @@ def test_foundation_migration_is_versioned_and_immutable() -> None:
     assert "legacy_v1_superseded" in by_version[37]
     assert "watch_folder_observations_check" in by_version[38]
     assert "folder-inventory-v2:" in by_version[38]
+    assert "run_lifecycle_controls_v2" in by_version[41]
+    assert "planning_terminal_results_v2" in by_version[41]
+    assert "generation_requests_v2" in by_version[41]
+    assert "notification_intents_v2" in by_version[41]
+    assert "candidate-snapshot-v2:%" in by_version[41]
+    assert "legacy_subtitle_history" in by_version[41]
+    assert "cancelled" in by_version[41]
+    assert "legacy_incomplete_terminal" in by_version[42]
+    assert "control.operation_id IS NOT NULL" in by_version[42]
+    assert "schema_version' = '2'" in by_version[45]
 
 
 def test_checksum_drift_fails_closed() -> None:

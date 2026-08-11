@@ -104,8 +104,11 @@ def test_scanner_accepts_posix_non_utf8_filename(tmp_path: Path) -> None:
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
             0o600,
         )
-    except PermissionError as error:
-        if sys.platform == "darwin" and error.errno == errno.EPERM:
+    except OSError as error:
+        if sys.platform == "darwin" and error.errno in {
+            errno.EPERM,
+            errno.EILSEQ,
+        }:
             pytest.skip("the active macOS filesystem rejects non-UTF-8 names")
         raise
     try:

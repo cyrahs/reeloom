@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
+from types import SimpleNamespace
+
+import pytest
 
 from reeloom.executor.apply import ApplyResult, ApplyStatus
 from reeloom.executor.errors import ExecutorErrorCode
@@ -30,6 +33,7 @@ from reeloom.server.notifications import (
     AttentionKind,
     AttentionNotification,
     FolderOutcome,
+    NotificationType,
     PlanReadyNotification,
 )
 
@@ -60,6 +64,21 @@ class _Connection:
         del params
         if "SELECT config.payload" in query:
             return _Cursor((self._config,))
+        if "discovery.snapshot_id LIKE" in query:
+            return _Cursor((False,))
+        if "state.projection_payload->'selected_movie'" in query:
+            return _Cursor(
+                (
+                    "movie",
+                    None,
+                    {
+                        "title_zh_cn": "测试电影",
+                        "release_year": 2024,
+                        "tmdb_id": 99,
+                    },
+                    self._poster_path,
+                )
+            )
         if "selected_poster_path" in query:
             return _Cursor((self._poster_path,))
         if "SELECT EXISTS" in query:
@@ -191,6 +210,65 @@ def test_plan_ready_projects_counts_and_tmdb_poster() -> None:
     assert item["dedupe_key"] == f"plan_ready:{plan.plan_hash}"
 
 
+def test_v2_plan_ready_projects_actual_media_counts() -> None:
+    plan = _plan()
+    projector, outbox = _projector(plan)
+
+    projector.plan_ready_from_projection(
+        _Connection(_config()),
+        run_id=plan.run_id,
+        plan_hash=plan.plan_hash,
+        scope_label="媒体整理",
+        effect_kind="media_move",
+    )
+
+    assert len(outbox.items) == 1
+    payload = outbox.items[0]["payload"]
+    assert isinstance(payload, PlanReadyNotification)
+    assert payload.video_count == 1
+    assert payload.subtitle_count == 0
+    assert payload.unmapped_count == 1
+
+
+def test_subtitle_completion_projects_member_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    media_plan = _plan()
+    outbox = _Outbox()
+
+    class SubtitlePlans:
+        def load(self, plan_hash: str) -> bytes:
+            assert plan_hash == "sha256:" + "a" * 64
+            return b"subtitle-plan"
+
+    monkeypatch.setattr(
+        "reeloom.server.notification_projector."
+        "SubtitleAcquisitionPlanV2.from_canonical_bytes",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            run_id=media_plan.run_id,
+            members=(object(), object(), object()),
+        ),
+    )
+    projector = PostgresNotificationProjector(
+        plans=_Plans(media_plan),  # type: ignore[arg-type]
+        outbox=outbox,  # type: ignore[arg-type]
+        subtitle_plans=SubtitlePlans(),  # type: ignore[arg-type]
+    )
+
+    projector.operation_completed_from_projection(
+        _Connection(_config()),
+        run_id=media_plan.run_id,
+        operation_id="operation:subtitle",
+        applied_count=1,
+        effect_kind="subtitle_acquire",
+        plan_hash="sha256:" + "a" * 64,
+    )
+
+    payload = outbox.items[0]["payload"]
+    assert isinstance(payload, ArchiveCompletedNotification)
+    assert payload.applied_count == 3
+
+
 def test_disabled_config_produces_no_outbox_row() -> None:
     plan = _plan()
     projector, outbox = _projector(plan)
@@ -237,6 +315,18 @@ def test_automatic_policy_suppresses_only_plan_ready_notification() -> None:
     assert len(outbox.items) == 1
     assert isinstance(
         outbox.items[0]["payload"], ArchiveCompletedNotification
+    )
+
+
+def test_automatic_media_policy_does_not_suppress_manual_subtitle_notice() -> None:
+    plan = _plan()
+    projector, _outbox = _projector(plan)
+
+    assert projector._enabled(
+        _Connection(_config(apply_policy=ApplyPolicy.AUTOMATIC)),
+        plan.run_id,
+        NotificationType.PLAN_READY,
+        effect_kind="subtitle_acquire",
     )
 
 

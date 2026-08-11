@@ -35,6 +35,11 @@ def test_production_composition_uses_shared_subtitle_operation_ledger() -> None:
     assert "subtitle_plan_sink=subtitle_acquisitions.register_plan" in source
     for forbidden in (
         "FilesystemApprovalStore",
+        "FilesystemExecutor",
+        "FilesystemJournalStore",
+        "FilesystemFolderJournalStore",
+        "FolderDispositionCoordinator",
+        "FolderDispositionExecutor",
         "PostgresSubtitleSuccessorOutbox",
         "PostgresSubtitlePublicationRepository",
         "SubtitleSuccessorWorker",
@@ -49,9 +54,22 @@ def test_active_run_registration_does_not_consume_legacy_subtitle_outbox() -> No
     source = (
         _ROOT / "src/reeloom/server/scheduler_repository.py"
     ).read_text(encoding="utf-8")
-    register_run = source.split("    def register_run(", 1)[1].split(
-        "    def ", 1
+    register_run = source.split(
+        "def _register_run_in_transaction(", 1
+    )[1].split(
+        "\n\nclass PostgresSchedulerRepository", 1
     )[0]
 
-    assert "execution_rescan_outbox_v2" in register_run
+    assert "generation_requests_v2" in register_run
+    assert "successor_discovery_id" in register_run
     assert "subtitle_scan_requests_v2" not in register_run
+
+
+def test_legacy_effect_graph_is_opt_in_only_for_component_history() -> None:
+    for relative in (
+        "src/reeloom/server/api.py",
+        "src/reeloom/server/background.py",
+    ):
+        source = (_ROOT / relative).read_text(encoding="utf-8")
+        assert "legacy_effects_enabled: bool = False" in source
+        assert "legacy_effects_enabled: bool = True" not in source

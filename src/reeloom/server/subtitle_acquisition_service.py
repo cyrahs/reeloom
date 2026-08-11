@@ -12,7 +12,12 @@ from typing import Protocol
 
 from psycopg_pool import ConnectionPool
 
-from reeloom.executor.errors import ExecutorError, ExecutorErrorCode
+from reeloom.executor.errors import (
+    ApprovalError,
+    ApprovalErrorCode,
+    ExecutorError,
+    ExecutorErrorCode,
+)
 from reeloom.executor.subtitle_marker_acquisition import (
     SubtitleMarkerAcquisitionExecutor,
 )
@@ -28,25 +33,30 @@ from reeloom.kernel.forward_execution import (
 from reeloom.kernel.subtitle_acquisition import SubtitleAcquisitionPlanV2
 from reeloom.policy.path_policy import AuthorizedRoot
 from reeloom.ports.subtitle_acquisition import SubtitleAcquisitionPlanStore
-from reeloom.runtime.events import RunFailed, SubtitleAcquisitionPlanCompleted
-from reeloom.runtime.state import Phase
 from reeloom.server.approval_repository import PostgresApprovalStore
 from reeloom.server.config import (
+    ApplyPolicy,
     ConfigRevision,
     ServerWorkType,
     SubtitleAcquisitionPolicy,
     SubtitleProvider,
 )
 from reeloom.server.errors import ServerError, ServerErrorCode
+from reeloom.server.execution_lease_heartbeat import ExecutionLeaseHeartbeat
 from reeloom.server.forward_operation_repository import (
     ForwardOperationError,
     ForwardOperationErrorCode,
     PostgresForwardOperationRepository,
     execution_operation_id,
 )
-from reeloom.server.runtime_store import PostgresEventStore
+from reeloom.server.run_control_repository import (
+    PostgresRunControlRepository,
+)
+from reeloom.server.run_lifecycle import RunEffectKind
 
 _LOG = logging.getLogger(__name__)
+_OPERATION_LEASE_FOR = timedelta(minutes=1)
+_OPERATION_HEARTBEAT_INTERVAL = timedelta(seconds=20)
 
 
 def _now() -> datetime:
@@ -92,6 +102,7 @@ class SubtitleAcquisitionCoordinator:
         executor_factory: SubtitleAcquisitionExecutorFactory,
         operation_approvals: PostgresApprovalStore,
         operations: PostgresForwardOperationRepository,
+        controls: PostgresRunControlRepository | None = None,
         worker_id: str = "subtitle-operation-worker",
         clock: Callable[[], datetime] = _now,
     ) -> None:
@@ -100,6 +111,7 @@ class SubtitleAcquisitionCoordinator:
         self._executor_factory = executor_factory
         self._operation_approvals = operation_approvals
         self._operations = operations
+        self._controls = controls or PostgresRunControlRepository(pool)
         self._worker_id = worker_id
         self._clock = clock
 
@@ -127,7 +139,8 @@ class SubtitleAcquisitionCoordinator:
                                d.watch_id, d.source_folder,
                                d.folder_generation_id, d.snapshot_id,
                                observation.inventory_id,
-                               c.payload, state.phase
+                               c.payload, state.phase,
+                               state.event_sequence
                         FROM runs AS r
                         JOIN discoveries AS d USING (discovery_id)
                         JOIN watch_folder_observations AS observation
@@ -218,6 +231,14 @@ class SubtitleAcquisitionCoordinator:
                             raise ServerError(
                                 ServerErrorCode.INTERACTION_CONFLICT
                             )
+                        self._controls.handoff_effect_in_transaction(
+                            connection,
+                            run_id=plan.run_id,
+                            plan_hash=plan.plan_hash,
+                            effect_kind=RunEffectKind.SUBTITLE_ACQUIRE,
+                            policy=ApplyPolicy(record.policy.value),
+                            event_sequence=int(row[11]),
+                        )
                         return record
                     connection.execute(
                         """
@@ -233,25 +254,16 @@ class SubtitleAcquisitionCoordinator:
                             watch.subtitle_acquisition.policy.value,
                         ),
                     )
-                    if (
-                        watch.subtitle_acquisition.policy
-                        is SubtitleAcquisitionPolicy.PLAN_ONLY
-                    ):
-                        connection.execute(
-                            """
-                            INSERT INTO handled_folder_inventories_v2
-                                (watch_id, source_folder, inventory_id,
-                                 run_id, terminal_status)
-                            VALUES (%s, %s, %s, %s, 'completed')
-                            ON CONFLICT DO NOTHING
-                            """,
-                            (
-                                plan.watch_id,
-                                plan.source_folder,
-                                plan.inventory_id,
-                                plan.run_id,
-                            ),
-                        )
+                    self._controls.handoff_effect_in_transaction(
+                        connection,
+                        run_id=plan.run_id,
+                        plan_hash=plan.plan_hash,
+                        effect_kind=RunEffectKind.SUBTITLE_ACQUIRE,
+                        policy=ApplyPolicy(
+                            watch.subtitle_acquisition.policy.value
+                        ),
+                        event_sequence=int(row[11]),
+                    )
                     return SubtitleAcquisitionRequestRecord(
                         plan.run_id,
                         plan.plan_hash,
@@ -289,38 +301,81 @@ class SubtitleAcquisitionCoordinator:
             if error.code is not ForwardOperationErrorCode.OPERATION_NOT_FOUND:
                 raise
             now = self._clock()
-            approval = self._operation_approvals.issue_or_reuse(
-                ApprovalRecord.create(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                    scope=ApprovalScope.SUBTITLE_ACQUIRE,
-                    expires_at=now + timedelta(minutes=15),
-                    nonce=secrets.token_urlsafe(32),
+            try:
+                approval = self._operation_approvals.issue_or_reuse(
+                    ApprovalRecord.create(
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                        scope=ApprovalScope.SUBTITLE_ACQUIRE,
+                        expires_at=now + timedelta(minutes=15),
+                        nonce=secrets.token_urlsafe(32),
+                    )
                 )
-            )
-            self._mark_approved(
-                run_id=run_id,
-                plan_hash=plan_hash,
-                approval_id=approval.approval_id,
-            )
-            operation = self._operations.authorize(
-                ExecutionOperation.authorized(
-                    operation_id=operation_id,
+            except ApprovalError as error:
+                if error.code is ApprovalErrorCode.ALREADY_CLAIMED:
+                    try:
+                        operation = self._operations.get(operation_id)
+                    except ForwardOperationError as operation_error:
+                        if (
+                            operation_error.code
+                            is not ForwardOperationErrorCode.OPERATION_NOT_FOUND
+                        ):
+                            raise
+                        raise ForwardOperationError(
+                            ForwardOperationErrorCode.APPROVAL_UNAVAILABLE
+                        ) from None
+                elif error.code is ApprovalErrorCode.STORE_FAILURE:
+                    raise ServerError(
+                        ServerErrorCode.DATABASE_UNAVAILABLE
+                    ) from None
+                else:
+                    raise ForwardOperationError(
+                        ForwardOperationErrorCode.APPROVAL_UNAVAILABLE
+                    ) from None
+            else:
+                operation = self._operations.authorize(
+                    ExecutionOperation.authorized(
+                        operation_id=operation_id,
+                        run_id=run_id,
+                        plan_hash=plan_hash,
+                    ),
+                    approval_id=approval.approval_id,
+                    now=now,
+                    scope=ApprovalScope.SUBTITLE_ACQUIRE,
+                    operation_kind="subtitle_acquire",
+                )
+                self._mark_approved(
                     run_id=run_id,
                     plan_hash=plan_hash,
-                ),
-                approval_id=approval.approval_id,
-                now=now,
-                scope=ApprovalScope.SUBTITLE_ACQUIRE,
-                operation_kind="subtitle_acquire",
-            )
+                    approval_id=approval.approval_id,
+                )
+        if operation.terminal:
+            return self._resolve_terminal(operation=operation, request=request)
+        resolved = self.resolve(run_id=run_id, plan_hash=plan_hash)
+        if resolved is None:
+            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
+        return resolved
+
+    def _reconcile_operation(
+        self,
+        *,
+        run_id: str,
+        plan_hash: str,
+    ) -> SubtitleAcquisitionRequestRecord:
+        request = self.resolve(run_id=run_id, plan_hash=plan_hash)
+        if request is None:
+            raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
+        operation_id = execution_operation_id(
+            run_id=run_id, plan_hash=plan_hash
+        )
+        operation = self._operations.get(operation_id)
         if operation.terminal:
             return self._resolve_terminal(operation=operation, request=request)
         lease = self._operations.claim(
             operation_id,
             worker_id=self._worker_id,
             now=self._clock(),
-            lease_for=timedelta(minutes=1),
+            lease_for=_OPERATION_LEASE_FOR,
             operation_kind="subtitle_acquire",
         )
         if lease is None:
@@ -332,33 +387,43 @@ class SubtitleAcquisitionCoordinator:
             return request
         plan = self._load_plan(plan_hash)
         executor_lease = self._executor_factory()
+        heartbeat = ExecutionLeaseHeartbeat(
+            lease,
+            renew=lambda current, now, lease_for: (
+                self._operations.renew_lease(
+                    current, now=now, lease_for=lease_for
+                )
+            ),
+            clock=self._clock,
+            lease_for=_OPERATION_LEASE_FOR,
+            interval=_OPERATION_HEARTBEAT_INTERVAL,
+        )
         try:
-            try:
-                result = asyncio.run(
-                    executor_lease.executor.execute_current(
-                        plan_hash=plan_hash
+            with heartbeat:
+                try:
+                    result = asyncio.run(
+                        executor_lease.executor.execute_current(
+                            plan_hash=plan_hash
+                        )
                     )
-                )
-            except ExecutorError as error:
-                result = SubtitlePublicationResult(
-                    state=(
-                        SubtitlePublicationState.UNSAFE
-                        if error.code
-                        in {
-                            ExecutorErrorCode.INVALID_PLAN,
-                            ExecutorErrorCode.SYMLINK_NOT_ALLOWED,
-                        }
-                        else SubtitlePublicationState.UNAVAILABLE
-                    ),
-                    publication_directory=(
-                        plan.destination_directory.as_posix()
-                    ),
-                    published_count=0,
-                    reason=error.code.value,
-                )
-            self._project_terminal(
-                run_id=run_id, plan_hash=plan_hash, result=result
-            )
+                except ExecutorError as error:
+                    result = SubtitlePublicationResult(
+                        state=(
+                            SubtitlePublicationState.UNSAFE
+                            if error.code
+                            in {
+                                ExecutorErrorCode.INVALID_PLAN,
+                                ExecutorErrorCode.SYMLINK_NOT_ALLOWED,
+                            }
+                            else SubtitlePublicationState.UNAVAILABLE
+                        ),
+                        publication_directory=(
+                            plan.destination_directory.as_posix()
+                        ),
+                        published_count=0,
+                        reason=error.code.value,
+                    )
+            lease = heartbeat.current()
             self._operations.settle_subtitle_result(
                 lease,
                 result,
@@ -402,12 +467,38 @@ class SubtitleAcquisitionCoordinator:
             with self._pool.connection() as connection:
                 rows = connection.execute(
                     """
-                    SELECT request.run_id, request.plan_hash, request.policy
+                    SELECT request.run_id, request.plan_hash, request.policy,
+                           request.status, operation.approval_id
                     FROM subtitle_acquisition_requests AS request
+                    JOIN run_lifecycle_controls_v2 AS control
+                      ON control.run_id = request.run_id
+                     AND control.effect_plan_hash = request.plan_hash
+                     AND control.mode = 'forward_v2'
                     JOIN runs AS run ON run.run_id = request.run_id
-                    WHERE request.status = 'approved'
-                      AND run.status = 'running'
-                    ORDER BY updated_at, run_id
+                    LEFT JOIN planning_terminal_results_v2 AS terminal
+                      ON terminal.run_id = request.run_id
+                    LEFT JOIN execution_operations_v2 AS operation
+                      ON operation.operation_id = control.operation_id
+                    WHERE request.status IN ('planned', 'approved')
+                      AND run.status IN (
+                          'registered', 'running', 'awaiting_approval',
+                          'applying'
+                      )
+                      AND terminal.run_id IS NULL
+                      AND (
+                          (
+                              request.policy = 'automatic'
+                              AND request.status = 'planned'
+                              AND control.operation_id IS NULL
+                          )
+                          OR (
+                              operation.operation_kind = 'subtitle_acquire'
+                              AND operation.status IN (
+                                  'authorized', 'running'
+                              )
+                          )
+                      )
+                    ORDER BY request.updated_at, request.run_id
                     """
                 ).fetchall()
         except Exception:
@@ -415,13 +506,48 @@ class SubtitleAcquisitionCoordinator:
         completed = 0
         for row in rows:
             try:
-                self.approve_and_execute(
+                if row[4] is None:
+                    self.approve_and_execute(
+                        run_id=str(row[0]),
+                        plan_hash=str(row[1]),
+                        automatic=True,
+                    )
+                    self._reconcile_operation(
+                        run_id=str(row[0]),
+                        plan_hash=str(row[1]),
+                    )
+                    completed += 1
+                    continue
+                if str(row[3]) == "planned":
+                    self._mark_approved(
+                        run_id=str(row[0]),
+                        plan_hash=str(row[1]),
+                        approval_id=str(row[4]),
+                    )
+                self._reconcile_operation(
                     run_id=str(row[0]),
                     plan_hash=str(row[1]),
-                    automatic=(str(row[2]) == "automatic"),
                 )
                 completed += 1
             except Exception as error:
+                if not (
+                    isinstance(error, ServerError)
+                    and error.code is ServerErrorCode.DATABASE_UNAVAILABLE
+                ):
+                    reason = (
+                        error.code.value
+                        if isinstance(error, ForwardOperationError)
+                        else type(error).__name__.lower()
+                    )
+                    self._operations.fail_unstarted_automatic(
+                        run_id=str(row[0]),
+                        plan_hash=str(row[1]),
+                        reason_code=(
+                            "automatic_subtitle_start_" + reason
+                        )[:128],
+                        now=self._clock(),
+                        operation_kind="subtitle_acquire",
+                    )
                 _LOG.warning(
                     "subtitle_operation_reconcile_pending run_id=%s "
                     "error_type=%s",
@@ -445,11 +571,6 @@ class SubtitleAcquisitionCoordinator:
             publication_directory="",
             published_count=0,
             reason="operation_retry_exhausted",
-        )
-        self._project_terminal(
-            run_id=operation.run_id,
-            plan_hash=operation.plan_hash,
-            result=result,
         )
         self._operations.settle_exhausted_subtitle(
             operation.operation_id,
@@ -483,33 +604,6 @@ class SubtitleAcquisitionCoordinator:
         if row is None:
             raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
         return str(row[0])
-
-    def _project_terminal(
-        self,
-        *,
-        run_id: str,
-        plan_hash: str,
-        result: SubtitlePublicationResult,
-    ) -> None:
-        store = PostgresEventStore(self._pool, run_id=run_id)
-        state = store.state
-        if state is None or state.phase in {Phase.COMPLETED, Phase.FAILED}:
-            return
-        if result.state is SubtitlePublicationState.COMPLETED:
-            store.append(SubtitleAcquisitionPlanCompleted(plan_hash))
-            return
-        store.append(
-            RunFailed(
-                {
-                    SubtitlePublicationState.COLLISION: (
-                        "destination_collision"
-                    ),
-                    SubtitlePublicationState.UNSAFE: "unsafe_entry",
-                    SubtitlePublicationState.UNAVAILABLE: "root_unavailable",
-                    SubtitlePublicationState.COMPLETED: "completed",
-                }[result.state]
-            )
-        )
 
     def _mark_approved(
         self,

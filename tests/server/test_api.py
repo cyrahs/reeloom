@@ -19,7 +19,11 @@ from reeloom.server.api import (
 )
 from reeloom.server.auth import AuthSettings
 from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.forward_operation_repository import ForwardOperationView
+from reeloom.server.forward_operation_repository import (
+    ForwardOperationError,
+    ForwardOperationErrorCode,
+    ForwardOperationView,
+)
 from reeloom.server.interactions import InteractionKind, InteractionResult
 from reeloom.server.queries import _safe_event
 from reeloom.server.config import SubtitleAcquisitionPolicy
@@ -273,6 +277,7 @@ class _Queries:
 
 def _app(
     *,
+    queries: object | None = None,
     static_root: Path | None = None,
     directory_list: Callable[[str], dict[str, object]] | None = None,
     run_delete: Callable[[str], dict[str, object]] | None = None,
@@ -283,10 +288,11 @@ def _app(
     attention_retry: Callable[[str, int], dict[str, object]] | None = None,
     attention_fail: Callable[[str, int], dict[str, object]] | None = None,
     forward_execution: object | None = None,
+    effect_guard: Callable[[], None] | None = None,
 ) -> object:
     app = create_api(
         ApiDependencies(
-            queries=_Queries(),
+            queries=(queries or _Queries()),  # type: ignore[arg-type]
             directory_list=directory_list,
             run_delete=run_delete,
             move_capability_probe=move_capability_probe,  # type: ignore[arg-type]
@@ -296,6 +302,10 @@ def _app(
             attention_retry=attention_retry,
             attention_fail=attention_fail,
             forward_execution=forward_execution,  # type: ignore[arg-type]
+            effect_guard=effect_guard,
+            # Component tests below still exercise the quarantined v1 routes;
+            # production and new ApiDependencies default them off.
+            legacy_effects_enabled=True,
         ),
         auth=AuthSettings.create(
             admin_token="admin-token-strong",
@@ -305,6 +315,292 @@ def _app(
         static_root=static_root,
     )
     return app
+
+
+def test_openapi_exposes_only_canonical_v2_effect_commands() -> None:
+    schema = _app().openapi()  # type: ignore[attr-defined]
+    paths = schema["paths"]
+
+    assert "/api/v1/runs/{run_id}/actions/{action_id}" in paths
+    for legacy_path in (
+        "/api/v1/runs/{run_id}",
+        "/api/v1/runs/{run_id}/approve-and-apply",
+        "/api/v1/runs/{run_id}/folder-disposition",
+        "/api/v1/operations/runs/{run_id}/folder-disposition/recover",
+        "/api/v1/operations/runs/{run_id}/recover",
+    ):
+        if legacy_path == "/api/v1/runs/{run_id}":
+            assert "delete" not in paths[legacy_path]
+        else:
+            assert legacy_path not in paths
+
+
+def test_bound_action_executes_server_bound_current_plan() -> None:
+    action_id = "runaction-v1:" + "b" * 64
+    queries = _Queries()
+    base = queries.get_run("run-1")
+    assert base is not None
+    base["available_actions"] = ["execute"]
+    base["archive_report"] = None
+    base["lifecycle"] = {
+        "schema_version": 1,
+        "mode": "forward_v2",
+        "state": "awaiting_approval",
+        "terminal": False,
+        "revision": 3,
+        "active_plan": {
+            "family": "media_move",
+            "plan_hash": "sha256:" + "a" * 64,
+        },
+        "operation_id": None,
+        "operation_status": None,
+        "rescan_state": None,
+        "successor_run_id": None,
+        "housekeeping": {"state": None, "warning": None},
+        "actions": [
+            {
+                "action_id": action_id,
+                "kind": "execute",
+                "input": "confirmation",
+                "destructive": True,
+            }
+        ],
+        "etag": "runpresentation-v1:" + "c" * 64,
+    }
+    queries.get_run = lambda run_id: base if run_id == "run-1" else None  # type: ignore[method-assign]
+    forward = _ForwardExecution()
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(queries=queries, forward_execution=forward)
+            ),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "bound-action-1",
+            },
+        ) as client:
+            return await client.post(
+                f"/api/v1/runs/run-1/actions/{action_id}",
+                json={"message": None},
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200, response.text
+    assert forward.calls == [("run-1", "sha256:" + "a" * 64)]
+    assert response.json()["kind"] == "execute"
+
+
+def test_bound_action_fail_stops_after_instance_lock_loss() -> None:
+    action_id = "runaction-v1:" + "b" * 64
+    queries = _Queries()
+    base = queries.get_run("run-1")
+    assert base is not None
+    base["lifecycle"] = {
+        "actions": [
+            {
+                "action_id": action_id,
+                "kind": "execute",
+                "input": "confirmation",
+                "destructive": True,
+            }
+        ]
+    }
+    queries.get_run = (  # type: ignore[method-assign]
+        lambda run_id: base if run_id == "run-1" else None
+    )
+
+    def lost_lock() -> None:
+        raise ServerError(ServerErrorCode.INSTANCE_LOCK_LOST)
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(queries=queries, effect_guard=lost_lock),
+                raise_app_exceptions=False,
+            ),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "bound-action-lock-lost",
+            },
+        ) as client:
+            return await client.post(
+                f"/api/v1/runs/run-1/actions/{action_id}",
+                json={"message": None},
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 503
+    assert response.json() == {"error": {"code": "instance_lock_lost"}}
+
+
+def test_bound_action_race_returns_action_stale_instead_of_500() -> None:
+    action_id = "runaction-v1:" + "d" * 64
+    queries = _Queries()
+    base = queries.get_run("run-1")
+    assert base is not None
+    base["status"] = "failed"
+    base["available_actions"] = ["rescan"]
+    base["archive_report"] = None
+    base["lifecycle"] = {
+        "schema_version": 1,
+        "mode": "forward_v2",
+        "state": "failed",
+        "terminal": True,
+        "revision": 4,
+        "active_plan": {
+            "family": "media_move",
+            "plan_hash": "sha256:" + "a" * 64,
+        },
+        "operation_id": "operation:m14",
+        "operation_status": "collision",
+        "rescan_state": "blocked",
+        "successor_run_id": None,
+        "housekeeping": {"state": None, "warning": None},
+        "actions": [
+            {
+                "action_id": action_id,
+                "kind": "request_rescan",
+                "input": "confirmation",
+                "destructive": False,
+            }
+        ],
+        "etag": "runpresentation-v1:" + "e" * 64,
+    }
+    queries.get_run = (  # type: ignore[method-assign]
+        lambda run_id: base if run_id == "run-1" else None
+    )
+
+    class _RacingForwardExecution(_ForwardExecution):
+        def request_rescan(
+            self, *, run_id: str, plan_hash: str
+        ) -> ForwardOperationView:
+            del run_id, plan_hash
+            raise ForwardOperationError(
+                ForwardOperationErrorCode.OPERATION_CONFLICT
+            )
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=_app(
+                    queries=queries,
+                    forward_execution=_RacingForwardExecution(),
+                )
+            ),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "bound-action-race",
+            },
+        ) as client:
+            return await client.post(
+                f"/api/v1/runs/run-1/actions/{action_id}",
+                json={"message": None},
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 409
+    assert response.json() == {"error": {"code": "action_stale"}}
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "if_match"),
+    (
+        ("/interactions", {"kind": "question", "message": "Why?"}, "event:37"),
+        ("/retry", {}, "event:37"),
+        ("/fail", {}, "event:37"),
+        ("/reapply", {"message": "Again"}, "sha256:" + "a" * 64),
+    ),
+)
+def test_active_lifecycle_rejects_unbound_control_routes(
+    path: str,
+    body: dict[str, object],
+    if_match: str,
+) -> None:
+    queries = _Queries()
+    current = queries.get_run("run-1")
+    assert current is not None
+    current["lifecycle"] = {
+        "schema_version": 1,
+        "mode": "forward_v2",
+        "state": "needs_attention",
+        "terminal": False,
+        "revision": 1,
+        "active_plan": None,
+        "operation_id": None,
+        "operation_status": None,
+        "rescan_state": None,
+        "successor_run_id": None,
+        "housekeeping": {"state": None, "warning": None},
+        "actions": [],
+        "etag": "runpresentation-v1:" + "d" * 64,
+    }
+    queries.get_run = (  # type: ignore[method-assign]
+        lambda run_id: current if run_id == "run-1" else None
+    )
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app(queries=queries)),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "unbound-control",
+                "if-match": if_match,
+            },
+        ) as client:
+            return await client.post(f"/api/v1/runs/run-1{path}", json=body)
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 410
+    assert response.json()["error"]["code"] == "action_api_required"
+
+
+def test_active_lifecycle_rejects_direct_delete_route() -> None:
+    queries = _Queries()
+    current = queries.get_run("run-1")
+    assert current is not None
+    current["lifecycle"] = {
+        "schema_version": 1,
+        "mode": "forward_v2",
+        "state": "completed",
+        "terminal": True,
+        "revision": 1,
+        "active_plan": None,
+        "operation_id": None,
+        "operation_status": None,
+        "rescan_state": None,
+        "successor_run_id": None,
+        "housekeeping": {"state": None, "warning": None},
+        "actions": [],
+        "etag": "runpresentation-v1:" + "e" * 64,
+    }
+    queries.get_run = (  # type: ignore[method-assign]
+        lambda run_id: current if run_id == "run-1" else None
+    )
+
+    async def scenario() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app(queries=queries)),
+            base_url="http://reeloom.test",
+            headers={
+                "authorization": "Bearer admin-token-strong",
+                "idempotency-key": "direct-delete-rejected",
+            },
+        ) as client:
+            return await client.delete("/api/v1/runs/run-1")
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 410
+    assert response.json()["error"]["code"] == "action_api_required"
 
 
 class _ForwardExecution:
@@ -350,7 +646,7 @@ class _ForwardExecution:
         return self.view(run_id=run_id, plan_hash=plan_hash)
 
 
-def test_forward_execute_has_no_browser_controlled_automatic_flag() -> None:
+def test_direct_forward_control_routes_are_not_public() -> None:
     coordinator = _ForwardExecution()
     app = _app(forward_execution=coordinator)
     plan_hash = "sha256:" + "a" * 64
@@ -364,75 +660,20 @@ def test_forward_execute_has_no_browser_controlled_automatic_flag() -> None:
                 "if-match": plan_hash,
             },
         ) as client:
-            accepted = await client.post(
+            execute = await client.post(
                 "/api/v1/runs/run-1/execute", json={}
             )
-            rejected = await client.post(
-                "/api/v1/runs/run-1/execute",
-                json={"automatic": True},
-            )
-            return accepted, rejected
-
-    accepted, rejected = asyncio.run(scenario())
-
-    assert accepted.status_code == 200
-    assert accepted.json() == {
-        "operation_id": "operation:m14",
-        "operation_kind": "media_move",
-        "run_id": "run-1",
-        "plan_hash": plan_hash,
-        "status": "partial",
-        "attempt_count": 1,
-        "counts": {
-            "satisfied": 1,
-            "stale": 0,
-            "collision": 1,
-            "unsafe": 0,
-            "unavailable": 0,
-        },
-        "items": [
-            {
-                "source_id": "video:1",
-                "outcome": "satisfied",
-                "diagnostic": "checked_rename",
-            },
-            {
-                "source_id": "video:2",
-                "outcome": "collision",
-                "diagnostic": None,
-            },
-        ],
-        "warnings": ["directory_fsync_unsupported"],
-        "fresh_scan_required": True,
-        "rescan_state": "queued",
-        "successor_run_id": None,
-    }
-    assert rejected.status_code == 422
-    assert coordinator.calls == [("run-1", plan_hash)]
-
-
-def test_forward_rescan_reuses_terminal_operation_without_approval() -> None:
-    coordinator = _ForwardExecution()
-    app = _app(forward_execution=coordinator)
-    plan_hash = "sha256:" + "a" * 64
-
-    async def scenario() -> httpx.Response:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://reeloom.test",
-            headers={
-                "authorization": "Bearer admin-token-strong",
-                "if-match": plan_hash,
-            },
-        ) as client:
-            return await client.post(
+            rescan = await client.post(
                 "/api/v1/runs/run-1/rescan", json={}
             )
+            return execute, rescan
 
-    response = asyncio.run(scenario())
+    execute, rescan = asyncio.run(scenario())
 
-    assert response.status_code == 200
-    assert coordinator.rescans == [("run-1", plan_hash)]
+    assert execute.status_code == 404
+    assert rescan.status_code == 404
+    assert coordinator.calls == []
+    assert coordinator.rescans == []
 
 
 class _Interactions:
@@ -483,7 +724,7 @@ class _SubtitleAcquisitions:
         del run_id, plan_hash
         return None
 
-def test_admin_can_approve_independent_subtitle_acquisition() -> None:
+def test_direct_subtitle_approval_route_is_not_public() -> None:
     acquisitions = _SubtitleAcquisitions()
     plan_hash = "sha256:" + "b" * 64
 
@@ -506,18 +747,8 @@ def test_admin_can_approve_independent_subtitle_acquisition() -> None:
 
     response = asyncio.run(scenario())
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "run_id": "run-1",
-        "plan_hash": plan_hash,
-        "policy": "manual",
-        "status": "published",
-        "transaction_id": "subtitle-txn-v1-" + "c" * 64,
-        "failure_code": None,
-        "failure_diagnostic": None,
-        "successor_status": None,
-    }
-    assert acquisitions.calls == [("run-1", plan_hash, False)]
+    assert response.status_code == 404
+    assert acquisitions.calls == []
 
 
 @pytest.mark.parametrize("action", ["retry", "fail"])
@@ -1118,8 +1349,7 @@ def test_needs_attention_controls_require_exact_event_head() -> None:
         calls.append((run_id, sequence, "fail"))
         return {
             "run_id": run_id,
-            "status": "failure_planned",
-            "plan_hash": "sha256:" + "f" * 64,
+            "status": "failed",
         }
 
     async def scenario() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
