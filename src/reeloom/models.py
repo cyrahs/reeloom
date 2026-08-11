@@ -127,6 +127,8 @@ class SnapshotFile:
     relative_path: str
     kind: FileKind
     size_bytes: int
+    variant: SubtitleVariant | None = None
+    """Classified at scan time for subtitles; never an Agent decision."""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -134,15 +136,18 @@ class SnapshotFile:
             "relative_path": self.relative_path,
             "kind": self.kind.value,
             "size_bytes": self.size_bytes,
+            "variant": self.variant.value if self.variant else None,
         }
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> Self:
+        variant = payload.get("variant")
         return cls(
             candidate_id=payload["candidate_id"],
             relative_path=payload["relative_path"],
             kind=FileKind(payload["kind"]),
             size_bytes=payload["size_bytes"],
+            variant=SubtitleVariant(variant) if variant else None,
         )
 
 

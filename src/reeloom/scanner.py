@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from reeloom.models import FileKind, ReeloomError, SnapshotFile
+from reeloom.subtitles import detect_variant_for_file
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,6 +135,11 @@ def snapshot_folder(path: Path) -> list[SnapshotFile]:
                 relative_path=relative,
                 kind=kind,
                 size_bytes=stat.st_size,
+                variant=(
+                    detect_variant_for_file(path / relative)
+                    if kind is FileKind.SUBTITLE
+                    else None
+                ),
             )
         )
     return files
