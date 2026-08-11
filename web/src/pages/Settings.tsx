@@ -332,20 +332,34 @@ function Credentials({
   settings: Settings;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState<Record<string, string>>({});
+  const [form, setForm] = useState<Record<string, string>>({
+    llm_base_url: settings.llm_base_url,
+    llm_model: settings.llm_model,
+    telegram_chat_id: settings.telegram_chat_id,
+  });
   const [saved, setSaved] = useState(false);
 
-  const field = (key: string, label: string, hint?: string) => (
-    <label key={key} className="field">
-      <span>
+  const bind = (key: string) => ({
+    value: form[key] ?? "",
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+      setSaved(false);
+      setForm({ ...form, [key]: event.target.value });
+    },
+  });
+
+  const secretField = (key: string, label: string, isSet: boolean) => (
+    <label className="field">
+      <span className="field-label">
         {label}
-        {hint && <span className="muted"> {hint}</span>}
+        <span className={isSet ? "badge ok" : "badge"}>
+          {isSet ? "已配置" : "未配置"}
+        </span>
       </span>
       <input
-        type={key.includes("key") || key.includes("token") ? "password" : "text"}
-        value={form[key] ?? ""}
-        placeholder={hint === "已设置" ? "保持不变" : ""}
-        onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+        type="password"
+        placeholder={isSet ? "••••••••••••" : ""}
+        autoComplete="new-password"
+        {...bind(key)}
       />
     </label>
   );
@@ -359,29 +373,43 @@ function Credentials({
           Object.entries(form).filter(([, value]) => value !== ""),
         );
         await api.putSettings(body);
-        setForm({});
+        setForm({
+          llm_base_url: form.llm_base_url,
+          llm_model: form.llm_model,
+          telegram_chat_id: form.telegram_chat_id,
+        });
         setSaved(true);
         onSaved();
       }}
     >
-      {field(
-        "tmdb_api_key",
-        "TMDB API Key",
-        settings.tmdb_api_key_set ? "已设置" : "未设置",
-      )}
-      {field("llm_base_url", "模型 Base URL")}
-      {field(
-        "llm_api_key",
-        "模型 API Key",
-        settings.llm_api_key_set ? "已设置" : "未设置",
-      )}
-      {field("llm_model", "模型名称")}
-      {field(
-        "telegram_bot_token",
-        "Telegram Bot Token",
-        settings.telegram_bot_token_set ? "已设置" : "未设置",
-      )}
-      {field("telegram_chat_id", "Telegram Chat ID")}
+      <div className="cred-group">
+        <h3>TMDB</h3>
+        {secretField("tmdb_api_key", "API Key", settings.tmdb_api_key_set)}
+      </div>
+      <div className="cred-group">
+        <h3>模型</h3>
+        <label className="field">
+          Base URL
+          <input placeholder="https://…" {...bind("llm_base_url")} />
+        </label>
+        {secretField("llm_api_key", "API Key", settings.llm_api_key_set)}
+        <label className="field">
+          模型名称
+          <input {...bind("llm_model")} />
+        </label>
+      </div>
+      <div className="cred-group">
+        <h3>Telegram</h3>
+        {secretField(
+          "telegram_bot_token",
+          "Bot Token",
+          settings.telegram_bot_token_set,
+        )}
+        <label className="field">
+          Chat ID
+          <input {...bind("telegram_chat_id")} />
+        </label>
+      </div>
       <div className="form-actions">
         <button type="submit" className="primary">
           保存
