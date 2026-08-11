@@ -215,6 +215,32 @@ def create_app(
         await database.delete_config(config_id)
         return {"deleted": True}
 
+    # ---- filesystem ---------------------------------------------------
+
+    @api.get("/fs/dirs")
+    async def list_dirs(path: str = "/"):
+        """List server-side subdirectories, for the config path pickers."""
+
+        base = Path(path)
+        if not base.is_absolute():
+            raise HTTPException(status_code=422, detail="path_must_be_absolute")
+        base = base.resolve()
+        if not base.is_dir():
+            raise HTTPException(status_code=404, detail="not_a_directory")
+        try:
+            dirs = sorted(
+                (
+                    entry.name
+                    for entry in base.iterdir()
+                    if entry.is_dir() and not entry.name.startswith(".")
+                ),
+                key=str.casefold,
+            )
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="permission_denied")
+        parent = None if base.parent == base else str(base.parent)
+        return {"path": str(base), "parent": parent, "dirs": dirs}
+
     # ---- settings -----------------------------------------------------
 
     @api.get("/settings")

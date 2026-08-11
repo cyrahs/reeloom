@@ -681,6 +681,81 @@ ul {
   margin-top: 0.25rem;
 }
 
+.path-field {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.path-field button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* ---- Directory picker ---- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgb(0 0 0 / 0.35);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.modal {
+  width: 100%;
+  max-width: 26rem;
+  display: grid;
+  gap: 0.6rem;
+  box-shadow: var(--shadow-2);
+}
+
+.modal h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.dir-current {
+  padding: 0.35rem 0.55rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+.dir-list {
+  max-height: 16rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.dir-list li {
+  border-bottom: 1px solid var(--line);
+}
+
+.dir-list li:last-child {
+  border-bottom: none;
+}
+
+.dir-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0.45rem 0.7rem;
+  font-weight: 400;
+}
+
+.dir-none {
+  padding: 0.45rem 0.7rem;
+  font-size: 0.88rem;
+}
+
 /* ---- Sign in ---- */
 
 .signin-wrap {
