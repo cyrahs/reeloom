@@ -103,43 +103,55 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <form className="new-config" onSubmit={submit}>
-      <input
-        placeholder="名称"
-        value={form.name}
-        onChange={(event) => setForm({ ...form, name: event.target.value })}
-        required
-      />
-      <input
-        placeholder="监控目录（绝对路径）"
-        value={form.inbound_root}
-        onChange={(event) =>
-          setForm({ ...form, inbound_root: event.target.value })
-        }
-        required
-      />
-      <input
-        placeholder="媒体库目录（绝对路径）"
-        value={form.library_root}
-        onChange={(event) =>
-          setForm({ ...form, library_root: event.target.value })
-        }
-        required
-      />
-      <select
-        value={form.media_type}
-        onChange={(event) =>
-          setForm({
-            ...form,
-            media_type: event.target.value as typeof form.media_type,
-          })
-        }
-      >
-        <option value="anime">动画</option>
-        <option value="tv">剧集</option>
-        <option value="movie">电影</option>
-      </select>
-      <label>
+    <form className="new-config card" onSubmit={submit}>
+      <h3>添加监控</h3>
+      <label className="field">
+        名称
+        <input
+          value={form.name}
+          onChange={(event) => setForm({ ...form, name: event.target.value })}
+          required
+        />
+      </label>
+      <label className="field">
+        监控目录
+        <input
+          placeholder="/绝对路径"
+          value={form.inbound_root}
+          onChange={(event) =>
+            setForm({ ...form, inbound_root: event.target.value })
+          }
+          required
+        />
+      </label>
+      <label className="field">
+        媒体库目录
+        <input
+          placeholder="/绝对路径"
+          value={form.library_root}
+          onChange={(event) =>
+            setForm({ ...form, library_root: event.target.value })
+          }
+          required
+        />
+      </label>
+      <label className="field">
+        媒体类型
+        <select
+          value={form.media_type}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              media_type: event.target.value as typeof form.media_type,
+            })
+          }
+        >
+          <option value="anime">动画</option>
+          <option value="tv">剧集</option>
+          <option value="movie">电影</option>
+        </select>
+      </label>
+      <label className="field">
         静置秒数
         <input
           type="number"
@@ -153,7 +165,11 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
           }
         />
       </label>
-      <button type="submit">添加监控</button>
+      <div className="form-actions">
+        <button type="submit" className="primary">
+          添加监控
+        </button>
+      </div>
       {error && <p className="error">{error}</p>}
     </form>
   );
@@ -170,7 +186,7 @@ function Credentials({
   const [saved, setSaved] = useState(false);
 
   const field = (key: string, label: string, hint?: string) => (
-    <label key={key}>
+    <label key={key} className="field">
       {label}
       {hint && <span className="muted"> {hint}</span>}
       <input
@@ -184,7 +200,7 @@ function Credentials({
 
   return (
     <form
-      className="credentials"
+      className="credentials card"
       onSubmit={async (event) => {
         event.preventDefault();
         const body = Object.fromEntries(
@@ -214,8 +230,12 @@ function Credentials({
         settings.telegram_bot_token_set ? "已设置" : "未设置",
       )}
       {field("telegram_chat_id", "Telegram Chat ID")}
-      <button type="submit">保存</button>
-      {saved && <span className="muted">已保存</span>}
+      <div className="form-actions">
+        <button type="submit" className="primary">
+          保存
+        </button>
+        {saved && <span className="muted">已保存</span>}
+      </div>
     </form>
   );
 }

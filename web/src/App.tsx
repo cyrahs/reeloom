@@ -15,6 +15,20 @@ function useHashRoute(): string {
   return hash;
 }
 
+function ReelMark({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="var(--accent)" />
+      <circle cx="16" cy="16" r="9.6" fill="var(--surface)" />
+      <circle cx="16" cy="16" r="2.7" fill="var(--accent)" />
+      <circle cx="16" cy="10" r="2.3" fill="var(--accent)" />
+      <circle cx="16" cy="22" r="2.3" fill="var(--accent)" />
+      <circle cx="10" cy="16" r="2.3" fill="var(--accent)" />
+      <circle cx="22" cy="16" r="2.3" fill="var(--accent)" />
+    </svg>
+  );
+}
+
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
@@ -32,18 +46,25 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   }
 
   return (
-    <form className="signin" onSubmit={submit}>
-      <h1>Reeloom</h1>
-      <input
-        type="password"
-        placeholder="Admin token"
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        autoFocus
-      />
-      <button type="submit">登录</button>
-      {error && <p className="error">{error}</p>}
-    </form>
+    <div className="signin-wrap">
+      <form className="signin" onSubmit={submit}>
+        <span className="brand">
+          <ReelMark size={26} />
+          Reeloom
+        </span>
+        <input
+          type="password"
+          placeholder="Admin token"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          autoFocus
+        />
+        <button type="submit" className="primary">
+          登录
+        </button>
+        {error && <p className="error">{error}</p>}
+      </form>
+    </div>
   );
 }
 
@@ -69,23 +90,34 @@ export function App() {
 
   return (
     <div className="app">
-      <nav>
-        <a href="#/" className={route === "/" ? "active" : ""}>
-          任务
-        </a>
-        <a href="#/settings" className={route === "/settings" ? "active" : ""}>
-          设置
-        </a>
-        <button
-          className="link"
-          onClick={() => {
-            clearToken();
-            setAuthorized(false);
-          }}
-        >
-          退出
-        </button>
-      </nav>
+      <header className="topbar">
+        <div className="topbar-inner">
+          <a href="#/" className="brand">
+            <ReelMark />
+            Reeloom
+          </a>
+          <nav>
+            <a href="#/" className={route === "/" ? "active" : ""}>
+              任务
+            </a>
+            <a
+              href="#/settings"
+              className={route === "/settings" ? "active" : ""}
+            >
+              设置
+            </a>
+          </nav>
+          <button
+            className="link"
+            onClick={() => {
+              clearToken();
+              setAuthorized(false);
+            }}
+          >
+            退出
+          </button>
+        </div>
+      </header>
       <main>
         {runMatch ? (
           <RunDetailPage runId={runMatch[1]} />

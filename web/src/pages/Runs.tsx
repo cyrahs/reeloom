@@ -43,14 +43,20 @@ export function RunsPage() {
       {runs.length === 0 && <p className="empty">还没有任务。</p>}
       <ul className="runs">
         {runs.map((run) => (
-          <li key={run.id} className={stateClass(run)}>
+          <li key={run.id}>
             <a href={`#/runs/${run.id}`}>
-              <span className="folder">{run.folder_name}</span>
-              <span className="title">
-                {run.title ? `${run.title} (${run.year})` : "—"}
+              <span className="run-main">
+                <span className="folder">{run.folder_name}</span>
+                <span className="title">
+                  {run.title ? `${run.title} (${run.year})` : "—"}
+                </span>
               </span>
-              <span className="state">{STATE_LABEL[run.state]}</span>
-              <span className="summary">{summary(run)}</span>
+              <span className="run-side">
+                <span className={`badge ${stateClass(run)}`}>
+                  {STATE_LABEL[run.state]}
+                </span>
+                <span className="summary">{summary(run)}</span>
+              </span>
             </a>
           </li>
         ))}

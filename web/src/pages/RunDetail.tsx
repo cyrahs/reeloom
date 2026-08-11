@@ -86,11 +86,26 @@ export function RunDetailPage({ runId }: { runId: string }) {
       <p className="crumb">
         <a href="#/">← 任务</a>
       </p>
-      <h1>{run.folder_name}</h1>
-      <p className={`state ${active ? "busy" : ""}`}>
-        {STATE_LABEL[run.state]}
-        {run.error && <span className="error"> · {JSON.stringify(run.error)}</span>}
-      </p>
+      <div className="run-head">
+        <h1>{run.folder_name}</h1>
+        <span
+          className={`badge ${
+            run.state === "needs_attention" || run.state === "failed"
+              ? "warn"
+              : active
+                ? "busy"
+                : "ok"
+          }`}
+        >
+          {STATE_LABEL[run.state]}
+        </span>
+      </div>
+      {run.error && (
+        <p className="error">
+          {typeof run.error.code === "string" ? run.error.code : "错误"}
+          {typeof run.error.detail === "string" && ` · ${run.error.detail}`}
+        </p>
+      )}
 
       <Moves run={run} />
       <Result run={run} />
@@ -109,18 +124,20 @@ export function RunDetailPage({ runId }: { runId: string }) {
 
       <section>
         <h2>交流</h2>
-        {run.interactions.map((item, index) => (
-          <p key={index} className={`chat ${item.role}`}>
-            <strong>{item.role === "user" ? "你" : "Agent"}：</strong>
-            {item.content}
-          </p>
-        ))}
-        {answer && (
-          <p className="chat agent">
-            <strong>Agent：</strong>
-            {answer}
-          </p>
-        )}
+        <div className="chat-log">
+          {run.interactions.map((item, index) => (
+            <p key={index} className={`chat ${item.role}`}>
+              <strong>{item.role === "user" ? "你" : "Agent"}</strong>
+              {item.content}
+            </p>
+          ))}
+          {answer && (
+            <p className="chat agent">
+              <strong>Agent</strong>
+              {answer}
+            </p>
+          )}
+        </div>
         <textarea
           value={message}
           placeholder="提问，或说明该怎么改"
@@ -163,6 +180,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
             重试
           </button>
           <button
+            className="danger"
             disabled={busy || active}
             title="把整个文件夹移入 fail，不删除任何文件"
             onClick={() => act(() => api.discard(runId))}
@@ -170,6 +188,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
             放弃
           </button>
           <button
+            className="danger"
             disabled={busy || active}
             onClick={() =>
               act(async () => {
@@ -189,6 +208,11 @@ export function RunDetailPage({ runId }: { runId: string }) {
         <ul className="logs">
           {run.logs.map((item, index) => (
             <li key={index} className={item.level}>
+              <span className="ts">
+                {new Date(item.ts).toLocaleTimeString("zh-CN", {
+                  hour12: false,
+                })}
+              </span>
               {item.message}
             </li>
           ))}
