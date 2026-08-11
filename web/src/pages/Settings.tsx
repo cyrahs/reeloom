@@ -7,13 +7,21 @@ const EMPTY_CONFIG = {
   name: "",
   inbound_root: "",
   library_root: "",
-  media_type: "anime" as const,
+  media_type: "anime" as WatchConfig["media_type"],
   stability_seconds: 120,
   acquire_subtitles: false,
   subtitle_variant: "chs" as "chs" | "cht",
   notify: true,
   enabled: true,
 };
+
+interface ConfigForm {
+  name: string;
+  inbound_root: string;
+  library_root: string;
+  media_type: WatchConfig["media_type"];
+  stability_seconds: number;
+}
 
 function ConfigRow({
   config,
@@ -23,6 +31,7 @@ function ConfigRow({
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   async function patch(body: Partial<WatchConfig>) {
     setBusy(true);
@@ -82,22 +91,41 @@ function ConfigRow({
           />
           通知
         </label>
-        <button
-          className="link"
-          disabled={busy}
-          onClick={async () => {
-            if (!confirm(`删除监控 ${config.name}？`)) return;
-            await api.deleteConfig(config.id);
-            onChanged();
-          }}
-        >
-          删除
-        </button>
+        <span className="config-actions">
+          <button
+            className="link"
+            disabled={busy}
+            onClick={() => setEditing((value) => !value)}
+          >
+            {editing ? "收起" : "编辑"}
+          </button>
+          <button
+            className="link"
+            disabled={busy}
+            onClick={async () => {
+              if (!confirm(`删除监控 ${config.name}？`)) return;
+              await api.deleteConfig(config.id);
+              onChanged();
+            }}
+          >
+            删除
+          </button>
+        </span>
       </div>
       <div className="config-paths">
         <code>{config.inbound_root}</code> → <code>{config.library_root}</code>
         <span className="muted"> · 静置 {config.stability_seconds}s</span>
       </div>
+      {editing && (
+        <EditConfig
+          config={config}
+          onSaved={() => {
+            setEditing(false);
+            onChanged();
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      )}
     </li>
   );
 }
@@ -144,6 +172,111 @@ function PathField({
   );
 }
 
+function ConfigFields({
+  form,
+  onChange,
+}: {
+  form: ConfigForm;
+  onChange: (patch: Partial<ConfigForm>) => void;
+}) {
+  return (
+    <>
+      <label className="field">
+        名称
+        <input
+          value={form.name}
+          onChange={(event) => onChange({ name: event.target.value })}
+          required
+        />
+      </label>
+      <PathField
+        label="监控目录"
+        value={form.inbound_root}
+        onChange={(inbound_root) => onChange({ inbound_root })}
+      />
+      <PathField
+        label="媒体库目录"
+        value={form.library_root}
+        onChange={(library_root) => onChange({ library_root })}
+      />
+      <label className="field">
+        媒体类型
+        <select
+          value={form.media_type}
+          onChange={(event) =>
+            onChange({
+              media_type: event.target.value as WatchConfig["media_type"],
+            })
+          }
+        >
+          <option value="anime">动画</option>
+          <option value="tv">剧集</option>
+          <option value="movie">电影</option>
+        </select>
+      </label>
+      <label className="field">
+        静置秒数
+        <input
+          type="number"
+          min={0}
+          value={form.stability_seconds}
+          onChange={(event) =>
+            onChange({ stability_seconds: Number(event.target.value) })
+          }
+        />
+      </label>
+    </>
+  );
+}
+
+function EditConfig({
+  config,
+  onSaved,
+  onCancel,
+}: {
+  config: WatchConfig;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const [form, setForm] = useState<ConfigForm>({
+    name: config.name,
+    inbound_root: config.inbound_root,
+    library_root: config.library_root,
+    media_type: config.media_type,
+    stability_seconds: config.stability_seconds,
+  });
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      await api.updateConfig(config.id, form);
+      onSaved();
+    } catch (thrown) {
+      setError((thrown as Error).message);
+    }
+  }
+
+  return (
+    <form className="edit-config" onSubmit={submit}>
+      <ConfigFields
+        form={form}
+        onChange={(patch) => setForm({ ...form, ...patch })}
+      />
+      <div className="form-actions">
+        <button type="submit" className="primary">
+          保存
+        </button>
+        <button type="button" onClick={onCancel}>
+          取消
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </form>
+  );
+}
+
 function NewConfig({ onCreated }: { onCreated: () => void }) {
   const [form, setForm] = useState(EMPTY_CONFIG);
   const [error, setError] = useState("");
@@ -163,40 +296,10 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
   return (
     <form className="new-config card" onSubmit={submit}>
       <h3>添加监控</h3>
-      <label className="field">
-        名称
-        <input
-          value={form.name}
-          onChange={(event) => setForm({ ...form, name: event.target.value })}
-          required
-        />
-      </label>
-      <PathField
-        label="监控目录"
-        value={form.inbound_root}
-        onChange={(inbound_root) => setForm({ ...form, inbound_root })}
+      <ConfigFields
+        form={form}
+        onChange={(patch) => setForm({ ...form, ...patch })}
       />
-      <PathField
-        label="媒体库目录"
-        value={form.library_root}
-        onChange={(library_root) => setForm({ ...form, library_root })}
-      />
-      <label className="field">
-        媒体类型
-        <select
-          value={form.media_type}
-          onChange={(event) =>
-            setForm({
-              ...form,
-              media_type: event.target.value as typeof form.media_type,
-            })
-          }
-        >
-          <option value="anime">动画</option>
-          <option value="tv">剧集</option>
-          <option value="movie">电影</option>
-        </select>
-      </label>
       <label className="field">
         字幕偏好
         <select
@@ -211,20 +314,6 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
           <option value="chs">简体</option>
           <option value="cht">繁体</option>
         </select>
-      </label>
-      <label className="field">
-        静置秒数
-        <input
-          type="number"
-          min={0}
-          value={form.stability_seconds}
-          onChange={(event) =>
-            setForm({
-              ...form,
-              stability_seconds: Number(event.target.value),
-            })
-          }
-        />
       </label>
       <div className="form-actions">
         <button type="submit" className="primary">
