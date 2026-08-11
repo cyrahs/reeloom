@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api, type Settings, type WatchConfig } from "../api";
+import { DirPicker } from "../DirPicker";
 
 const EMPTY_CONFIG = {
   name: "",
@@ -86,6 +87,48 @@ function ConfigRow({
   );
 }
 
+function PathField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [picking, setPicking] = useState(false);
+
+  return (
+    <>
+      <label className="field">
+        {label}
+        <span className="path-field">
+          <input
+            placeholder="/绝对路径"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            required
+          />
+          <button type="button" onClick={() => setPicking(true)}>
+            浏览…
+          </button>
+        </span>
+      </label>
+      {picking && (
+        <DirPicker
+          title={`选择${label}`}
+          initial={value}
+          onSelect={(path) => {
+            onChange(path);
+            setPicking(false);
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
+    </>
+  );
+}
+
 function NewConfig({ onCreated }: { onCreated: () => void }) {
   const [form, setForm] = useState(EMPTY_CONFIG);
   const [error, setError] = useState("");
@@ -113,28 +156,16 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
           required
         />
       </label>
-      <label className="field">
-        监控目录
-        <input
-          placeholder="/绝对路径"
-          value={form.inbound_root}
-          onChange={(event) =>
-            setForm({ ...form, inbound_root: event.target.value })
-          }
-          required
-        />
-      </label>
-      <label className="field">
-        媒体库目录
-        <input
-          placeholder="/绝对路径"
-          value={form.library_root}
-          onChange={(event) =>
-            setForm({ ...form, library_root: event.target.value })
-          }
-          required
-        />
-      </label>
+      <PathField
+        label="监控目录"
+        value={form.inbound_root}
+        onChange={(inbound_root) => setForm({ ...form, inbound_root })}
+      />
+      <PathField
+        label="媒体库目录"
+        value={form.library_root}
+        onChange={(library_root) => setForm({ ...form, library_root })}
+      />
       <label className="field">
         媒体类型
         <select

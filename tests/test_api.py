@@ -111,6 +111,7 @@ async def test_every_api_route_needs_the_admin_token(client) -> None:
         ("get", "/api/runs"),
         ("get", "/api/configs"),
         ("get", "/api/settings"),
+        ("get", "/api/fs/dirs"),
         ("post", "/api/configs"),
     ]:
         response = await getattr(client, method)(path)
@@ -299,6 +300,53 @@ async def test_unknown_media_type_is_refused(client, tmp_path: Path) -> None:
         },
     )
     assert response.status_code == 422
+
+
+# ---- filesystem ---------------------------------------------------------
+
+
+async def test_dir_listing_shows_visible_subdirectories(
+    client, tmp_path: Path
+) -> None:
+    base = tmp_path / "browse"
+    (base / "Bangumi").mkdir(parents=True)
+    (base / "anime").mkdir()
+    (base / ".hidden").mkdir()
+    (base / "loose-file.mkv").write_bytes(b"x")
+
+    response = await client.get(
+        "/api/fs/dirs", headers=AUTH, params={"path": str(base)}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(base.resolve())
+    assert body["parent"] == str(base.resolve().parent)
+    assert body["dirs"] == ["anime", "Bangumi"]
+
+
+async def test_dir_listing_of_the_root_has_no_parent(client) -> None:
+    response = await client.get(
+        "/api/fs/dirs", headers=AUTH, params={"path": "/"}
+    )
+    assert response.status_code == 200
+    assert response.json()["parent"] is None
+
+
+async def test_dir_listing_refuses_relative_paths(client) -> None:
+    response = await client.get(
+        "/api/fs/dirs", headers=AUTH, params={"path": "relative/path"}
+    )
+    assert response.status_code == 422
+
+
+async def test_dir_listing_of_a_missing_path_is_404(
+    client, tmp_path: Path
+) -> None:
+    response = await client.get(
+        "/api/fs/dirs", headers=AUTH, params={"path": str(tmp_path / "nope")}
+    )
+    assert response.status_code == 404
 
 
 # ---- settings -----------------------------------------------------------

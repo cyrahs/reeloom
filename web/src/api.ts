@@ -76,6 +76,12 @@ export interface WatchConfig {
   notify: boolean;
 }
 
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  dirs: string[];
+}
+
 export interface Settings {
   llm_base_url: string;
   llm_model: string;
@@ -159,6 +165,9 @@ export const api = {
     }),
   deleteConfig: (id: string) =>
     request<{ deleted: boolean }>(`/configs/${id}`, { method: "DELETE" }),
+
+  listDirs: (path: string) =>
+    request<DirListing>(`/fs/dirs?path=${encodeURIComponent(path)}`),
 
   getSettings: () => request<Settings>("/settings"),
   putSettings: (body: Record<string, string>) =>
