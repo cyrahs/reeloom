@@ -6,10 +6,13 @@ else runs against these so the default suite needs no network and no server.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from typing import Any, Sequence
 
+from reeloom.adapters.llm import Conversation, ModelReply, ToolCall
+from reeloom.adapters.tmdb import TmdbHit
 from reeloom.models import (
     ExecutedMove,
     Plan,
@@ -168,3 +171,101 @@ class RecordingNotifier:
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
         self.sent.append(run)
+
+
+class ScriptedModel:
+    """Replays a fixed sequence of replies through the real tool loop."""
+
+    def __init__(self, *replies: ModelReply) -> None:
+        self.replies = list(replies)
+        self.seen: list[Conversation] = []
+
+    async def complete(self, conversation, tools):
+        self.tools = tools
+        self.seen.append(list(conversation.messages))
+        if not self.replies:
+            return ModelReply(content="I have nothing further.")
+        return self.replies.pop(0)
+
+
+def call(name: str, **arguments: Any) -> ModelReply:
+    """A model reply that invokes one tool."""
+
+    return ModelReply(
+        tool_calls=(
+            ToolCall(id=f"call_{name}", name=name, arguments=json.dumps(arguments)),
+        )
+    )
+
+
+class FakeTmdb:
+    """Scripted TMDB with the same surface as the real client."""
+
+    SERIES = {
+        "tmdb_id": 123,
+        "title": "Show",
+        "original_title": "Show",
+        "year": 2024,
+        "overview": "",
+        "seasons": [
+            {"season": 1, "name": "Season 1", "episode_count": 12, "air_year": 2024}
+        ],
+    }
+    MOVIE = {
+        "tmdb_id": 456,
+        "title": "Feature",
+        "original_title": "Feature",
+        "year": 2016,
+        "runtime": 106,
+        "overview": "",
+    }
+
+    def __init__(self, *, series=None, movie=None) -> None:
+        self.series = series if series is not None else dict(self.SERIES)
+        self.movie = movie if movie is not None else dict(self.MOVIE)
+        self.calls: list[str] = []
+
+    async def search(self, query: str, *, movie: bool):
+        self.calls.append(f"search:{query}")
+        source = self.movie if movie else self.series
+        return [
+            TmdbHit(
+                tmdb_id=source["tmdb_id"],
+                title=source["title"],
+                original_title=source["original_title"],
+                year=source["year"],
+                overview="",
+            )
+        ]
+
+    async def get_series(self, tmdb_id: int):
+        self.calls.append(f"get_series:{tmdb_id}")
+        return self.series
+
+    async def get_movie(self, tmdb_id: int):
+        self.calls.append(f"get_movie:{tmdb_id}")
+        return self.movie
+
+    async def get_season(self, tmdb_id: int, season: int):
+        self.calls.append(f"get_season:{tmdb_id}:{season}")
+        return {
+            "tmdb_id": tmdb_id,
+            "season": season,
+            "name": f"Season {season}",
+            "episodes": [
+                {"episode": index, "name": f"Episode {index}", "air_date": ""}
+                for index in range(1, 13)
+            ],
+        }
+
+
+class StubClients:
+    def __init__(self, model, tmdb) -> None:
+        self._model = model
+        self._tmdb = tmdb
+
+    async def model(self):
+        return self._model
+
+    async def tmdb(self):
+        return self._tmdb
