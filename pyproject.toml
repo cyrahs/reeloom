@@ -19,6 +19,12 @@ dependencies = [
 [project.scripts]
 reeloom = "reeloom.server.main:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
 [tool.setuptools.package-data]
 "reeloom.server" = ["static/*", "static/assets/*"]
 

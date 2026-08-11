@@ -1,4 +1,4 @@
-name: Continuous integration and container publish
+name: Container
 
 on:
   pull_request:
@@ -11,96 +11,20 @@ on:
 
 concurrency:
   group: container-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  python:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      REELOOM_TEST_POSTGRES_DSN: postgresql://reeloom:reeloom-ci@127.0.0.1:5432/reeloom
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: reeloom
-          POSTGRES_USER: reeloom
-          POSTGRES_PASSWORD: reeloom-ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U reeloom -d reeloom"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 12
+  # Publishes are gated on the full test suite; pull requests get their
+  # tests from the Tests workflow's own pull_request trigger instead.
+  test:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/test.yml
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install package and test runner
-        run: |
-          python3 -m pip install . "pytest>=8" "pytest-asyncio>=0.24"
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends p7zip-full
-
-      - name: Run the offline suite
-        run: python3 -m pytest -q -m "not postgres"
-
-      - name: Run the PostgreSQL suite
-        run: python3 -m pytest -q -m postgres
-
-      - name: Compile sources
-        run: python3 -m compileall -q src tests scripts
-
-  web:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: web
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type-check
-        run: npm run typecheck
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-  container:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -131,9 +55,8 @@ jobs:
   publish:
     if: github.event_name != 'pull_request'
     needs:
-      - python
-      - web
-      - container
+      - test
+      - build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
