@@ -31,6 +31,125 @@ function archivedSummary(run: RunDetail): string[] {
   return [...shown, ...looseFiles];
 }
 
+type SnapshotItem = RunDetail["snapshot"][number];
+
+interface DirNode {
+  dirs: Map<string, DirNode>;
+  files: SnapshotItem[];
+}
+
+function buildTree(items: SnapshotItem[]): DirNode {
+  const root: DirNode = { dirs: new Map(), files: [] };
+  for (const item of items) {
+    const parts = item.relative_path.split("/");
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      let child = node.dirs.get(part);
+      if (!child) {
+        child = { dirs: new Map(), files: [] };
+        node.dirs.set(part, child);
+      }
+      node = child;
+    }
+    node.files.push(item);
+  }
+  return root;
+}
+
+function dirStats(node: DirNode): { count: number; bytes: number } {
+  let count = node.files.length;
+  let bytes = 0;
+  for (const file of node.files) bytes += file.size_bytes;
+  for (const child of node.dirs.values()) {
+    const sub = dirStats(child);
+    count += sub.count;
+    bytes += sub.bytes;
+  }
+  return { count, bytes };
+}
+
+const SIZE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+function formatSize(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits)} ${SIZE_UNITS[unit]}`;
+}
+
+function naturalCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true });
+}
+
+function FileRow({ item }: { item: SnapshotItem }) {
+  const name = item.relative_path.split("/").at(-1) ?? item.relative_path;
+  return (
+    <li className="tree-file">
+      <code className="cid">{item.candidate_id}</code>
+      <span className="name">{name}</span>
+      {item.variant && <span className="tag">{item.variant}</span>}
+      <span className="size">{formatSize(item.size_bytes)}</span>
+    </li>
+  );
+}
+
+function TreeLevel({ node }: { node: DirNode }) {
+  const dirs = [...node.dirs.entries()].sort(([a], [b]) =>
+    naturalCompare(a, b),
+  );
+  const files = [...node.files].sort((a, b) =>
+    naturalCompare(a.relative_path, b.relative_path),
+  );
+  return (
+    <ul className="tree">
+      {dirs.map(([name, child]) => {
+        const stats = dirStats(child);
+        return (
+          <li key={name}>
+            <details className="tree-dir">
+              <summary>
+                <span className="name">{name}/</span>
+                <span className="size">
+                  {stats.count} 个文件 · {formatSize(stats.bytes)}
+                </span>
+              </summary>
+              <TreeLevel node={child} />
+            </details>
+          </li>
+        );
+      })}
+      {files.map((item) => (
+        <FileRow key={item.candidate_id} item={item} />
+      ))}
+    </ul>
+  );
+}
+
+function Files({ run }: { run: RunDetail }) {
+  const total = run.snapshot.reduce((sum, item) => sum + item.size_bytes, 0);
+  return (
+    <section>
+      <h2>文件</h2>
+      {run.snapshot.length === 0 ? (
+        <p className="muted">无</p>
+      ) : (
+        <>
+          <p className="files-total">
+            共 {run.snapshot.length} 个文件 · {formatSize(total)}
+          </p>
+          <div className="files">
+            <TreeLevel node={buildTree(run.snapshot)} />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function Moves({ run }: { run: RunDetail }) {
   if (!run.plan) return null;
   const archived = archivedSummary(run);
@@ -187,17 +306,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
         </div>
       </section>
 
-      <section>
-        <h2>文件</h2>
-        <ul className="files">
-          {run.snapshot.map((item) => (
-            <li key={item.candidate_id}>
-              <code>{item.candidate_id}</code> {item.relative_path}
-              {item.variant && <span className="tag">{item.variant}</span>}
-            </li>
-          ))}
-        </ul>
-      </section>
+      <Files run={run} />
 
       <section className="danger">
         <h2>其他操作</h2>

@@ -194,6 +194,46 @@ describe("run detail page", () => {
     expect(line).not.toHaveTextContent("Discs/、");
   });
 
+  it("renders the snapshot as a tree with folders collapsed", async () => {
+    mockDetail(
+      detail({
+        snapshot: [
+          {
+            candidate_id: "V1",
+            relative_path: "ep01.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+          {
+            candidate_id: "O1",
+            relative_path: "Scans/cover.jpg",
+            kind: "other",
+            size_bytes: 1,
+            variant: null,
+          },
+          {
+            candidate_id: "O2",
+            relative_path: "Scans/Booklet/p01.jpg",
+            kind: "other",
+            size_bytes: 1,
+            variant: null,
+          },
+        ],
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    // Folders collapse to a summary row with aggregate count and size.
+    expect(await screen.findByText("Scans/")).toBeVisible();
+    expect(screen.getByText("2 个文件 · 2 B")).toBeInTheDocument();
+    expect(screen.getByText("cover.jpg")).not.toBeVisible();
+    expect(screen.getByText("p01.jpg")).not.toBeVisible();
+    // Top-level files stay visible.
+    expect(screen.getByText("ep01.mkv")).toBeVisible();
+  });
+
   it("puts the chat section between the result and the files", async () => {
     mockDetail(detail());
 
