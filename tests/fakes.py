@@ -133,10 +133,6 @@ class FakeDatabase:
     async def clear_executed(self, run_id: str) -> None:
         self.runs[run_id] = replace(self.runs[run_id], executed_moves=())
 
-    async def set_extra(self, run_id: str, values: dict[str, Any]) -> None:
-        run = self.runs[run_id]
-        self.runs[run_id] = replace(run, extra={**run.extra, **values})
-
     async def log(
         self,
         run_id: str,
@@ -160,7 +156,7 @@ class FakeDatabase:
         )
 
     async def list_interactions(self, run_id: str) -> list[dict[str, Any]]:
-        return self.interactions.get(run_id, [])
+        return list(self.interactions.get(run_id, []))
 
     async def get_settings(self) -> dict[str, Any]:
         return dict(self.settings)

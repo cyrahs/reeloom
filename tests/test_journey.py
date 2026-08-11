@@ -75,7 +75,7 @@ def harness(config: WatchConfig, roots: tuple[Path, Path]) -> Harness:
     )
     worker = Worker(
         database,
-        identifier=AgentIdentifier(StubClients(model, FakeTmdb())),
+        identifier=AgentIdentifier(StubClients(model, FakeTmdb()), database),
         executor=FilesystemExecutor(database),
         tracker=StabilityTracker(clock=lambda: 5000.0),
     )
@@ -250,7 +250,8 @@ async def test_a_movie_watch_produces_a_flat_layout(
                     ),
                 ),
                 FakeTmdb(),
-            )
+            ),
+            database,
         ),
         executor=FilesystemExecutor(database),
         tracker=StabilityTracker(clock=lambda: 5000.0),

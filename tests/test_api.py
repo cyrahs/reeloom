@@ -49,9 +49,11 @@ PLAN = Plan(
 class StubAnswerer:
     def __init__(self) -> None:
         self.questions: list[str] = []
+        self.histories: list[list[dict]] = []
 
-    async def answer(self, run, config, question):
+    async def answer(self, run, config, question, history=None):
         self.questions.append(question)
+        self.histories.append(list(history or []))
         return "It is season 1."
 
 
@@ -168,6 +170,23 @@ async def test_ask_is_read_only_and_recorded(
     ]
 
 
+async def test_ask_replays_the_stored_chat_as_context(
+    client, database, config, answerer
+) -> None:
+    await add_run(database, config, plan=PLAN)
+    await database.add_interaction("run-1", "user", "which season?")
+    await database.add_interaction("run-1", "agent", "It is season 1.")
+
+    await client.post(
+        "/api/runs/run-1/ask", headers=AUTH, json={"message": "and the year?"}
+    )
+
+    assert [item["content"] for item in answerer.histories[-1]] == [
+        "which season?",
+        "It is season 1.",
+    ]
+
+
 async def test_revising_a_finished_run_reidentifies_it(
     client, database, config, worker
 ) -> None:
@@ -180,7 +199,9 @@ async def test_revising_a_finished_run_reidentifies_it(
     assert response.json()["state"] == "identifying"
     run = database.runs["run-1"]
     assert run.state is RunState.IDENTIFYING
-    assert run.extra["revisions"] == ["season 2"]
+    assert database.interactions["run-1"] == [
+        {"role": "revision", "content": "season 2"}
+    ]
     assert worker.woken == 1
 
 
