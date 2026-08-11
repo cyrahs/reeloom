@@ -168,6 +168,7 @@ class FakeDatabase:
             "llm_base_url",
             "llm_api_key",
             "llm_model",
+            "llm_reasoning_effort",
             "telegram_bot_token",
             "telegram_chat_id",
         }

@@ -96,6 +96,7 @@ class OpenAICompatibleModel:
         base_url: str,
         api_key: str,
         model: str,
+        reasoning_effort: str = "",
         timeout_seconds: float = 120.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -105,6 +106,7 @@ class OpenAICompatibleModel:
             raise ModelError("missing_model")
         self.__api_key = api_key
         self._model = model
+        self._reasoning_effort = reasoning_effort
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout_seconds,
@@ -132,6 +134,10 @@ class OpenAICompatibleModel:
             # One call at a time keeps the domain actions strictly ordered.
             "parallel_tool_calls": False,
         }
+        if self._reasoning_effort:
+            # Left out entirely when unset so providers that don't know the
+            # parameter never see it.
+            body["reasoning_effort"] = self._reasoning_effort
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"

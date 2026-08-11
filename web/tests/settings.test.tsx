@@ -20,6 +20,7 @@ const CONFIG: WatchConfig = {
 const SETTINGS = {
   llm_base_url: "",
   llm_model: "",
+  llm_reasoning_effort: "",
   telegram_chat_id: "",
   tmdb_api_key_set: false,
   llm_api_key_set: false,
@@ -28,11 +29,16 @@ const SETTINGS = {
 
 function mockSettingsApi() {
   const patches: Record<string, unknown>[] = [];
+  const puts: Record<string, unknown>[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
+      if (url.endsWith("/settings") && method === "PUT") {
+        puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return { ok: true, status: 200, json: async () => ({ updated: true }) };
+      }
       if (url.endsWith("/settings")) {
         return { ok: true, status: 200, json: async () => SETTINGS };
       }
@@ -47,14 +53,14 @@ function mockSettingsApi() {
       throw new Error(`unexpected ${method} ${url}`);
     }),
   );
-  return patches;
+  return { patches, puts };
 }
 
 describe("settings page", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
   it("edits a watch config through the inline form", async () => {
-    const patches = mockSettingsApi();
+    const { patches } = mockSettingsApi();
 
     render(<SettingsPage />);
 
@@ -83,7 +89,7 @@ describe("settings page", () => {
   });
 
   it("closes the edit form on cancel without saving", async () => {
-    const patches = mockSettingsApi();
+    const { patches } = mockSettingsApi();
 
     render(<SettingsPage />);
 
@@ -92,5 +98,25 @@ describe("settings page", () => {
 
     expect(screen.queryByDisplayValue("动画收件箱")).not.toBeInTheDocument();
     expect(patches).toHaveLength(0);
+  });
+
+  it("always sends the reasoning effort, even the default", async () => {
+    const { puts } = mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    const select = await screen.findByLabelText("推理强度");
+    const form = select.closest("form")!;
+
+    // Untouched save: the default ("") still reaches the server, while
+    // empty text fields stay omitted (they mean "keep unchanged").
+    fireEvent.click(within(form).getByText("保存"));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ llm_reasoning_effort: "" });
+
+    fireEvent.change(select, { target: { value: "high" } });
+    fireEvent.click(within(form).getByText("保存"));
+    await waitFor(() => expect(puts).toHaveLength(2));
+    expect(puts[1]).toEqual({ llm_reasoning_effort: "high" });
   });
 });

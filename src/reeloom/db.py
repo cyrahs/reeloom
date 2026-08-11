@@ -46,6 +46,7 @@ create table if not exists settings (
     llm_base_url text not null default '',
     llm_api_key text not null default '',
     llm_model text not null default '',
+    llm_reasoning_effort text not null default '',
     telegram_bot_token text not null default '',
     telegram_chat_id text not null default '',
     updated_at timestamptz not null default now()
@@ -110,6 +111,9 @@ create index if not exists interaction_run_key on interaction (run_id, id);
 
 alter table watch_config
     add column if not exists subtitle_variant text not null default 'chs';
+
+alter table settings
+    add column if not exists llm_reasoning_effort text not null default '';
 """
 
 
@@ -169,6 +173,7 @@ class Database:
             "llm_base_url",
             "llm_api_key",
             "llm_model",
+            "llm_reasoning_effort",
             "telegram_bot_token",
             "telegram_chat_id",
         }

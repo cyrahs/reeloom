@@ -431,3 +431,25 @@ async def test_secrets_are_never_echoed_back(client, database) -> None:
     assert body["llm_model"] == "gpt-5"
     assert "secret-key" not in str(body)
     assert "tmdb_api_key" not in body
+
+
+async def test_reasoning_effort_roundtrips_including_reset(client) -> None:
+    await client.put(
+        "/api/settings", headers=AUTH, json={"llm_reasoning_effort": "high"}
+    )
+    body = (await client.get("/api/settings", headers=AUTH)).json()
+    assert body["llm_reasoning_effort"] == "high"
+
+    # An empty string is a real value: back to the provider default.
+    await client.put(
+        "/api/settings", headers=AUTH, json={"llm_reasoning_effort": ""}
+    )
+    body = (await client.get("/api/settings", headers=AUTH)).json()
+    assert body["llm_reasoning_effort"] == ""
+
+
+async def test_reasoning_effort_rejects_unknown_values(client) -> None:
+    response = await client.put(
+        "/api/settings", headers=AUTH, json={"llm_reasoning_effort": "ultra"}
+    )
+    assert response.status_code == 422

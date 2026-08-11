@@ -335,6 +335,7 @@ function Credentials({
   const [form, setForm] = useState<Record<string, string>>({
     llm_base_url: settings.llm_base_url,
     llm_model: settings.llm_model,
+    llm_reasoning_effort: settings.llm_reasoning_effort,
     telegram_chat_id: settings.telegram_chat_id,
   });
   const [saved, setSaved] = useState(false);
@@ -372,10 +373,15 @@ function Credentials({
         const body = Object.fromEntries(
           Object.entries(form).filter(([, value]) => value !== ""),
         );
+        // Unlike the text fields, "" is a real choice here (provider
+        // default), so it must reach the server instead of meaning
+        // "keep unchanged".
+        body.llm_reasoning_effort = form.llm_reasoning_effort ?? "";
         await api.putSettings(body);
         setForm({
           llm_base_url: form.llm_base_url,
           llm_model: form.llm_model,
+          llm_reasoning_effort: form.llm_reasoning_effort,
           telegram_chat_id: form.telegram_chat_id,
         });
         setSaved(true);
@@ -396,6 +402,22 @@ function Credentials({
         <label className="field">
           模型名称
           <input {...bind("llm_model")} />
+        </label>
+        <label className="field">
+          推理强度
+          <select
+            value={form.llm_reasoning_effort ?? ""}
+            onChange={(event) => {
+              setSaved(false);
+              setForm({ ...form, llm_reasoning_effort: event.target.value });
+            }}
+          >
+            <option value="">默认</option>
+            <option value="minimal">minimal</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
         </label>
       </div>
       <div className="cred-group">
