@@ -85,8 +85,14 @@ edited in the UI and stored in PostgreSQL.
 | `REELOOM_DATABASE_URL` | yes | — |
 | `REELOOM_ADMIN_TOKEN` | yes, ≥16 chars | — |
 | `REELOOM_WORK_DIR` | no | `/var/lib/reeloom` |
-| `REELOOM_HOST` / `REELOOM_PORT` | no | `0.0.0.0` / `8080` |
+| `REELOOM_LISTEN_HOST` / `REELOOM_LISTEN_PORT` | no | `0.0.0.0` / `8080` |
 | `REELOOM_SCAN_INTERVAL_SECONDS` | no | `30` |
+
+The listen pair used to be `REELOOM_HOST` / `REELOOM_PORT`; those names are no
+longer read. Kubernetes and Docker inject `<SERVICE>_PORT` and friends into
+every container, so a Service named `reeloom` used to overwrite the listen port
+with `tcp://10.43.0.1:80` and crash the process on startup. If you set the old
+names, rename them.
 
 Run exactly one process. There is no clustering, and the run's `state` column
 is the only coordination mechanism.
