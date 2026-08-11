@@ -27,6 +27,7 @@ from reeloom.models import (
     RunResult,
     RunState,
     SnapshotFile,
+    SubtitleVariant,
     WatchConfig,
 )
 
@@ -59,6 +60,7 @@ create table if not exists watch_config (
     enabled boolean not null default true,
     stability_seconds integer not null default 120,
     acquire_subtitles boolean not null default false,
+    subtitle_variant text not null default 'chs',
     notify boolean not null default true,
     created_at timestamptz not null default now()
 );
@@ -105,6 +107,9 @@ create table if not exists interaction (
 );
 
 create index if not exists interaction_run_key on interaction (run_id, id);
+
+alter table watch_config
+    add column if not exists subtitle_variant text not null default 'chs';
 """
 
 
@@ -203,8 +208,9 @@ class Database:
                 """
                 insert into watch_config (
                     id, name, inbound_root, library_root, media_type,
-                    enabled, stability_seconds, acquire_subtitles, notify
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    enabled, stability_seconds, acquire_subtitles,
+                    subtitle_variant, notify
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     config.id,
@@ -215,6 +221,7 @@ class Database:
                     config.enabled,
                     config.stability_seconds,
                     config.acquire_subtitles,
+                    config.subtitle_variant.value,
                     config.notify,
                 ),
             )
@@ -229,6 +236,7 @@ class Database:
             "enabled",
             "stability_seconds",
             "acquire_subtitles",
+            "subtitle_variant",
             "notify",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
@@ -487,6 +495,7 @@ def _watch_config(row: dict[str, Any]) -> WatchConfig:
         enabled=row["enabled"],
         stability_seconds=row["stability_seconds"],
         acquire_subtitles=row["acquire_subtitles"],
+        subtitle_variant=SubtitleVariant(row["subtitle_variant"]),
         notify=row["notify"],
     )
 

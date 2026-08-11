@@ -25,6 +25,7 @@ from reeloom.models import (
     RunResult,
     RunState,
     SnapshotFile,
+    SubtitleVariant,
     WatchConfig,
 )
 
@@ -68,9 +69,12 @@ async def test_migrate_is_idempotent(database: Database) -> None:
 async def test_config_round_trip(database: Database, watch: WatchConfig) -> None:
     assert await database.get_config(watch.id) == watch
 
-    await database.update_config(watch.id, {"name": "renamed", "enabled": False})
+    await database.update_config(
+        watch.id, {"name": "renamed", "enabled": False, "subtitle_variant": "cht"}
+    )
     stored = await database.get_config(watch.id)
     assert stored is not None and stored.name == "renamed"
+    assert stored.subtitle_variant is SubtitleVariant.CHT
     assert await database.list_configs(enabled_only=True) == []
 
     await database.delete_config(watch.id)

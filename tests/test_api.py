@@ -317,11 +317,23 @@ async def test_config_crud(client, tmp_path: Path) -> None:
     assert created.status_code == 201
     config_id = created.json()["id"]
     assert created.json()["stability_seconds"] == 120
+    assert created.json()["subtitle_variant"] == "chs"
 
     patched = await client.patch(
         f"/api/configs/{config_id}", headers=AUTH, json={"enabled": False}
     )
     assert patched.json()["enabled"] is False
+
+    patched = await client.patch(
+        f"/api/configs/{config_id}", headers=AUTH, json={"subtitle_variant": "cht"}
+    )
+    assert patched.json()["subtitle_variant"] == "cht"
+
+    # chi is a detection outcome, not a preference.
+    refused = await client.patch(
+        f"/api/configs/{config_id}", headers=AUTH, json={"subtitle_variant": "chi"}
+    )
+    assert refused.status_code == 422
 
     assert (
         await client.delete(f"/api/configs/{config_id}", headers=AUTH)

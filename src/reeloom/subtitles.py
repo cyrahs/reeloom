@@ -17,9 +17,16 @@ from reeloom.models import SubtitleVariant
 MAX_SAMPLE_BYTES = 64 * 1024
 
 _TOKEN = re.compile(r"[\W_]+", re.UNICODE)
-_SIMPLIFIED_TOKENS = frozenset({"chs", "sc", "gb", "gbk", "简体", "简中"})
-_TRADITIONAL_TOKENS = frozenset({"cht", "tc", "big5", "繁体", "繁中"})
-_GENERIC_TOKENS = frozenset({"chi", "zh", "中文"})
+# ASCII markers only count as whole tokens ("sc" inside "screen" says nothing);
+# CJK markers are matched as substrings because they fuse into compound runs
+# like 简体中文 or 简日双语 that token splitting keeps in one piece.
+_SIMPLIFIED_TOKENS = frozenset({"chs", "sc", "gb", "gbk", "gb2312", "jpsc"})
+_TRADITIONAL_TOKENS = frozenset({"cht", "tc", "big5", "jptc"})
+_GENERIC_TOKENS = frozenset({"chi", "zh"})
+_SIMPLIFIED_MARKS = ("简体", "簡體", "简中", "簡中", "简日", "簡日")
+_TRADITIONAL_MARKS = ("繁體", "繁体", "繁中", "繁日", "正體", "正体")
+_DUAL_MARKS = ("简繁", "簡繁", "繁简", "繁簡")
+_GENERIC_MARKS = ("中文", "中字")
 _SIMPLIFIED_MARKERS = frozenset("后发里国台万与云为这")
 _TRADITIONAL_MARKERS = frozenset("後發裡國臺萬與雲為這")
 
@@ -27,13 +34,24 @@ _TRADITIONAL_MARKERS = frozenset("後發裡國臺萬與雲為這")
 def variant_from_name(name: str) -> SubtitleVariant | None:
     normalized = unicodedata.normalize("NFKC", name).casefold()
     tokens = {token for token in _TOKEN.split(normalized) if token}
-    simplified = bool(tokens & _SIMPLIFIED_TOKENS)
-    traditional = bool(tokens & _TRADITIONAL_TOKENS)
+    if any(mark in normalized for mark in _DUAL_MARKS):
+        return SubtitleVariant.CHI
+    simplified = bool(tokens & _SIMPLIFIED_TOKENS) or any(
+        mark in normalized for mark in _SIMPLIFIED_MARKS
+    )
+    traditional = bool(tokens & _TRADITIONAL_TOKENS) or any(
+        mark in normalized for mark in _TRADITIONAL_MARKS
+    )
     if simplified and not traditional:
         return SubtitleVariant.CHS
     if traditional and not simplified:
         return SubtitleVariant.CHT
-    if simplified or traditional or tokens & _GENERIC_TOKENS:
+    if (
+        simplified
+        or traditional
+        or tokens & _GENERIC_TOKENS
+        or any(mark in normalized for mark in _GENERIC_MARKS)
+    ):
         return SubtitleVariant.CHI
     return None
 

@@ -32,6 +32,8 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 MAX_THREADS = 20
 MAX_ATTACHMENTS = 40
+MAX_POSTS = 3
+MAX_EXCERPT = 800
 REQUEST_TIMEOUT = 15.0
 REQUEST_INTERVAL = 1.0
 SEARCH_INTERVAL = 5.0
@@ -64,6 +66,13 @@ class Attachment:
     filename: str
     download_path: str
     """Site-issued, single-use; never persisted."""
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadPage:
+    attachments: tuple[Attachment, ...]
+    excerpt: str
+    """Cleaned, bounded post text; untrusted."""
 
 
 def clean(value: str, limit: int = 300) -> str:
@@ -156,10 +165,20 @@ class AcgripClient:
         await self._pace(REQUEST_INTERVAL)
         return _threads_from_results(await self._get_html(target))
 
-    async def get_attachments(self, thread_id: int) -> list[Attachment]:
+    async def get_thread(self, thread_id: int) -> ThreadPage:
+        """Fetch one thread page: attachments plus a bounded post excerpt.
+
+        Long threads are truncated rather than refused — the attachments and
+        the first post both live near the top of the Discuz markup.
+        """
+
         path = f"/forum.php?mod=viewthread&tid={int(thread_id)}"
         await self._pace(REQUEST_INTERVAL)
-        return _parse_attachments(await self._get_html(path))
+        text = await self._get_html(path, truncate=True)
+        return ThreadPage(
+            attachments=tuple(_parse_attachments(text)),
+            excerpt=_parse_posts(text),
+        )
 
     async def download(self, attachment: Attachment, destination: Path) -> int:
         """Stream one attachment to disk under a hard size cap."""
@@ -187,12 +206,12 @@ class AcgripClient:
             raise AcgripError("download_empty")
         return written
 
-    async def _get_html(self, path: str) -> str:
+    async def _get_html(self, path: str, *, truncate: bool = False) -> str:
         response = await self._client.get(path)
         if response.status_code != 200:
             raise AcgripError("http_error", status=response.status_code, path=path)
         _keep_only_session_cookies(self._client)
-        text = _decode(_bounded(response))
+        text = _decode(_bounded(response, truncate=truncate))
         _reject_challenge(text)
         return text
 
@@ -208,10 +227,22 @@ class AcgripClient:
             self._last_search = stamp
 
 
-def _bounded(response: httpx.Response) -> bytes:
+def _bounded(response: httpx.Response, *, truncate: bool = False) -> bytes:
     content = response.content
     if len(content) > MAX_RESPONSE_BYTES:
-        raise AcgripError("response_too_large", size=len(content))
+        if not truncate:
+            raise AcgripError("response_too_large", size=len(content))
+        # Trim any partial UTF-8 sequence at the cut, otherwise _decode's
+        # strict utf-8 attempt fails and the whole page risks a gb18030
+        # misreading.
+        content = content[:MAX_RESPONSE_BYTES]
+        for _ in range(3):
+            if content and content[-1] & 0xC0 == 0x80:
+                content = content[:-1]
+            else:
+                break
+        if content and content[-1] >= 0xC0:
+            content = content[:-1]
     return content
 
 
@@ -464,3 +495,50 @@ def _parse_attachments(text: str) -> list[Attachment]:
     parser = _AttachmentParser()
     parser.feed(text)
     return list(parser.attachments.values())
+
+
+class _PostTextParser(HTMLParser):
+    """Collect the text of the first few Discuz post bodies.
+
+    A post body is the ``<td class="t_f" id="postmessage_N">`` cell; nested
+    tables inside a post are tracked by td depth so quoted layouts do not end
+    the capture early.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.posts: list[str] = []
+        self._depth = 0
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "td":
+            return
+        if self._depth:
+            self._depth += 1
+            return
+        values = dict(attrs)
+        classes = (values.get("class") or "").split()
+        identifier = values.get("id") or ""
+        if "t_f" in classes and identifier.startswith("postmessage_"):
+            self._depth = 1
+            self._text = []
+
+    def handle_data(self, data):
+        if self._depth:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag != "td" or not self._depth:
+            return
+        self._depth -= 1
+        if self._depth == 0:
+            text = clean(" ".join(self._text))
+            if text and len(self.posts) < MAX_POSTS:
+                self.posts.append(text)
+
+
+def _parse_posts(text: str) -> str:
+    parser = _PostTextParser()
+    parser.feed(text)
+    return " | ".join(parser.posts)[:MAX_EXCERPT]

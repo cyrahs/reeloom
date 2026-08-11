@@ -154,6 +154,11 @@ function Files({ run }: { run: RunDetail }) {
 function Moves({ run }: { run: RunDetail }) {
   if (!run.plan) return null;
   const archived = archivedSummary(run);
+  // Acquired subtitles are planned only after execution, so their renames
+  // live in the executed ledger rather than in plan.moves.
+  const acquired = run.executed_moves.filter(
+    (item) => item.move.kind === "acquired_subtitle" && item.outcome === "moved",
+  );
   return (
     <section>
       <h2>计划</h2>
@@ -168,6 +173,15 @@ function Moves({ run }: { run: RunDetail }) {
             <code className="from">{move.source_path}</code>
             <code className="to">{move.dest_path}</code>
             {move.kind !== "media" && <span className="tag">{move.kind}</span>}
+          </li>
+        ))}
+        {acquired.map((item, index) => (
+          <li key={`acquired-${index}`}>
+            <code className="from">
+              {item.move.source_path.split("/").pop()}
+            </code>
+            <code className="to">{item.move.dest_path}</code>
+            <span className="tag">字幕</span>
           </li>
         ))}
       </ul>

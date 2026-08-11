@@ -10,6 +10,7 @@ const EMPTY_CONFIG = {
   media_type: "anime" as const,
   stability_seconds: 120,
   acquire_subtitles: false,
+  subtitle_variant: "chs" as "chs" | "cht",
   notify: true,
   enabled: true,
 };
@@ -57,6 +58,20 @@ function ConfigRow({
             }
           />
           自动找字幕
+        </label>
+        <label title="首选字幕语种（仅自动找字幕生效）">
+          <select
+            value={config.subtitle_variant}
+            disabled={busy}
+            onChange={(event) =>
+              patch({
+                subtitle_variant: event.target.value as "chs" | "cht",
+              })
+            }
+          >
+            <option value="chs">简体</option>
+            <option value="cht">繁体</option>
+          </select>
         </label>
         <label>
           <input
@@ -180,6 +195,21 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
           <option value="anime">动画</option>
           <option value="tv">剧集</option>
           <option value="movie">电影</option>
+        </select>
+      </label>
+      <label className="field">
+        字幕偏好
+        <select
+          value={form.subtitle_variant}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              subtitle_variant: event.target.value as "chs" | "cht",
+            })
+          }
+        >
+          <option value="chs">简体</option>
+          <option value="cht">繁体</option>
         </select>
       </label>
       <label className="field">
