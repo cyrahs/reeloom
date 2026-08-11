@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -91,6 +92,22 @@ def create_app(
     def nudge() -> None:
         if worker is not None:
             worker.wake()
+
+    # ---- intake -------------------------------------------------------
+
+    @api.get("/intake")
+    async def intake():
+        """Inbound folders the scanner is watching but has not turned into
+        runs: settling ones with their remaining wait, empty ones, and stable
+        ones it skipped. ``now`` lets the client turn ``remaining_seconds``
+        (measured at ``scanned_at``) into a live countdown without trusting
+        its own clock against the server's."""
+
+        folders = worker.intake_status() if worker is not None else []
+        return {
+            "now": time.time(),
+            "folders": [folder.to_json() for folder in folders],
+        }
 
     # ---- runs ---------------------------------------------------------
 

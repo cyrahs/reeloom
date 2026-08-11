@@ -24,6 +24,7 @@ from reeloom.models import (
     WatchConfig,
 )
 from reeloom.server.api import create_app
+from reeloom.server.worker import IntakeFolder
 from tests.fakes import FakeDatabase
 
 TOKEN = "test-admin-token-1234567890"
@@ -60,9 +61,13 @@ class StubAnswerer:
 class StubWorker:
     def __init__(self) -> None:
         self.woken = 0
+        self.intake: list[IntakeFolder] = []
 
     def wake(self) -> None:
         self.woken += 1
+
+    def intake_status(self) -> list[IntakeFolder]:
+        return self.intake
 
 
 @pytest.fixture
@@ -111,6 +116,7 @@ async def add_run(database: FakeDatabase, config: WatchConfig, **kwargs) -> Run:
 async def test_every_api_route_needs_the_admin_token(client) -> None:
     for method, path in [
         ("get", "/api/runs"),
+        ("get", "/api/intake"),
         ("get", "/api/configs"),
         ("get", "/api/settings"),
         ("get", "/api/fs/dirs"),
@@ -150,6 +156,33 @@ async def test_run_list_and_detail(client, database, config) -> None:
 
 async def test_unknown_run_is_404(client) -> None:
     assert (await client.get("/api/runs/missing", headers=AUTH)).status_code == 404
+
+
+async def test_intake_reports_the_workers_pending_folders(
+    client, worker, config
+) -> None:
+    worker.intake.append(
+        IntakeFolder(
+            config_id=config.id,
+            config_name=config.name,
+            folder_name="Incoming",
+            file_count=2,
+            total_bytes=100,
+            status="settling",
+            remaining_seconds=42.0,
+            scanned_at=1_000.0,
+        )
+    )
+
+    response = await client.get("/api/intake", headers=AUTH)
+
+    body = response.json()
+    assert body["now"] > 0
+    [folder] = body["folders"]
+    assert folder["folder_name"] == "Incoming"
+    assert folder["status"] == "settling"
+    assert folder["remaining_seconds"] == 42.0
+    assert folder["scanned_at"] == 1_000.0
 
 
 async def test_ask_is_read_only_and_recorded(

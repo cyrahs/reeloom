@@ -403,6 +403,22 @@ ul {
   box-shadow: var(--shadow-2);
 }
 
+/* Same card as a run row, but static: intake folders have no detail page. */
+.runs li .intake-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+}
+
 .run-main {
   flex: 1;
   min-width: 0;
@@ -502,22 +518,85 @@ ul {
   font-weight: 600;
 }
 
-.files li {
+.files-total {
+  color: var(--muted);
+  font-size: 0.84rem;
+  margin: 0 0 0.4rem;
+}
+
+.files {
+  max-height: 22rem;
+  overflow-y: auto;
+  font-size: 0.9rem;
+}
+
+.tree .tree {
+  margin-left: 0.3rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--line);
+}
+
+.tree summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.3rem 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.tree summary::-webkit-details-marker {
+  display: none;
+}
+
+.tree summary::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 0.5em;
+  height: 0.5em;
+  clip-path: polygon(25% 0, 90% 50%, 25% 100%);
+  background: var(--muted);
+  transition: transform 120ms;
+}
+
+.tree details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tree summary:hover .name {
+  color: var(--accent);
+}
+
+.tree summary .name {
+  font-weight: 550;
+}
+
+.tree-file {
   display: flex;
   align-items: baseline;
   gap: 0.6rem;
-  padding: 0.35rem 0;
-  font-size: 0.9rem;
-  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0 0.3rem 1.05rem;
 }
 
-.files li:last-child {
-  border-bottom: none;
-}
-
-.files code:first-child {
+.tree .cid {
   color: var(--muted);
   flex: none;
+}
+
+.tree .name {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.tree .size {
+  margin-left: auto;
+  padding-left: 0.6rem;
+  flex: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .tag {

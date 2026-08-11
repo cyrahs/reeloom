@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
+import time
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from reeloom.db import Database
 from reeloom.models import (
@@ -38,6 +39,40 @@ _LOGGER = logging.getLogger(__name__)
 
 class NeedsAttention(ReeloomError):
     """The Agent could not settle the folder; a human has to look."""
+
+
+@dataclass(frozen=True, slots=True)
+class IntakeFolder:
+    """A discovered inbound folder that has not become a run yet.
+
+    ``settling`` folders are waiting out the stability window, ``empty`` ones
+    hold no files yet, and ``skipped`` ones were stable but rejected for the
+    given reason. Rebuilt on every scan so the UI can show what the scanner
+    is watching and when a folder will be picked up.
+    """
+
+    config_id: str
+    config_name: str
+    folder_name: str
+    file_count: int
+    total_bytes: int
+    status: str
+    reason: str | None = None
+    remaining_seconds: float | None = None
+    scanned_at: float = 0.0
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "config_id": self.config_id,
+            "config_name": self.config_name,
+            "folder_name": self.folder_name,
+            "file_count": self.file_count,
+            "total_bytes": self.total_bytes,
+            "status": self.status,
+            "reason": self.reason,
+            "remaining_seconds": self.remaining_seconds,
+            "scanned_at": self.scanned_at,
+        }
 
 
 class Identifier(Protocol):
@@ -83,11 +118,17 @@ class Worker:
         self._tracker = tracker or StabilityTracker()
         self._scan_interval = scan_interval_seconds
         self._wake = asyncio.Event()
+        self._intake: list[IntakeFolder] = []
 
     def wake(self) -> None:
         """Ask the loop to run a step now instead of waiting for the timer."""
 
         self._wake.set()
+
+    def intake_status(self) -> list[IntakeFolder]:
+        """What the last scan saw in the inbound roots, short of a run."""
+
+        return self._intake
 
     async def run_forever(self) -> None:
         await self.recover()
@@ -129,14 +170,18 @@ class Worker:
 
     async def scan(self) -> bool:
         created = False
+        intake: list[IntakeFolder] = []
         for config in await self._db.list_configs(enabled_only=True):
             try:
-                created |= await self._scan_config(config)
+                created |= await self._scan_config(config, intake)
             except Exception:
                 _LOGGER.exception("scan failed config=%s", config.id)
+        self._intake = intake
         return created
 
-    async def _scan_config(self, config: WatchConfig) -> bool:
+    async def _scan_config(
+        self, config: WatchConfig, intake: list[IntakeFolder]
+    ) -> bool:
         root = Path(config.inbound_root)
         folders = discover_folders(root)
         if not folders:
@@ -149,7 +194,32 @@ class Worker:
                 continue
             key = (config.id, name)
             shape = folder_shape(root / name)
-            if not self._tracker.is_stable(key, shape, config.stability_seconds):
+            held = self._tracker.observe(key, shape)
+
+            def note(
+                status: str,
+                reason: str | None = None,
+                remaining: float | None = None,
+            ) -> None:
+                intake.append(
+                    IntakeFolder(
+                        config_id=config.id,
+                        config_name=config.name,
+                        folder_name=name,
+                        file_count=shape.file_count,
+                        total_bytes=shape.total_bytes,
+                        status=status,
+                        reason=reason,
+                        remaining_seconds=remaining,
+                        scanned_at=time.time(),
+                    )
+                )
+
+            if shape.file_count == 0:
+                note("empty")
+                continue
+            if held < config.stability_seconds:
+                note("settling", remaining=config.stability_seconds - held)
                 continue
             try:
                 snapshot = snapshot_folder(root / name)
@@ -157,13 +227,16 @@ class Worker:
                 _LOGGER.warning(
                     "skipping folder=%s code=%s", name, error.code
                 )
+                note("skipped", reason=error.code)
                 continue
             if not any(item.kind is FileKind.VIDEO for item in snapshot):
                 _LOGGER.debug("folder has no video, skipping: %s", name)
+                note("skipped", reason="no_video")
                 continue
             if tuple(snapshot) == await self._db.last_snapshot(config.id, name):
                 # A settled run already saw exactly this content. Re-opening it
                 # would loop forever on folders a failed run left behind.
+                note("skipped", reason="unchanged")
                 continue
             run = await self._db.create_run(
                 config_id=config.id, folder_name=name, snapshot=snapshot
