@@ -337,8 +337,10 @@ function Credentials({
 
   const field = (key: string, label: string, hint?: string) => (
     <label key={key} className="field">
-      {label}
-      {hint && <span className="muted"> {hint}</span>}
+      <span>
+        {label}
+        {hint && <span className="muted"> {hint}</span>}
+      </span>
       <input
         type={key.includes("key") || key.includes("token") ? "password" : "text"}
         value={form[key] ?? ""}
