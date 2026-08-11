@@ -55,9 +55,11 @@ plan 之外的任何东西。
 - Python 3.11+，`pathlib.Path`，完整类型标注，frozen dataclass 优先。
 - library code 用 `logging`，不用 `print`。
 - 自定义错误类型带稳定 `code` 和可操作 context。
-- `.venv/bin/python -m pytest -q -m "not postgres"` 必须离线通过：模型、
+- 依赖用 `uv sync` 安装（含 dev group 的 pytest）。
+- `uv run pytest -q -m "not postgres"` 必须离线通过：模型、
   TMDB、ACG.RIP、Telegram 全部使用 fake/mock transport。
-- 仓库层测试打 `postgres` marker，需要 `REELOOM_TEST_POSTGRES_DSN`。
+- 仓库层测试打 `postgres` marker，需要 `REELOOM_TEST_POSTGRES_DSN`；
+  本地不强制，CI 的 Tests workflow 会在 service container 上跑。
 - 文件行为用 `tmp_path`，并覆盖 symlink 逃逸、路径逃逸、目标已存在、
   中断重放和复原重放。
 - 前端：`npm run lint && npm run typecheck && npm test && npm run build`。

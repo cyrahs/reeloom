@@ -100,13 +100,18 @@ is the only coordination mechanism.
 ## Development
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e . pytest pytest-asyncio
-.venv/bin/python -m pytest -q -m "not postgres"
-
-createdb reeloom_test
-REELOOM_TEST_POSTGRES_DSN=postgresql:///reeloom_test .venv/bin/python -m pytest -q
+uv sync
+uv run pytest -q -m "not postgres"
 
 cd web && npm ci && npm run lint && npm run typecheck && npm test && npm run build
+```
+
+The repository tests marked `postgres` run in CI against a service container.
+To run them locally, point them at a throwaway database:
+
+```bash
+createdb reeloom_test
+REELOOM_TEST_POSTGRES_DSN=postgresql:///reeloom_test uv run pytest -q -m postgres
 ```
 
 Tests are offline: the model, TMDB and ACG.RIP are all substituted. To try the
