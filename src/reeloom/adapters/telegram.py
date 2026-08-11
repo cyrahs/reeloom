@@ -17,6 +17,7 @@ _ORIGIN = "https://api.telegram.org"
 _TOKEN = re.compile(r"^[0-9]{5,20}:[A-Za-z0-9_-]{20,128}$")
 _CHAT_ID = re.compile(r"^-?[0-9]{1,20}$")
 MAX_MESSAGE_CHARS = 4000
+MAX_CAPTION_CHARS = 1024
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,14 +62,31 @@ class TelegramClient:
     async def send(self, text: str) -> bool:
         """Send one message. Returns False instead of raising on failure."""
 
+        return await self._post(
+            "sendMessage",
+            {
+                "chat_id": self._chat_id,
+                "text": text[:MAX_MESSAGE_CHARS],
+                "disable_web_page_preview": "true",
+            },
+        )
+
+    async def send_photo(self, photo_url: str, caption: str) -> bool:
+        """Send one photo with a caption. Returns False on failure."""
+
+        return await self._post(
+            "sendPhoto",
+            {
+                "chat_id": self._chat_id,
+                "photo": photo_url,
+                "caption": caption[:MAX_CAPTION_CHARS],
+            },
+        )
+
+    async def _post(self, method: str, data: dict[str, str]) -> bool:
         try:
             response = await self._client.post(
-                f"/bot{self.__token}/sendMessage",
-                data={
-                    "chat_id": self._chat_id,
-                    "text": text[:MAX_MESSAGE_CHARS],
-                    "disable_web_page_preview": "true",
-                },
+                f"/bot{self.__token}/{method}", data=data
             )
         except httpx.HTTPError as error:
             _LOGGER.warning("telegram send failed: %s", type(error).__name__)

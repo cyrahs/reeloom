@@ -9,6 +9,7 @@ reachable. Everything it returns is untrusted text that must pass through
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,8 @@ _LANGUAGE = "zh-CN"
 _MAX_RESPONSE_BYTES = 512 * 1024
 _MAX_RESULTS = 8
 _MAX_OVERVIEW = 300
+_POSTER_BASE = "https://image.tmdb.org/t/p/w780"
+_POSTER_PATH = re.compile(r"^/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg)$", re.IGNORECASE)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -176,6 +179,23 @@ class TmdbClient:
             "name": str(payload.get("name") or ""),
             "episodes": episodes,
         }
+
+    async def poster_url(self, tmdb_id: int, *, movie: bool) -> str | None:
+        """Fixed-origin image URL for the work's poster, or None.
+
+        The path from TMDB is pattern-validated before it is appended to the
+        fixed base, so the result can never point anywhere but image.tmdb.org.
+        """
+
+        path = f"/movie/{int(tmdb_id)}" if movie else f"/tv/{int(tmdb_id)}"
+        payload = await self._get(path, language=_LANGUAGE)
+        poster_path = payload.get("poster_path")
+        if (
+            not isinstance(poster_path, str)
+            or _POSTER_PATH.fullmatch(poster_path) is None
+        ):
+            return None
+        return f"{_POSTER_BASE}{poster_path}"
 
     async def get_movie(self, tmdb_id: int) -> dict[str, Any]:
         payload = await self._get(f"/movie/{int(tmdb_id)}", language=_LANGUAGE)
