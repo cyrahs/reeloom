@@ -41,6 +41,8 @@ LIBRARY_FOLDER = "Show (2024) {tmdb-123}"
         ("Show[08].srt", 8),
         ("Show - 08v2 (1080p).ass", 8),
         ("[Group] Show 2024 [12][BDRip].srt", 12),
+        ("［Group］ Show － ０８.ass", 8),
+        ("[Group] Show 第０８話.ass", 8),
         ("Show OP.ass", None),
         ("readme.txt", None),
     ],
