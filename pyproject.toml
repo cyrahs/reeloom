@@ -4,35 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reeloom"
-version = "0.1.0"
-description = "Agent-native animation episode organizer"
+version = "2.0.0"
+description = "Agent-native media organizer for anime, TV series and movies"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
-    "openai-agents>=0.18.3,<0.19",
-    "psycopg[binary]>=3.2,<4",
-    "psycopg-pool>=3.2,<4",
+    "psycopg[binary,pool]>=3.2,<4",
+    "pydantic>=2.7,<3",
     "uvicorn>=0.30,<1",
 ]
 
 [project.scripts]
-reeloom-server = "reeloom.server.main:serve"
+reeloom = "reeloom.server.main:main"
 
 [tool.setuptools.package-data]
-"reeloom.server" = [
-    "sql/*.sql",
-    "static/*.html",
-    "static/*.json",
-    "static/assets/*.css",
-    "static/assets/*.js",
-]
+"reeloom.server" = ["static/*", "static/assets/*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
 pythonpath = ["src"]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 markers = [
     "postgres: requires an explicit REELOOM_TEST_POSTGRES_DSN",
 ]

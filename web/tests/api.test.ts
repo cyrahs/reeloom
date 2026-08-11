@@ -1,60 +1,69 @@
-import { z } from "zod";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiClient } from "../src/api";
+import { ApiError, api, clearToken, getToken, setToken } from "../src/api";
 
-test("API client sends authenticated DELETE requests", async () => {
-  const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-    new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }),
-  );
-  const api = new ApiClient("admin-token", () => undefined);
+function mockFetch(response: unknown, status = 200) {
+  const fetchMock = vi.fn(async (path: string, init: RequestInit) => ({
+    ok: status < 400,
+    status,
+    statusText: "Error",
+    url: path,
+    method: init.method,
+    json: async () => response,
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
 
-  await api.request("/api/v1/runs/run-1", z.object({ ok: z.literal(true) }), {
-    method: "DELETE",
-    headers: { "Idempotency-Key": "key-1" },
+describe("token storage", () => {
+  beforeEach(() => clearToken());
+
+  it("round-trips through localStorage", () => {
+    expect(getToken()).toBe("");
+    setToken("abc");
+    expect(getToken()).toBe("abc");
+    clearToken();
+    expect(getToken()).toBe("");
   });
-
-  expect(fetchMock).toHaveBeenCalledWith(
-    "/api/v1/runs/run-1",
-    expect.objectContaining({
-      method: "DELETE",
-      headers: expect.objectContaining({
-        Authorization: "Bearer admin-token",
-        "Idempotency-Key": "key-1",
-      }),
-    }),
-  );
 });
 
-test("API client preserves bounded executor error context", async () => {
-  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-    new Response(
-      JSON.stringify({
-        error: {
-          code: "recovery_required",
-          context: {
-            candidate_id: "video:1",
-            source_state: "absent",
-            ignored: 123,
-          },
-        },
-      }),
-      {
-        status: 409,
-        headers: { "Content-Type": "application/json" },
-      },
-    ),
-  );
-  const api = new ApiClient("admin-token", () => undefined);
+describe("api client", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    setToken("secret");
+  });
 
-  await expect(api.request("/test", z.never())).rejects.toMatchObject({
-    status: 409,
-    code: "recovery_required",
-    context: {
-      candidate_id: "video:1",
-      source_state: "absent",
-    },
+  it("sends the bearer token on every request", async () => {
+    const fetchMock = mockFetch({ runs: [] });
+
+    await api.listRuns();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(
+      (init.headers as Record<string, string>).Authorization,
+    ).toBe("Bearer secret");
+  });
+
+  it("sets a JSON content type only when there is a body", async () => {
+    const fetchMock = mockFetch({ state: "pending" });
+
+    await api.retry("run-1");
+    const [, noBody] = fetchMock.mock.calls[0];
+    expect((noBody.headers as Record<string, string>)["Content-Type"]).toBe(
+      undefined,
+    );
+
+    await api.revise("run-1", "season 2");
+    const [, withBody] = fetchMock.mock.calls[1];
+    expect((withBody.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
+  });
+
+  it("surfaces the server's error detail", async () => {
+    mockFetch({ detail: "run_is_busy" }, 409);
+
+    await expect(api.revise("run-1", "x")).rejects.toThrowError(ApiError);
+    await expect(api.revise("run-1", "x")).rejects.toThrowError("run_is_busy");
   });
 });

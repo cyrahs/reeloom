@@ -21,19 +21,18 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      REELOOM_POSTGRES_DSN: postgresql://reeloom:${REELOOM_POSTGRES_PASSWORD}@postgres:5432/reeloom
-      REELOOM_TMDB_API_KEY: ${REELOOM_TMDB_API_KEY:?required}
-      REELOOM_STATE_ROOT: /var/lib/reeloom
-      REELOOM_WORKERS: "1"
-      REELOOM_ALLOWED_HOSTS: ${REELOOM_ALLOWED_HOSTS:?required}
-      REELOOM_ALLOWED_UI_ORIGINS: ${REELOOM_ALLOWED_UI_ORIGINS:?required}
+      REELOOM_DATABASE_URL: postgresql://reeloom:${REELOOM_POSTGRES_PASSWORD}@postgres:5432/reeloom
       REELOOM_ADMIN_TOKEN: ${REELOOM_ADMIN_TOKEN:?required}
+      REELOOM_WORK_DIR: /var/lib/reeloom
     volumes:
-      - reeloom-state:/var/lib/reeloom
+      - reeloom-work:/var/lib/reeloom
+      # Mounted at the same absolute path inside and out, so the paths you
+      # type into the UI mean the same thing to the container. Inbound and
+      # library must be on one filesystem: moves are renames, never copies.
       - ${REELOOM_MEDIA_ROOT:?required}:${REELOOM_MEDIA_ROOT:?required}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
 volumes:
   postgres-data:
-  reeloom-state:
+  reeloom-work:

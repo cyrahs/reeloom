@@ -1,2022 +1,305 @@
+"""HTTP API.
+
+Single admin, same-origin UI, no sessions: one Bearer token guards every
+route. The UI polls; there is no event stream to reconnect, buffer or replay.
+"""
+
 from __future__ import annotations
 
-import asyncio
-import json
-import threading
-import time
-from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+import logging
+import secrets
+import uuid
 from pathlib import Path
-from typing import Annotated, Protocol
-from urllib.parse import urlsplit
+from typing import Annotated, Any
 
-from fastapi import (
-    Depends,
-    FastAPI,
-    Header,
-    HTTPException,
-    Request,
-    Response,
-)
-from fastapi.exceptions import RequestValidationError
-from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse, StreamingResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 
-from reeloom.executor.apply import ApplyResult
-from reeloom.executor.folder_disposition import FolderDispositionResult
-from reeloom.server.auth import AuthSettings
-from reeloom.server.interactions import (
-    InteractionKind,
-    InteractionService,
-)
-from reeloom.server.apply_service import ApplyCoordinator
-from reeloom.server.api_models import (
-    ApplyResponse,
-    ApproveApplyRequest,
-    AttentionControlRequest,
-    AttentionFailResponse,
-    AttentionRetryResponse,
-    ConfigResponse,
-    ConfigUpdateRequest,
-    DirectoryListingResponse,
-    DiscoveriesResponse,
-    FolderObservationsResponse,
-    EventsResponse,
-    FolderDispositionRecoveryRequest,
-    FolderDispositionRequest,
-    FolderDispositionResultResponse,
-    HealthResponse,
-    InteractionHistoryResponse,
-    InteractionRequest,
-    InteractionResponse,
-    MoveCapabilityProbeRequest,
-    MoveCapabilityResponse,
-    PlanLineageResponse,
-    PlanLineageItem,
-    PlanPreviewResponse,
-    ProviderProbeRequest,
-    ProviderProbeResponse,
-    ReapplyRequest,
-    ReapplyResponse,
-    RecoveryRequest,
-    RecoveryResponse,
-    RunDeletionResponse,
-    RunActionRequest,
-    RunActionResponse,
-    RunResponse,
-    RunsResponse,
-    SessionResponse,
-    TelegramTestRequest,
-    TelegramTestResponse,
-)
-from reeloom.server.errors import ServerError, ServerErrorCode
-from reeloom.server.folder_disposition import FolderDispositionCoordinator
-from reeloom.server.forward_execution_service import (
-    ForwardExecutionCoordinator,
-    ForwardExecutionServiceError,
-)
-from reeloom.server.forward_operation_repository import (
-    ForwardOperationError,
-)
-from reeloom.server.subtitle_acquisition_service import (
-    SubtitleAcquisitionCoordinator,
-)
-from reeloom.server.web_static import StaticAsset, StaticWebBundle
-from reeloom.executor.errors import (
-    ApprovalError,
-    ExecutorError,
-    ExecutorErrorCode,
-)
+from reeloom.db import Database
+from reeloom.models import MediaType, Run, RunState
+from reeloom.models import WatchConfig as WatchConfigModel
 
-_MAX_BODY_BYTES = 64 * 1024
-_MAX_PAGE_SIZE = 100
-_BODY_TIMEOUT_SECONDS = 5.0
-_EMPTY_SSE_POLLS = 2
-_SSE_POLL_SECONDS = 0.25
-_SSE_CONNECTION_LIMIT = 16
-_EXECUTOR_ERROR_CONTEXT_FIELDS = frozenset(
-    {
-        "candidate_id",
-        "destination_relative_path",
-        "destination_state",
-        "source_relative_path",
-        "source_state",
-    }
-)
-_SINGLETON_HEADERS = frozenset(
-    {
-        "authorization",
-        "content-length",
-        "content-type",
-        "host",
-        "idempotency-key",
-        "if-match",
-        "last-event-id",
-        "origin",
-    }
-)
+_LOGGER = logging.getLogger(__name__)
+
+MAX_MESSAGE_LENGTH = 2000
 
 
-def _safe_executor_error_context(
-    error: ExecutorError,
-) -> dict[str, str]:
-    context: dict[str, str] = {}
-    for key in sorted(_EXECUTOR_ERROR_CONTEXT_FIELDS):
-        value = error.context.get(key)
-        if (
-            isinstance(value, str)
-            and value
-            and len(value.encode("utf-8")) <= 4_096
-        ):
-            context[key] = value
-    return context
+class ConfigInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    inbound_root: str = Field(min_length=1, max_length=1024)
+    library_root: str = Field(min_length=1, max_length=1024)
+    media_type: MediaType
+    enabled: bool = True
+    stability_seconds: int = Field(default=120, ge=0, le=86_400)
+    acquire_subtitles: bool = False
+    notify: bool = True
 
 
-def _folder_disposition_payload(
-    result: FolderDispositionResult,
-) -> dict[str, object]:
-    return {
-        "run_id": result.run_id,
-        "plan_hash": result.plan_hash,
-        "approval_id": result.approval_id,
-        "transaction_id": result.transaction_id,
-        "action": result.action.value,
-        "target_relative": result.target_relative,
-        "status": result.status,
-    }
+class ConfigPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    inbound_root: str | None = Field(default=None, min_length=1, max_length=1024)
+    library_root: str | None = Field(default=None, min_length=1, max_length=1024)
+    media_type: MediaType | None = None
+    enabled: bool | None = None
+    stability_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    acquire_subtitles: bool | None = None
+    notify: bool | None = None
 
 
-class ApiQueries(Protocol):
-    def get_run(self, run_id: str) -> dict[str, object] | None: ...
-
-    def is_run_visible(self, run_id: str) -> bool: ...
-
-    def list_events(
-        self,
-        *,
-        run_id: str,
-        after_event_id: int,
-        limit: int,
-    ) -> tuple[dict[str, object], ...]: ...
-
-    def latest_event_id(self, run_id: str) -> int: ...
-
-    def get_config(self) -> dict[str, object] | None: ...
-
-    def get_plan(
-        self,
-        *,
-        run_id: str,
-        version: int | None,
-    ) -> dict[str, object] | None: ...
-
-    def list_runs(
-        self,
-        *,
-        before: str | None,
-        limit: int,
-    ) -> tuple[dict[str, object], ...]: ...
-
-    def list_discoveries(
-        self,
-        *,
-        before: str | None,
-        limit: int,
-    ) -> tuple[dict[str, object], ...]: ...
-
-    def list_folder_observations(
-        self, *, limit: int
-    ) -> tuple[dict[str, object], ...]: ...
-
-    def list_plans(
-        self,
-        *,
-        run_id: str,
-        before_version: int | None,
-        limit: int,
-    ) -> tuple[dict[str, object], ...]: ...
-
-    def get_plan_preview(
-        self,
-        *,
-        run_id: str,
-        version: int,
-        after: int,
-        limit: int,
-    ) -> dict[str, object] | None: ...
-
-    def list_interactions(
-        self,
-        *,
-        run_id: str,
-        before: str | None,
-        limit: int,
-    ) -> tuple[dict[str, object], ...]: ...
+class SettingsInput(BaseModel):
+    tmdb_api_key: str | None = Field(default=None, max_length=200)
+    llm_base_url: str | None = Field(default=None, max_length=500)
+    llm_api_key: str | None = Field(default=None, max_length=500)
+    llm_model: str | None = Field(default=None, max_length=200)
+    telegram_bot_token: str | None = Field(default=None, max_length=200)
+    telegram_chat_id: str | None = Field(default=None, max_length=64)
 
 
-@dataclass(frozen=True, slots=True)
-class ApiDependencies:
-    queries: ApiQueries
-    interactions: InteractionService | None = None
-    apply: ApplyCoordinator | None = None
-    forward_execution: ForwardExecutionCoordinator | None = None
-    folder_dispositions: FolderDispositionCoordinator | None = None
-    subtitle_acquisitions: SubtitleAcquisitionCoordinator | None = None
-    health: Callable[[], object] | None = None
-    effect_guard: Callable[[], None] | None = None
-    config_update: (
-        Callable[[int, dict[str, object]], dict[str, object]] | None
-    ) = None
-    config_resolve: (
-        Callable[[int, dict[str, object]], dict[str, object] | None]
-        | None
-    ) = None
-    provider_probe: Callable[[], Awaitable[object]] | None = None
-    telegram_test: Callable[[str], dict[str, object]] | None = None
-    move_capability_probe: (
-        Callable[[str], Awaitable[dict[str, object]]] | None
-    ) = None
-    directory_list: (
-        Callable[[str], dict[str, object]] | None
-    ) = None
-    idempotency: object | None = None
-    run_delete: (
-        Callable[[str], dict[str, object]] | None
-    ) = None
-    run_delete_resolve: (
-        Callable[[str], dict[str, object] | None] | None
-    ) = None
-    attention_retry: (
-        Callable[[str, int], dict[str, object]] | None
-    ) = None
-    attention_fail: (
-        Callable[[str, int], dict[str, object]] | None
-    ) = None
-    legacy_effects_enabled: bool = False
-    sse_max_empty_polls: int | None = _EMPTY_SSE_POLLS
-    sse_poll_seconds: float = _SSE_POLL_SECONDS
-    sse_heartbeat_seconds: float = 15.0
+class MessageInput(BaseModel):
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
 
 
-def _duplicate_rejecting_object(
-    pairs: list[tuple[str, object]],
-) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate key")
-        result[key] = value
-    return result
-
-
-def _host_name(value: str) -> str | None:
-    try:
-        parsed = urlsplit(f"//{value}")
-        parsed.port
-    except ValueError:
-        return None
-    if (
-        not value
-        or value.endswith(":")
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path
-        or parsed.query
-        or parsed.fragment
-    ):
-        return None
-    return parsed.hostname.lower()
-
-
-class _SecurityBoundary:
-    def __init__(
-        self,
-        app: ASGIApp,
-        *,
-        auth: AuthSettings,
-        public_paths: frozenset[str] = frozenset(),
-    ) -> None:
-        self.app = app
-        self._auth = auth
-        self._public_paths = public_paths
-        self._concurrency = threading.BoundedSemaphore(64)
-        self._sse_concurrency = threading.BoundedSemaphore(
-            _SSE_CONNECTION_LIMIT
-        )
-        self._rate_lock = threading.Lock()
-        self._arrivals: deque[float] = deque()
-
-    async def __call__(
-        self,
-        scope: Scope,
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        concurrency = self._concurrency_gate(scope["path"])
-        if not concurrency.acquire(blocking=False):
-            await JSONResponse(
-                {"error": {"code": "server_busy"}},
-                status_code=503,
-            )(scope, receive, send)
-            return
-        try:
-            if not self._allow_arrival():
-                await JSONResponse(
-                    {"error": {"code": "rate_limited"}},
-                    status_code=429,
-                )(scope, receive, send)
-                return
-            header_pairs = tuple(
-                (
-                    key.decode("latin-1").lower(),
-                    value.decode("latin-1"),
-                )
-                for key, value in scope["headers"]
-            )
-            if any(
-                sum(1 for key, _ in header_pairs if key == name) > 1
-                for name in _SINGLETON_HEADERS
-            ):
-                await JSONResponse(
-                    {"error": {"code": "duplicate_header"}},
-                    status_code=400,
-                )(scope, receive, send)
-                return
-            headers = dict(header_pairs)
-            host = _host_name(headers.get("host", ""))
-            if host not in self._auth.allowed_hosts:
-                await JSONResponse(
-                    {"error": {"code": "invalid_host"}},
-                    status_code=400,
-                )(scope, receive, send)
-                return
-            origin = headers.get("origin")
-            if origin is not None and origin not in self._auth.allowed_origins:
-                await JSONResponse(
-                    {"error": {"code": "invalid_origin"}},
-                    status_code=403,
-                )(scope, receive, send)
-                return
-            if scope["method"] == "OPTIONS":
-                await self._send_with_headers(
-                    Response(status_code=204),
-                    scope,
-                    receive,
-                    send,
-                    origin,
-                )
-                return
-            if (
-                scope["method"] in {"GET", "HEAD"}
-                and scope["path"] in self._public_paths
-            ):
-                async def public_send(message: Message) -> None:
-                    if message["type"] == "http.response.start":
-                        message["headers"] = list(
-                            message.get("headers", [])
-                        ) + self._headers(origin)
-                    await send(message)
-
-                await self.app(scope, receive, public_send)
-                return
-            authorization = headers.get("authorization", "")
-            prefix = "Bearer "
-            authenticated = (
-                self._auth.authenticate(authorization[len(prefix) :])
-                if authorization.startswith(prefix)
-                else False
-            )
-            if not authenticated:
-                await self._send_with_headers(
-                    JSONResponse(
-                        {"error": {"code": "unauthorized"}},
-                        status_code=401,
-                        headers={"www-authenticate": "Bearer"},
-                    ),
-                    scope,
-                    receive,
-                    send,
-                    origin,
-                )
-                return
-            if scope["method"] in {"POST", "PUT", "PATCH"}:
-                invalid, receive = await self._validate_json(
-                    headers,
-                    receive,
-                )
-                if invalid is not None:
-                    await self._send_with_headers(
-                        invalid,
-                        scope,
-                        receive,
-                        send,
-                        origin,
-                    )
-                    return
-
-            async def send_with_headers(message: Message) -> None:
-                if message["type"] == "http.response.start":
-                    extra = self._headers(origin)
-                    message["headers"] = list(message.get("headers", [])) + extra
-                await send(message)
-
-            await self.app(scope, receive, send_with_headers)
-        finally:
-            concurrency.release()
-
-    def _concurrency_gate(
-        self,
-        path: str,
-    ) -> threading.BoundedSemaphore:
-        if path.startswith("/api/v1/runs/") and path.endswith(
-            "/events/stream"
-        ):
-            return self._sse_concurrency
-        return self._concurrency
-
-    def _allow_arrival(self) -> bool:
-        now = time.monotonic()
-        with self._rate_lock:
-            while self._arrivals and self._arrivals[0] <= now - 60:
-                self._arrivals.popleft()
-            if len(self._arrivals) >= 10_000:
-                return False
-            self._arrivals.append(now)
-            return True
-
-    async def _validate_json(
-        self,
-        headers: dict[str, str],
-        receive: Receive,
-    ) -> tuple[JSONResponse | None, Receive]:
-        content_type = headers.get("content-type", "").split(";", 1)[0]
-        if content_type != "application/json":
-            return JSONResponse(
-                {"error": {"code": "invalid_content_type"}},
-                status_code=415,
-            ), receive
-        length = headers.get("content-length")
-        if length is not None:
-            try:
-                if int(length) > _MAX_BODY_BYTES:
-                    return JSONResponse(
-                        {"error": {"code": "body_too_large"}},
-                        status_code=413,
-                    ), receive
-            except ValueError:
-                return JSONResponse(
-                    {"error": {"code": "invalid_body"}},
-                    status_code=400,
-                ), receive
-        chunks: list[bytes] = []
-        size = 0
-        more = True
-        try:
-            async with asyncio.timeout(_BODY_TIMEOUT_SECONDS):
-                while more:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        return JSONResponse(
-                            {"error": {"code": "invalid_body"}},
-                            status_code=400,
-                        ), receive
-                    chunk = message.get("body", b"")
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    more = bool(message.get("more_body", False))
-                    if size > _MAX_BODY_BYTES:
-                        return JSONResponse(
-                            {"error": {"code": "body_too_large"}},
-                            status_code=413,
-                        ), receive
-        except TimeoutError:
-            return JSONResponse(
-                {"error": {"code": "request_timeout"}},
-                status_code=408,
-            ), receive
-        body = b"".join(chunks)
-        if len(body) > _MAX_BODY_BYTES:
-            return JSONResponse(
-                {"error": {"code": "body_too_large"}},
-                status_code=413,
-            ), receive
-        try:
-            json.loads(
-                body,
-                object_pairs_hook=_duplicate_rejecting_object,
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-            return JSONResponse(
-                {"error": {"code": "invalid_json"}},
-                status_code=400,
-            ), receive
-        sent = False
-
-        async def replay() -> Message:
-            nonlocal sent
-            if sent:
-                return {"type": "http.disconnect"}
-            sent = True
-            return {
-                "type": "http.request",
-                "body": body,
-                "more_body": False,
-            }
-
-        return None, replay
-
-    def _headers(self, origin: str | None) -> list[tuple[bytes, bytes]]:
-        result = [
-            (b"x-content-type-options", b"nosniff"),
-            (b"cache-control", b"no-store"),
-            (b"referrer-policy", b"no-referrer"),
-            (b"x-frame-options", b"DENY"),
-            (
-                b"content-security-policy",
-                (
-                    b"default-src 'none'; base-uri 'none'; "
-                    b"connect-src 'self'; font-src 'self'; "
-                    b"form-action 'self'; frame-ancestors 'none'; "
-                    b"img-src 'self' data:; object-src 'none'; "
-                    b"script-src 'self'; style-src 'self'"
-                ),
-            ),
-            (
-                b"permissions-policy",
-                (
-                    b"camera=(), geolocation=(), microphone=(), "
-                    b"payment=(), usb=()"
-                ),
-            ),
-        ]
-        if origin is not None:
-            result.extend(
-                [
-                    (b"access-control-allow-origin", origin.encode("ascii")),
-                    (b"vary", b"Origin"),
-                    (
-                        b"access-control-allow-headers",
-                        b"Authorization, Content-Type, Idempotency-Key, If-Match, Last-Event-ID",
-                    ),
-                    (
-                        b"access-control-allow-methods",
-                        b"GET, POST, PUT, DELETE, OPTIONS",
-                    ),
-                ]
-            )
-        return result
-
-    async def _send_with_headers(
-        self,
-        response: Response,
-        scope: Scope,
-        receive: Receive,
-        send: Send,
-        origin: str | None,
-    ) -> None:
-        async def wrapped(message: Message) -> None:
-            if message["type"] == "http.response.start":
-                message["headers"] = list(message.get("headers", [])) + (
-                    self._headers(origin)
-                )
-            await send(message)
-
-        await response(scope, receive, wrapped)
-
-
-def _cursor(
-    raw: Annotated[
-        str | None,
-        Header(
-            alias="Last-Event-ID",
-            description="Durable event cursor",
-        ),
-    ] = None,
-) -> int:
-    raw = "0" if raw is None else raw
-    try:
-        value = int(raw)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_cursor"},
-        ) from None
-    if value < 0:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_cursor"},
-        )
-    return value
-
-
-def _idempotency_key(
-    value: Annotated[
-        str | None,
-        Header(
-            alias="Idempotency-Key",
-            description="Stable key for one logical mutation",
-        ),
-    ] = None,
-) -> str:
-    value = "" if value is None else value
-    if not value or len(value.encode("utf-8")) > 256:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_idempotency_key"},
-        )
-    return value
-
-
-def _plan_hash(
-    value: Annotated[
-        str | None,
-        Header(
-            alias="If-Match",
-            description="Exact immutable plan hash",
-        ),
-    ] = None,
-) -> str:
-    value = "" if value is None else value
-    digest = value.removeprefix("sha256:")
-    if (
-        len(value) != 71
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_plan_hash"},
-        )
-    return value
-
-
-def _interaction_head(
-    value: Annotated[
-        str | None,
-        Header(
-            alias="If-Match",
-            description="Exact plan hash or event:<sequence> attention head",
-        ),
-    ] = None,
-) -> tuple[str | None, int | None]:
-    if value is not None and value.startswith("event:"):
-        raw = value.removeprefix("event:")
-        if raw.isascii() and raw.isdigit() and int(raw) >= 1:
-            return None, int(raw)
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_event_sequence"},
-        )
-    return _plan_hash(value), None
-
-
-def _event_sequence_head(
-    match: tuple[str | None, int | None] = Depends(_interaction_head),
-) -> int:
-    plan_hash, event_sequence = match
-    if plan_hash is not None or event_sequence is None:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "invalid_event_sequence"},
-        )
-    return event_sequence
-
-
-def _config_revision(
-    value: Annotated[
-        str | None,
-        Header(
-            alias="If-Match",
-            description="Exact config revision",
-        ),
-    ] = None,
-) -> int:
-    try:
-        return int("" if value is None else value)
-    except ValueError:
-        raise HTTPException(
-            400, detail={"code": "invalid_revision"}
-        ) from None
-
-
-def _text(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        raise HTTPException(400, detail={"code": "invalid_body"})
-    return value
-
-
-async def _shield_thread(function: Callable[[], object]) -> object:
-    task = asyncio.create_task(asyncio.to_thread(function))
-    return await asyncio.shield(task)
-
-
-def create_api(
-    dependencies: ApiDependencies,
+def create_app(
     *,
-    auth: AuthSettings,
-    static_root: Path | None = None,
+    database: Database,
+    admin_token: str,
+    worker=None,
+    answerer=None,
+    static_dir: Path | None = None,
 ) -> FastAPI:
-    static_bundle = (
-        None if static_root is None else StaticWebBundle.load(static_root)
-    )
-    app = FastAPI(
-        title="Reeloom API",
-        version="1.0.0",
-        docs_url=None,
-        redoc_url=None,
-        openapi_url="/api/v1/openapi.json",
-    )
-    app.add_middleware(
-        _SecurityBoundary,
-        auth=auth,
-        public_paths=(
-            frozenset()
-            if static_bundle is None
-            else static_bundle.public_paths
-        ),
-    )
+    app = FastAPI(title="Reeloom", version="2.0.0", docs_url=None, redoc_url=None)
 
-    def custom_openapi() -> dict[str, object]:
-        if app.openapi_schema is not None:
-            return app.openapi_schema
-        schema = get_openapi(
-            title=app.title,
-            version=app.version,
-            routes=app.routes,
-        )
-        components = schema.setdefault("components", {})
-        schemas = components.setdefault("schemas", {})
-        components.setdefault("securitySchemes", {})["BearerAuth"] = {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "opaque",
-        }
-        schemas["ErrorBody"] = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["code"],
-            "properties": {"code": {"type": "string"}},
-        }
-        schemas["ErrorResponse"] = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["error"],
-            "properties": {
-                "error": {"$ref": "#/components/schemas/ErrorBody"}
-            },
-        }
-        schemas.pop("HTTPValidationError", None)
-        schemas.pop("ValidationError", None)
-        for path, path_item in schema.get("paths", {}).items():
-            if (
-                not isinstance(path, str)
-                or not (
-                    path.startswith("/api/")
-                    or path == "/health"
-                )
-            ):
-                continue
-            if not isinstance(path_item, dict):
-                continue
-            for method, operation in path_item.items():
-                if method not in {
-                    "get",
-                    "post",
-                    "put",
-                    "patch",
-                    "delete",
-                } or not isinstance(operation, dict):
-                    continue
-                operation["security"] = [{"BearerAuth": []}]
-                responses = operation.setdefault("responses", {})
-                for status in (
-                    "400",
-                    "401",
-                    "403",
-                    "409",
-                    "422",
-                    "503",
-                ):
-                    responses[status] = {
-                        "description": "Safe error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": (
-                                        "#/components/schemas/"
-                                        "ErrorResponse"
-                                    )
-                                }
-                            }
-                        },
-                    }
-        app.openapi_schema = schema
-        return schema
-
-    app.openapi = custom_openapi  # type: ignore[method-assign]
-
-    def static_response(
-        request: Request,
-        asset: StaticAsset,
-    ) -> Response:
-        return Response(
-            content=(
-                b"" if request.method == "HEAD" else asset.content
-            ),
-            media_type=asset.media_type,
-        )
-
-    if static_bundle is not None:
-        index_asset = static_bundle.index
-
-        @app.api_route(
-            "/",
-            methods=["GET", "HEAD"],
-            include_in_schema=False,
-        )
-        async def web_index(request: Request) -> Response:
-            return static_response(request, index_asset)
-
-        def asset_endpoint(
-            asset: StaticAsset,
-        ) -> Callable[[Request], Awaitable[Response]]:
-            async def endpoint(request: Request) -> Response:
-                return static_response(request, asset)
-
-            return endpoint
-
-        for public_path, asset in static_bundle.assets.items():
-            app.add_api_route(
-                public_path,
-                asset_endpoint(asset),
-                methods=["GET", "HEAD"],
-                include_in_schema=False,
-            )
-
-    @app.exception_handler(StarletteHTTPException)
-    async def safe_http_error(
-        request: Request,
-        error: StarletteHTTPException,
-    ) -> JSONResponse:
-        del request
-        code = (
-            error.detail.get("code")
-            if isinstance(error.detail, dict)
-            else None
-        )
-        return JSONResponse(
-            {
-                "error": {
-                    "code": code if isinstance(code, str) else "request_failed"
-                }
-            },
-            status_code=error.status_code,
-            headers=error.headers,
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def safe_validation_error(
-        request: Request,
-        error: RequestValidationError,
-    ) -> JSONResponse:
-        del request, error
-        return JSONResponse(
-            {"error": {"code": "invalid_request"}},
-            status_code=422,
-        )
-
-    @app.exception_handler(Exception)
-    async def safe_error(
-        request: Request,
-        error: Exception,
-    ) -> JSONResponse:
-        del request
-        if isinstance(error, ServerError):
-            statuses = {
-                ServerErrorCode.CONFIG_CONFLICT: 409,
-                ServerErrorCode.CONFIG_NOT_FOUND: 404,
-                ServerErrorCode.DIRECTORY_NOT_FOUND: 404,
-                ServerErrorCode.DISCOVERY_NOT_FOUND: 404,
-                ServerErrorCode.JOB_NOT_FOUND: 404,
-                ServerErrorCode.INTERACTION_NOT_FOUND: 404,
-                ServerErrorCode.INTERACTION_CONFLICT: 409,
-                ServerErrorCode.INTERACTION_BUDGET_EXHAUSTED: 409,
-                ServerErrorCode.RUN_BUSY: 409,
-                ServerErrorCode.RUN_NOT_FOUND: 404,
-                ServerErrorCode.RUN_DELETE_CONFLICT: 409,
-                ServerErrorCode.WATCH_NOT_FOUND: 404,
-                ServerErrorCode.FRESH_MAPPING_REQUIRED: 422,
-                ServerErrorCode.DATABASE_UNAVAILABLE: 503,
-                ServerErrorCode.INSTANCE_LOCK_LOST: 503,
-                ServerErrorCode.PROVIDER_UNAVAILABLE: 503,
-            }
-            return JSONResponse(
-                {"error": {"code": error.code.value}},
-                status_code=statuses.get(error.code, 400),
-            )
-        if isinstance(error, ExecutorError):
-            context = _safe_executor_error_context(error)
-            payload: dict[str, object] = {"code": error.code.value}
-            if context:
-                payload["context"] = context
-            return JSONResponse(
-                {"error": payload},
-                status_code=409,
-            )
-        if isinstance(error, ApprovalError):
-            return JSONResponse(
-                {"error": {"code": error.code.value}},
-                status_code=409,
-            )
-        if isinstance(
-            error, (ForwardExecutionServiceError, ForwardOperationError)
-        ):
-            return JSONResponse(
-                {"error": {"code": "action_stale"}},
-                status_code=409,
-            )
-        return JSONResponse(
-            {"error": {"code": "internal_error"}},
-            status_code=500,
-        )
-
-    async def require_visible_run(run_id: str) -> None:
-        visible = await asyncio.to_thread(
-            dependencies.queries.is_run_visible,
-            run_id,
-        )
-        if not visible:
-            raise HTTPException(
-                404, detail={"code": "run_not_found"}
-            )
-
-    async def require_pre_m14_control_surface(
-        run_id: str,
-        _: None = Depends(require_visible_run),
+    async def authorize(
+        authorization: Annotated[str | None, Header()] = None,
     ) -> None:
-        value = await asyncio.to_thread(dependencies.queries.get_run, run_id)
-        if value is None:
-            raise HTTPException(404, detail={"code": "run_not_found"})
-        if value.get("lifecycle") is not None:
-            raise HTTPException(410, detail={"code": "action_api_required"})
-
-    @app.get("/health", response_model=HealthResponse)
-    async def health() -> dict[str, object]:
-        if dependencies.health is None:
-            raise HTTPException(
-                503, detail={"code": "database_unavailable"}
-            )
-        try:
-            result = await asyncio.to_thread(dependencies.health)
-            return {
-                "status": "ok",
-                "postgres_major": result.postgres_major,
-                "schema_version": result.schema_version,
-                "notification_pending": getattr(
-                    result, "notification_pending", 0
-                ),
-                "notification_dead": getattr(
-                    result, "notification_dead", 0
-                ),
-                "telegram_configured": getattr(
-                    result, "telegram_configured", False
-                ),
-            }
-        except Exception:
-            raise HTTPException(
-                503, detail={"code": "database_unavailable"}
-            ) from None
-
-    @app.get(
-        "/api/v1/session",
-        response_model=SessionResponse,
-    )
-    async def session() -> dict[str, object]:
-        return {
-            "api_version": "1.0.0",
-            "role": "admin",
-        }
-
-    @app.get("/api/v1/runs/{run_id}", response_model=RunResponse)
-    async def get_run(
-        run_id: str,
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        value = await asyncio.to_thread(
-            dependencies.queries.get_run, run_id
-        )
-        if value is None:
-            raise HTTPException(404, detail={"code": "run_not_found"})
-        return value
-
-    @app.post(
-        "/api/v1/runs/{run_id}/actions/{action_id}",
-        response_model=RunActionResponse,
-    )
-    async def execute_bound_run_action(
-        run_id: str,
-        action_id: str,
-        body: RunActionRequest,
-        key: str = Depends(_idempotency_key),
-    ) -> dict[str, object]:
-        """Resolve an opaque current-state action; the browser binds no plan."""
-
-        if (
-            not action_id.startswith("runaction-v1:")
-            or len(action_id) != len("runaction-v1:") + 64
+        expected = f"Bearer {admin_token}"
+        if authorization is None or not secrets.compare_digest(
+            authorization, expected
         ):
-            raise HTTPException(409, detail={"code": "action_stale"})
+            raise HTTPException(status_code=401, detail="unauthorized")
 
-        def execute() -> dict[str, object]:
-            if dependencies.effect_guard is not None:
-                dependencies.effect_guard()
-            current = dependencies.queries.get_run(run_id)
-            if current is None:
-                raise ServerError(ServerErrorCode.RUN_NOT_FOUND)
-            lifecycle = current.get("lifecycle")
-            action: dict[str, object] | None = None
-            if isinstance(lifecycle, dict):
-                raw_actions = lifecycle.get("actions")
-                if isinstance(raw_actions, list):
-                    action = next(
-                        (
-                            item
-                            for item in raw_actions
-                            if isinstance(item, dict)
-                            and item.get("action_id") == action_id
-                        ),
-                        None,
-                    )
-            if action is None:
-                raise HTTPException(
-                    409, detail={"code": "action_stale"}
-                )
-            kind = str(action.get("kind"))
-            action_input = str(action.get("input"))
-            if (
-                action_input == "message" and not body.message
-            ) or (
-                action_input != "message" and body.message is not None
-            ):
-                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-            active_plan = lifecycle.get("active_plan")
-            plan_hash = (
-                str(active_plan.get("plan_hash"))
-                if isinstance(active_plan, dict)
-                and active_plan.get("plan_hash") is not None
-                else None
-            )
-            plan_family = (
-                str(active_plan.get("family"))
-                if isinstance(active_plan, dict)
-                and active_plan.get("family") is not None
-                else None
-            )
-            assistant_reply: str | None = None
-            if kind == "execute":
-                if plan_hash is None:
-                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-                if plan_family == "subtitle_acquire":
-                    if dependencies.subtitle_acquisitions is None:
-                        raise ServerError(ServerErrorCode.RUN_BUSY)
-                    dependencies.subtitle_acquisitions.approve_and_execute(
-                        run_id=run_id,
-                        plan_hash=plan_hash,
-                        automatic=False,
-                    )
-                elif plan_family == "media_move":
-                    if dependencies.forward_execution is None:
-                        raise ServerError(ServerErrorCode.RUN_BUSY)
-                    dependencies.forward_execution.execute_manual(
-                        run_id=run_id, plan_hash=plan_hash
-                    )
-                else:
-                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-            elif kind == "request_rescan":
-                if plan_hash is None or dependencies.forward_execution is None:
-                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-                dependencies.forward_execution.request_rescan(
-                    run_id=run_id, plan_hash=plan_hash
-                )
-            elif kind == "retry_agent":
-                if dependencies.attention_retry is None:
-                    raise ServerError(ServerErrorCode.RUN_BUSY)
-                dependencies.attention_retry(
-                    run_id, int(current["event_sequence"])
-                )
-            elif kind == "mark_failed":
-                if dependencies.attention_fail is None:
-                    raise ServerError(ServerErrorCode.RUN_BUSY)
-                dependencies.attention_fail(
-                    run_id, int(current["event_sequence"])
-                )
-            elif kind == "delete_run":
-                if dependencies.run_delete is None:
-                    raise ServerError(ServerErrorCode.RUN_BUSY)
-                dependencies.run_delete(run_id)
-            elif kind in {"ask_agent", "revise_plan"}:
-                if dependencies.interactions is None:
-                    raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-                interaction = dependencies.interactions.run(
-                    run_id=run_id,
-                    kind=(
-                        InteractionKind.QUESTION
-                        if kind == "ask_agent"
-                        else InteractionKind.REVISION
-                    ),
-                    idempotency_key=key,
-                    expected_plan_hash=(
-                        plan_hash if kind == "revise_plan" else None
-                    ),
-                    expected_event_sequence=(
-                        int(current["event_sequence"])
-                        if kind == "ask_agent"
-                        else None
-                    ),
-                    message=body.message,
-                )
-                assistant_reply = interaction.assistant_reply
-            else:
-                raise HTTPException(
-                    409, detail={"code": "action_stale"}
-                )
-            refreshed = dependencies.queries.get_run(run_id)
-            return {
-                "action_id": action_id,
-                "kind": kind,
-                "run": refreshed,
-                "assistant_reply": assistant_reply,
-            }
+    api = APIRouter(prefix="/api", dependencies=[Depends(authorize)])
 
-        async def dispatch_bound_action(
-            command: Callable[[], dict[str, object]],
-        ) -> dict[str, object]:
-            try:
-                return await _shield_thread(command)
-            except (
-                ForwardExecutionServiceError,
-                ForwardOperationError,
-            ):
-                raise HTTPException(
-                    409, detail={"code": "action_stale"}
-                ) from None
+    async def load(run_id: str) -> Run:
+        run = await database.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        return run
 
-        if dependencies.idempotency is None:
-            return await dispatch_bound_action(execute)
+    def nudge() -> None:
+        if worker is not None:
+            worker.wake()
 
-        def resolve() -> dict[str, object] | None:
-            # Deletion is the only bound action whose successful effect makes
-            # the canonical run disappear. Its durable tombstone is enough to
-            # settle a response lost between the command and API mutation
-            # finalization; no filesystem action is replayed.
-            if dependencies.run_delete_resolve is None:
-                return None
-            deleted = dependencies.run_delete_resolve(run_id)
-            if deleted is None:
-                return None
-            return {
-                "action_id": action_id,
-                "kind": "delete_run",
-                "run": None,
-                "assistant_reply": None,
-            }
+    # ---- runs ---------------------------------------------------------
 
-        return await dispatch_bound_action(
-            lambda: dependencies.idempotency.run(
-                scope="run_action_v1",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={
-                    "action_id": action_id,
-                    "message": body.message,
-                },
-                execute=execute,
-                resolve=resolve,
-            )
+    @api.get("/runs")
+    async def list_runs(state: RunState | None = None, limit: int = 100):
+        runs = await database.list_runs(
+            states=[state] if state else None, limit=min(limit, 500)
         )
+        return {"runs": [_run_summary(run) for run in runs]}
 
-    @app.delete(
-        "/api/v1/runs/{run_id}",
-        response_model=RunDeletionResponse,
-        include_in_schema=False,
-    )
-    async def delete_run(
-        run_id: str,
-        key: str = Depends(_idempotency_key),
-        _: None = Depends(require_pre_m14_control_surface),
-    ) -> dict[str, object]:
-        if dependencies.run_delete is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def execute() -> dict[str, object]:
-            return dependencies.run_delete(run_id)
-
-        resolve = (
-            None
-            if dependencies.run_delete_resolve is None
-            else lambda: dependencies.run_delete_resolve(run_id)
-        )
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="run_delete",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={},
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.get("/api/v1/runs", response_model=RunsResponse)
-    async def list_runs(
-        before: str | None = None,
-        limit: int = 50,
-    ) -> dict[str, object]:
-        if not 1 <= limit <= _MAX_PAGE_SIZE:
-            raise HTTPException(400, detail={"code": "invalid_page"})
+    @api.get("/runs/{run_id}")
+    async def get_run(run_id: str):
+        run = await load(run_id)
         return {
-            "items": list(
-                await asyncio.to_thread(
-                    dependencies.queries.list_runs,
-                    before=before,
-                    limit=limit,
-                )
-            )
+            **_run_summary(run),
+            "snapshot": [item.to_json() for item in run.snapshot],
+            "plan": run.plan.to_json() if run.plan else None,
+            "executed_moves": [item.to_json() for item in run.executed_moves],
+            "logs": await database.list_logs(run_id),
+            "interactions": await database.list_interactions(run_id),
         }
 
-    @app.get("/api/v1/discoveries", response_model=DiscoveriesResponse)
-    async def list_discoveries(
-        before: str | None = None,
-        limit: int = 50,
-    ) -> dict[str, object]:
-        if not 1 <= limit <= _MAX_PAGE_SIZE:
-            raise HTTPException(400, detail={"code": "invalid_page"})
+    @api.post("/runs/{run_id}/ask")
+    async def ask(run_id: str, payload: MessageInput):
+        """Ask about a run. Read-only: it never changes state or the plan."""
+
+        run = await load(run_id)
+        if answerer is None:
+            raise HTTPException(status_code=503, detail="model_not_configured")
+        config = await database.get_config(run.config_id)
+        if config is None:
+            raise HTTPException(status_code=409, detail="config_deleted")
+        await database.add_interaction(run_id, "user", payload.message)
+        answer = await answerer.answer(run, config, payload.message)
+        await database.add_interaction(run_id, "agent", answer)
+        return {"answer": answer}
+
+    @api.post("/runs/{run_id}/revise")
+    async def revise(run_id: str, payload: MessageInput):
+        """Re-plan with feedback, undoing an executed layout first if needed."""
+
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        revisions = [*run.extra.get("revisions", []), payload.message]
+        await database.set_extra(run_id, {"revisions": revisions})
+        await database.add_interaction(run_id, "user", payload.message)
+        await database.log(run_id, "revision requested")
+        await database.set_state(run_id, RunState.IDENTIFYING)
+        nudge()
+        return {"state": RunState.IDENTIFYING.value}
+
+    @api.post("/runs/{run_id}/retry")
+    async def retry(run_id: str):
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        # Executed runs resume from their ledger; unexecuted ones re-identify.
+        state = RunState.EXECUTING if run.plan and run.executed_moves else RunState.PENDING
+        await database.set_state(run_id, state)
+        nudge()
+        return {"state": state.value}
+
+    @api.post("/runs/{run_id}/discard")
+    async def discard(run_id: str):
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        await database.set_state(run_id, RunState.DISCARDING)
+        nudge()
+        return {"state": RunState.DISCARDING.value}
+
+    @api.delete("/runs/{run_id}")
+    async def delete_run(run_id: str):
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        await database.delete_run(run_id)
+        return {"deleted": True}
+
+    # ---- configuration ------------------------------------------------
+
+    @api.get("/configs")
+    async def list_configs():
         return {
-            "items": list(
-                await asyncio.to_thread(
-                    dependencies.queries.list_discoveries,
-                    before=before,
-                    limit=limit,
-                )
-            )
+            "configs": [
+                _config_json(config) for config in await database.list_configs()
+            ]
         }
 
-    @app.get(
-        "/api/v1/folders",
-        response_model=FolderObservationsResponse,
-    )
-    async def list_folder_observations(
-        limit: int = 100,
-    ) -> dict[str, object]:
-        if not 1 <= limit <= _MAX_PAGE_SIZE:
-            raise HTTPException(400, detail={"code": "invalid_page"})
+    @api.post("/configs", status_code=201)
+    async def create_config(payload: ConfigInput):
+        _check_roots(payload.inbound_root, payload.library_root)
+        config = WatchConfigModel(
+            id=str(uuid.uuid4()),
+            name=payload.name,
+            inbound_root=payload.inbound_root,
+            library_root=payload.library_root,
+            media_type=payload.media_type,
+            enabled=payload.enabled,
+            stability_seconds=payload.stability_seconds,
+            acquire_subtitles=payload.acquire_subtitles,
+            notify=payload.notify,
+        )
+        await database.create_config(config)
+        nudge()
+        return _config_json(config)
+
+    @api.patch("/configs/{config_id}")
+    async def update_config(config_id: str, payload: ConfigPatch):
+        if await database.get_config(config_id) is None:
+            raise HTTPException(status_code=404, detail="config_not_found")
+        values = payload.model_dump(exclude_none=True)
+        if "media_type" in values:
+            values["media_type"] = values["media_type"].value
+        if "inbound_root" in values or "library_root" in values:
+            _check_roots(values.get("inbound_root"), values.get("library_root"))
+        await database.update_config(config_id, values)
+        nudge()
+        return _config_json(await database.get_config(config_id))
+
+    @api.delete("/configs/{config_id}")
+    async def delete_config(config_id: str):
+        await database.delete_config(config_id)
+        return {"deleted": True}
+
+    # ---- settings -----------------------------------------------------
+
+    @api.get("/settings")
+    async def get_settings():
+        stored = await database.get_settings()
+        # Secrets are reported as present or absent, never echoed back.
         return {
-            "items": list(
-                await asyncio.to_thread(
-                    dependencies.queries.list_folder_observations,
-                    limit=limit,
-                )
-            )
+            "llm_base_url": stored.get("llm_base_url", ""),
+            "llm_model": stored.get("llm_model", ""),
+            "telegram_chat_id": stored.get("telegram_chat_id", ""),
+            "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
+            "llm_api_key_set": bool(stored.get("llm_api_key")),
+            "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
         }
 
-    @app.get("/api/v1/admin/config", response_model=ConfigResponse)
-    async def get_config() -> dict[str, object]:
-        value = await asyncio.to_thread(
-            dependencies.queries.get_config
-        )
-        if value is None:
-            raise HTTPException(404, detail={"code": "config_not_found"})
-        return value
+    @api.put("/settings")
+    async def put_settings(payload: SettingsInput):
+        await database.update_settings(payload.model_dump(exclude_none=True))
+        nudge()
+        return {"updated": True}
 
-    @app.get(
-        "/api/v1/admin/directories",
-        response_model=DirectoryListingResponse,
-    )
-    async def list_directories(path: str = "") -> dict[str, object]:
-        if len(path.encode("utf-8")) > 4_096:
-            raise HTTPException(
-                400, detail={"code": "invalid_directory_path"}
-            )
-        if dependencies.directory_list is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        return await asyncio.to_thread(dependencies.directory_list, path)
+    @app.get("/api/health")
+    async def health():
+        return {"status": "ok"}
 
-    @app.put(
-        "/api/v1/admin/config",
-        response_model=ConfigResponse,
-    )
-    async def update_config(
-        body: ConfigUpdateRequest,
-        expected_revision: int = Depends(_config_revision),
-        key: str = Depends(_idempotency_key),
-    ) -> dict[str, object]:
-        if dependencies.config_update is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        value = body.model_dump()
-        if value["agent_budget"] is None:
-            del value["agent_budget"]
-        if value["telegram"] is None:
-            del value["telegram"]
+    app.include_router(api)
 
-        def execute() -> dict[str, object]:
-            return dependencies.config_update(expected_revision, value)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="config_update",
-                subject_id="config",
-                idempotency_key=key,
-                request={
-                    "expected_revision": expected_revision,
-                    "value": value,
-                },
-                execute=execute,
-                resolve=(
-                    None
-                    if dependencies.config_resolve is None
-                    else lambda: dependencies.config_resolve(
-                        expected_revision, value
-                    )
-                ),
-            )
-        )
-
-    @app.post(
-        "/api/v1/admin/config/provider-probe",
-        response_model=ProviderProbeResponse,
-    )
-    async def provider_probe(
-        body: ProviderProbeRequest,
-    ) -> dict[str, object]:
-        del body
-        if dependencies.provider_probe is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        result = await dependencies.provider_probe()
-        return {
-            "available": result.available,
-            "status_code": result.status_code,
-        }
-
-    @app.post(
-        "/api/v1/admin/config/telegram-test",
-        response_model=TelegramTestResponse,
-    )
-    async def telegram_test(
-        body: TelegramTestRequest,
-        key: str = Depends(_idempotency_key),
-    ) -> dict[str, object]:
-        del body
-        if dependencies.telegram_test is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        return await asyncio.to_thread(dependencies.telegram_test, key)
-
-    @app.post(
-        "/api/v1/admin/watches/{watch_id}/move-capability-probe",
-        response_model=MoveCapabilityResponse,
-    )
-    async def move_capability_probe(
-        watch_id: str,
-        body: MoveCapabilityProbeRequest,
-    ) -> dict[str, object]:
-        del body
-        if (
-            not watch_id
-            or len(watch_id.encode("utf-8")) > 128
-            or dependencies.move_capability_probe is None
-        ):
-            raise HTTPException(404, detail={"code": "watch_not_found"})
-        return await dependencies.move_capability_probe(watch_id)
-
-    @app.get(
-        "/api/v1/runs/{run_id}/plan",
-        response_model=PlanLineageItem,
-    )
-    async def get_plan(
-        run_id: str,
-        version: int | None = None,
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if version is not None and version < 1:
-            raise HTTPException(400, detail={"code": "invalid_version"})
-        value = await asyncio.to_thread(
-            dependencies.queries.get_plan,
-            run_id=run_id,
-            version=version,
-        )
-        if value is None:
-            raise HTTPException(404, detail={"code": "plan_not_found"})
-        return value
-
-    @app.get(
-        "/api/v1/runs/{run_id}/plans",
-        response_model=PlanLineageResponse,
-    )
-    async def list_plans(
-        run_id: str,
-        before_version: int | None = None,
-        limit: int = 50,
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if (
-            before_version is not None
-            and before_version < 1
-        ) or not 1 <= limit <= _MAX_PAGE_SIZE:
-            raise HTTPException(400, detail={"code": "invalid_page"})
-        return {
-            "items": list(
-                await asyncio.to_thread(
-                    dependencies.queries.list_plans,
-                    run_id=run_id,
-                    before_version=before_version,
-                    limit=limit,
-                )
-            )
-        }
-
-    @app.get(
-        "/api/v1/runs/{run_id}/plans/{version}/preview",
-        response_model=PlanPreviewResponse,
-    )
-    async def plan_preview(
-        run_id: str,
-        version: int,
-        after: int = 0,
-        limit: int = 50,
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if (
-            version < 1
-            or after < 0
-            or not 1 <= limit <= _MAX_PAGE_SIZE
-        ):
-            raise HTTPException(400, detail={"code": "invalid_page"})
-        value = await asyncio.to_thread(
-            dependencies.queries.get_plan_preview,
-            run_id=run_id,
-            version=version,
-            after=after,
-            limit=limit,
-        )
-        if value is None:
-            raise HTTPException(404, detail={"code": "plan_not_found"})
-        return value
-
-    @app.get(
-        "/api/v1/runs/{run_id}/interactions",
-        response_model=InteractionHistoryResponse,
-    )
-    async def interaction_history(
-        run_id: str,
-        before: str | None = None,
-        limit: int = 50,
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if not 1 <= limit <= _MAX_PAGE_SIZE:
-            raise HTTPException(400, detail={"code": "invalid_page"})
-        return {
-            "items": list(
-                await asyncio.to_thread(
-                    dependencies.queries.list_interactions,
-                    run_id=run_id,
-                    before=before,
-                    limit=limit,
-                )
-            )
-        }
-
-    @app.get(
-        "/api/v1/runs/{run_id}/events",
-        response_model=EventsResponse,
-    )
-    async def events(
-        run_id: str,
-        after: int = 0,
-        limit: int = 50,
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if after < 0 or not 1 <= limit <= _MAX_PAGE_SIZE:
-            raise HTTPException(400, detail={"code": "invalid_page"})
-        return {
-            "items": list(
-                await asyncio.to_thread(
-                    dependencies.queries.list_events,
-                    run_id=run_id,
-                    after_event_id=after,
-                    limit=limit,
-                )
-            )
-        }
-
-    @app.get("/api/v1/runs/{run_id}/events/stream")
-    async def event_stream(
-        request: Request,
-        run_id: str,
-        cursor: int = Depends(_cursor),
-        _: None = Depends(require_visible_run),
-    ) -> StreamingResponse:
-        latest = await asyncio.to_thread(
-            dependencies.queries.latest_event_id, run_id
-        )
-        if cursor > latest:
-            raise HTTPException(409, detail={"code": "cursor_ahead"})
-
-        async def stream() -> AsyncIterator[str]:
-            current = cursor
-            empty_polls = 0
-            last_emit = time.monotonic()
-            while (
-                dependencies.sse_max_empty_polls is None
-                or empty_polls < dependencies.sse_max_empty_polls
-            ):
-                if await request.is_disconnected():
-                    return
-                rows = await asyncio.to_thread(
-                    dependencies.queries.list_events,
-                    run_id=run_id,
-                    after_event_id=current,
-                    limit=50,
-                )
-                if not rows:
-                    empty_polls += 1
-                    if (
-                        time.monotonic() - last_emit
-                        >= dependencies.sse_heartbeat_seconds
-                    ):
-                        yield ": keepalive\n\n"
-                        last_emit = time.monotonic()
-                    await asyncio.sleep(dependencies.sse_poll_seconds)
-                    continue
-                empty_polls = 0
-                for item in rows:
-                    event_id = int(item["event_id"])
-                    data = json.dumps(
-                        {
-                            "event_type": item["event_type"],
-                            "data": item["data"],
-                        },
-                        ensure_ascii=True,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    )
-                    yield (
-                        f"id: {event_id}\n"
-                        "event: run_event\n"
-                        f"data: {data}\n\n"
-                    )
-                    current = event_id
-                    last_emit = time.monotonic()
-            yield ": keepalive\n\n"
-
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={"x-accel-buffering": "no"},
-        )
-
-    @app.post(
-        "/api/v1/runs/{run_id}/interactions",
-        response_model=InteractionResponse,
-    )
-    async def interact(
-        run_id: str,
-        body: InteractionRequest,
-        key: str = Depends(_idempotency_key),
-        head: tuple[str | None, int | None] = Depends(_interaction_head),
-        _: None = Depends(require_pre_m14_control_surface),
-    ) -> dict[str, object]:
-        if dependencies.interactions is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        kind = InteractionKind(body.kind)
-        message = _text(body.message)
-        plan_hash, event_sequence = head
-        result = await _shield_thread(
-            lambda: dependencies.interactions.run(
-                run_id=run_id,
-                kind=kind,
-                idempotency_key=key,
-                expected_plan_hash=plan_hash,
-                expected_event_sequence=event_sequence,
-                message=message,
-            )
-        )
-        if (
-            kind is InteractionKind.REVISION
-            and result.plan_hash is not None
-            and dependencies.legacy_effects_enabled
-            and dependencies.folder_dispositions is not None
-        ):
-            await _shield_thread(
-                lambda: dependencies.folder_dispositions.prepare_success(
-                    run_id=run_id,
-                    media_plan_hash=result.plan_hash,
-                )
-            )
-        return {
-            "interaction_id": result.interaction_id,
-            "kind": result.kind.value,
-            "assistant_reply": result.assistant_reply,
-            "plan_hash": result.plan_hash,
-            "model_tokens": result.model_tokens,
-        }
-
-    @app.post(
-        "/api/v1/runs/{run_id}/retry",
-        response_model=AttentionRetryResponse,
-    )
-    async def retry_attention_run(
-        run_id: str,
-        body: AttentionControlRequest,
-        key: str = Depends(_idempotency_key),
-        event_sequence: int = Depends(_event_sequence_head),
-        _: None = Depends(require_pre_m14_control_surface),
-    ) -> dict[str, object]:
-        del body
-        if dependencies.attention_retry is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def execute() -> dict[str, object]:
-            return dependencies.attention_retry(run_id, event_sequence)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="needs_attention_retry",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={"event_sequence": event_sequence},
-                execute=execute,
-            )
-        )
-
-    @app.post(
-        "/api/v1/runs/{run_id}/fail",
-        response_model=AttentionFailResponse,
-    )
-    async def fail_attention_run(
-        run_id: str,
-        body: AttentionControlRequest,
-        key: str = Depends(_idempotency_key),
-        event_sequence: int = Depends(_event_sequence_head),
-        _: None = Depends(require_pre_m14_control_surface),
-    ) -> dict[str, object]:
-        del body
-        if dependencies.attention_fail is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def execute() -> dict[str, object]:
-            return dependencies.attention_fail(run_id, event_sequence)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="needs_attention_fail",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={"event_sequence": event_sequence},
-                execute=execute,
-            )
-        )
-
-    @app.post(
-        "/api/v1/runs/{run_id}/reapply",
-        response_model=ReapplyResponse,
-    )
-    async def reapply(
-        run_id: str,
-        body: ReapplyRequest,
-        key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_pre_m14_control_surface),
-    ) -> dict[str, object]:
-        if dependencies.interactions is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        message = _text(body.message)
-        result = await _shield_thread(
-            lambda: dependencies.interactions.run(
-                run_id=run_id,
-                kind=InteractionKind.REAPPLY,
-                idempotency_key=key,
-                expected_plan_hash=plan_hash,
-                message=message,
-            )
-        )
-        return {
-            "interaction_id": result.interaction_id,
-            "assistant_reply": result.assistant_reply,
-            "plan_hash": result.plan_hash,
-            "no_op": result.plan_hash is None,
-        }
-
-    @app.post(
-        "/api/v1/runs/{run_id}/approve-and-apply",
-        response_model=ApplyResponse,
-        include_in_schema=False,
-    )
-    async def approve_and_apply(
-        run_id: str,
-        body: ApproveApplyRequest,
-        key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if not dependencies.legacy_effects_enabled:
-            raise HTTPException(
-                410, detail={"code": "legacy_effect_superseded"}
-            )
-        if dependencies.apply is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def payload(
-            result: ApplyResult,
-            folder_result: FolderDispositionResult | None = None,
-        ) -> dict[str, object]:
-            return {
-                "transaction_id": result.transaction_id,
-                "plan_hash": result.plan_hash,
-                "approval_id": result.approval_id,
-                "status": result.status.value,
-                "applied_count": result.applied_count,
-                "rolled_back_count": result.rolled_back_count,
-                "folder_disposition": (
-                    None
-                    if folder_result is None
-                    else _folder_disposition_payload(folder_result)
-                ),
-            }
-
-        def execute() -> dict[str, object]:
-            prepared = (
-                None
-                if dependencies.folder_dispositions is None
-                else dependencies.folder_dispositions.prepare_success(
-                    run_id=run_id,
-                    media_plan_hash=plan_hash,
-                )
-            )
-            if (
-                prepared is None
-                and body.folder_disposition_plan_hash is not None
-            ) or (
-                prepared is not None
-                and body.folder_disposition_plan_hash
-                != prepared.plan_hash
-            ):
-                raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-            result = dependencies.apply.approve_and_apply(
-                run_id=run_id,
-                plan_hash=plan_hash,
-                automatic=body.automatic,
-            )
-            if (
-                result.status.value == "rolled_back"
-                and result.failure_code
-                is ExecutorErrorCode.DESTINATION_COLLISION
-                and dependencies.folder_dispositions is not None
-            ):
-                dependencies.folder_dispositions.prepare_failure(
-                    run_id=run_id,
-                    reason_code="executor_destination_collision",
-                )
-            folder_result = None
-            if (
-                result.status.value == "completed"
-                and prepared is not None
-                and dependencies.folder_dispositions is not None
-            ):
-                try:
-                    folder_result = (
-                        dependencies.folder_dispositions
-                        .approve_and_execute(
-                            run_id=run_id,
-                            plan_hash=prepared.plan_hash,
-                            automatic=body.automatic,
-                        )
-                    )
-                except (ExecutorError, ApprovalError):
-                    folder_result = None
-            return payload(result, folder_result)
-
-        def resolve() -> dict[str, object] | None:
-            result = dependencies.apply.resolve(
-                run_id=run_id,
-                plan_hash=plan_hash,
-            )
-            if result is None:
-                return None
-            folder_result = None
-            folder_hash = body.folder_disposition_plan_hash
-            if (
-                folder_hash is not None
-                and dependencies.folder_dispositions is not None
-            ):
-                folder_result = dependencies.folder_dispositions.resolve(
-                    run_id=run_id,
-                    plan_hash=folder_hash,
-                )
-            return payload(result, folder_result)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="approve_apply",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={
-                    "automatic": body.automatic,
-                    "folder_disposition_plan_hash": (
-                        body.folder_disposition_plan_hash
-                    ),
-                    "plan_hash": plan_hash,
-                },
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.post(
-        "/api/v1/runs/{run_id}/folder-disposition",
-        response_model=FolderDispositionResultResponse,
-        include_in_schema=False,
-    )
-    async def execute_folder_disposition(
-        run_id: str,
-        body: FolderDispositionRequest,
-        key: str = Depends(_idempotency_key),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if not dependencies.legacy_effects_enabled:
-            raise HTTPException(
-                410, detail={"code": "legacy_effect_superseded"}
-            )
-        if dependencies.folder_dispositions is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        if body.automatic:
-            raise ServerError(ServerErrorCode.INTERACTION_CONFLICT)
-
-        def execute() -> dict[str, object]:
-            return _folder_disposition_payload(
-                dependencies.folder_dispositions.approve_and_execute(
-                    run_id=run_id,
-                    plan_hash=body.plan_hash,
-                    automatic=False,
-                )
-            )
-
-        def resolve() -> dict[str, object] | None:
-            result = dependencies.folder_dispositions.resolve(
-                run_id=run_id,
-                plan_hash=body.plan_hash,
-            )
-            return (
-                None
-                if result is None
-                else _folder_disposition_payload(result)
-            )
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="folder_disposition",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={
-                    "automatic": False,
-                    "plan_hash": body.plan_hash,
-                },
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.post(
-        "/api/v1/operations/runs/{run_id}/folder-disposition/recover",
-        response_model=FolderDispositionResultResponse,
-        include_in_schema=False,
-    )
-    async def recover_folder_disposition(
-        run_id: str,
-        body: FolderDispositionRecoveryRequest,
-        key: str = Depends(_idempotency_key),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if not dependencies.legacy_effects_enabled:
-            raise HTTPException(
-                410, detail={"code": "legacy_effect_superseded"}
-            )
-        if dependencies.folder_dispositions is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-
-        def execute() -> dict[str, object]:
-            return _folder_disposition_payload(
-                dependencies.folder_dispositions.recover(
-                    run_id=run_id,
-                    plan_hash=body.plan_hash,
-                    approval_id=body.approval_id,
-                )
-            )
-
-        def resolve() -> dict[str, object] | None:
-            result = dependencies.folder_dispositions.resolve(
-                run_id=run_id,
-                plan_hash=body.plan_hash,
-                approval_id=body.approval_id,
-            )
-            return (
-                None
-                if result is None
-                else _folder_disposition_payload(result)
-            )
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="folder_disposition_recover",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={
-                    "approval_id": body.approval_id,
-                    "plan_hash": body.plan_hash,
-                },
-                execute=execute,
-                resolve=resolve,
-            )
-        )
-
-    @app.post(
-        "/api/v1/operations/runs/{run_id}/recover",
-        response_model=RecoveryResponse,
-        include_in_schema=False,
-    )
-    async def recover(
-        run_id: str,
-        body: RecoveryRequest,
-        key: str = Depends(_idempotency_key),
-        plan_hash: str = Depends(_plan_hash),
-        _: None = Depends(require_visible_run),
-    ) -> dict[str, object]:
-        if not dependencies.legacy_effects_enabled:
-            raise HTTPException(
-                410, detail={"code": "legacy_effect_superseded"}
-            )
-        if dependencies.apply is None:
-            raise HTTPException(503, detail={"code": "unavailable"})
-        approval_id = _text(body.approval_id)
-
-        def payload(result: ApplyResult) -> dict[str, object]:
-            return {
-                "transaction_id": result.transaction_id,
-                "status": result.status.value,
-                "applied_count": result.applied_count,
-                "rolled_back_count": result.rolled_back_count,
-            }
-
-        def execute() -> dict[str, object]:
-            return payload(
-                dependencies.apply.recover(
-                    run_id=run_id,
-                    plan_hash=plan_hash,
-                    approval_id=approval_id,
-                )
-            )
-
-        def resolve() -> dict[str, object] | None:
-            result = dependencies.apply.resolve(
-                run_id=run_id,
-                plan_hash=plan_hash,
-                approval_id=approval_id,
-            )
-            return None if result is None else payload(result)
-
-        if dependencies.idempotency is None:
-            return await _shield_thread(execute)
-        return await _shield_thread(
-            lambda: dependencies.idempotency.run(
-                scope="recover",
-                subject_id=run_id,
-                idempotency_key=key,
-                request={
-                    "approval_id": approval_id,
-                    "plan_hash": plan_hash,
-                },
-                execute=execute,
-                resolve=resolve,
-            )
-        )
+    if static_dir is not None and static_dir.is_dir():
+        _mount_ui(app, static_dir)
 
     return app
+
+
+def _mount_ui(app: FastAPI, static_dir: Path) -> None:
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    index = static_dir / "index.html"
+    app.mount(
+        "/assets",
+        StaticFiles(directory=static_dir / "assets", check_dir=False),
+        name="assets",
+    )
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="not_found")
+        return FileResponse(index)
+
+
+def _check_roots(inbound: str | None, library: str | None) -> None:
+    for value in (inbound, library):
+        if value is not None and not Path(value).is_absolute():
+            raise HTTPException(status_code=422, detail="roots_must_be_absolute")
+
+
+def _config_json(config: WatchConfigModel | None) -> dict[str, Any]:
+    if config is None:
+        raise HTTPException(status_code=404, detail="config_not_found")
+    return {
+        "id": config.id,
+        "name": config.name,
+        "inbound_root": config.inbound_root,
+        "library_root": config.library_root,
+        "media_type": config.media_type.value,
+        "enabled": config.enabled,
+        "stability_seconds": config.stability_seconds,
+        "acquire_subtitles": config.acquire_subtitles,
+        "notify": config.notify,
+    }
+
+
+def _run_summary(run: Run) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "config_id": run.config_id,
+        "folder_name": run.folder_name,
+        "state": run.state.value,
+        "title": run.plan.identity.title if run.plan else None,
+        "year": run.plan.identity.year if run.plan else None,
+        "tmdb_id": run.plan.identity.tmdb_id if run.plan else None,
+        "file_count": len(run.snapshot),
+        "move_count": len(run.plan.moves) if run.plan else 0,
+        "result": run.result.to_json() if run.result else None,
+        "error": run.error,
+        "attempts": run.attempts,
+    }

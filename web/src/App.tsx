@@ -1,98 +1,132 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
-import { useAuth } from "./auth";
-import { ConfigPage } from "./pages/ConfigPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { RunPage } from "./pages/RunPage";
-import { IconReel } from "./components/Icon";
-import { HashLink, HashNavLink, useHashPath } from "./router";
-import { ThemeToggle } from "./theme";
+import { api, clearToken, getToken, setToken } from "./api";
+import { RunDetailPage } from "./pages/RunDetail";
+import { RunsPage } from "./pages/Runs";
+import { SettingsPage } from "./pages/Settings";
 
-export function App() {
-  const { logout } = useAuth();
-  const path = useHashPath();
-  const runMatch = /^\/runs\/([^/]+)$/.exec(path);
-  const runId = runMatch?.[1] ? safeDecode(runMatch[1]) : null;
-  let page: ReactNode;
-  if (path === "/") {
-    page = <DashboardPage />;
-  } else if (path === "/config") {
-    page = <ConfigPage />;
-  } else if (runId !== null) {
-    page = <RunPage key={runId} runId={runId} />;
-  } else {
-    page = (
-      <main className="page">
-        <h1>页面不存在</h1>
-        <HashLink to="/">返回总览</HashLink>
-      </main>
-    );
-  }
+function useHashRoute(): string {
+  const [hash, setHash] = useState(() => window.location.hash.slice(1) || "/");
+  useEffect(() => {
+    const update = () => setHash(window.location.hash.slice(1) || "/");
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  return hash;
+}
+
+function ReelMark({ size = 20 }: { size?: number }) {
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <HashLink to="/" className="brand" aria-label="Reeloom 首页">
-          <span className="brand-mark small" aria-hidden="true">
-            <IconReel size={20} />
-          </span>
-          <span>
-            <strong>Reeloom</strong>
-            <small>控制台</small>
-          </span>
-        </HashLink>
-        <nav aria-label="主导航">
-          <HashNavLink to="/" owns={["/runs/"]}>总览</HashNavLink>
-          <HashNavLink to="/config">配置</HashNavLink>
-        </nav>
-        <div className="topbar-actions">
-          <ThemeToggle />
-          <button className="ghost" onClick={logout}>退出</button>
-        </div>
-      </header>
-      <ErrorBoundary>{page}</ErrorBoundary>
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="var(--accent)" />
+      <circle cx="16" cy="16" r="9.6" fill="var(--surface)" />
+      <circle cx="16" cy="16" r="2.7" fill="var(--accent)" />
+      <circle cx="16" cy="10" r="2.3" fill="var(--accent)" />
+      <circle cx="16" cy="22" r="2.3" fill="var(--accent)" />
+      <circle cx="10" cy="16" r="2.3" fill="var(--accent)" />
+      <circle cx="22" cy="16" r="2.3" fill="var(--accent)" />
+    </svg>
+  );
+}
+
+function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setToken(value.trim());
+    try {
+      await api.listRuns();
+      onSignedIn();
+    } catch {
+      clearToken();
+      setError("令牌无效");
+    }
+  }
+
+  return (
+    <div className="signin-wrap">
+      <form className="signin" onSubmit={submit}>
+        <span className="brand">
+          <ReelMark size={26} />
+          Reeloom
+        </span>
+        <input
+          type="password"
+          placeholder="Admin token"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          autoFocus
+        />
+        <button type="submit" className="primary">
+          登录
+        </button>
+        {error && <p className="error">{error}</p>}
+      </form>
     </div>
   );
 }
 
-function safeDecode(value: string): string | null {
-  try {
-    const decoded = decodeURIComponent(value);
-    return decoded && new TextEncoder().encode(decoded).byteLength <= 128
-      ? decoded
-      : null;
-  } catch {
-    return null;
-  }
-}
+export function App() {
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
+  const route = useHashRoute();
 
-class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    void error;
-    void info;
-    // Error detail is intentionally not sent to telemetry or rendered.
-  }
-
-  render() {
-    if (this.state.failed) {
-      return (
-        <main className="page">
-          <section className="empty-state" role="alert">
-            <p className="eyebrow">界面已安全停止</p>
-            <h1>此页面无法继续显示</h1>
-            <p>请刷新页面。任何未确认的执行结果都应从服务端重新读取。</p>
-          </section>
-        </main>
-      );
+  useEffect(() => {
+    if (!getToken()) {
+      setAuthorized(false);
+      return;
     }
-    return this.props.children;
-  }
+    api
+      .listRuns()
+      .then(() => setAuthorized(true))
+      .catch(() => setAuthorized(false));
+  }, []);
+
+  if (authorized === null) return <div className="loading">载入中…</div>;
+  if (!authorized) return <SignIn onSignedIn={() => setAuthorized(true)} />;
+
+  const runMatch = /^\/runs\/(.+)$/.exec(route);
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <a href="#/" className="brand">
+            <ReelMark />
+            Reeloom
+          </a>
+          <nav>
+            <a href="#/" className={route === "/" ? "active" : ""}>
+              任务
+            </a>
+            <a
+              href="#/settings"
+              className={route === "/settings" ? "active" : ""}
+            >
+              设置
+            </a>
+          </nav>
+          <button
+            className="link"
+            onClick={() => {
+              clearToken();
+              setAuthorized(false);
+            }}
+          >
+            退出
+          </button>
+        </div>
+      </header>
+      <main>
+        {runMatch ? (
+          <RunDetailPage runId={runMatch[1]} />
+        ) : route === "/settings" ? (
+          <SettingsPage />
+        ) : (
+          <RunsPage />
+        )}
+      </main>
+    </div>
+  );
 }
