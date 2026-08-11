@@ -12,7 +12,9 @@ from reeloom.adapters.acgrip import (
     AcgripError,
     Attachment,
     _attachment_path,
+    _relaxed_keyword,
     _search_result_path,
+    _thread_id,
 )
 
 SEARCH_FORM = """
@@ -24,8 +26,10 @@ SEARCH_FORM = """
 RESULTS = """
 <html><body>
 <a href="/thread-12345-1-1.html">[Group] Show 简体 01-12 合集</a>
+<a href="forum.php?mod=viewthread&amp;tid=10806&amp;highlight=Show">百合是我的工作！ / 私の百合はお仕事です！</a>
 <a href="/thread-999-1-1.html">[Group] Other Show</a>
 <a href="https://evil.example/thread-1-1-1.html">offsite</a>
+<a href="https://evil.example/forum.php?mod=viewthread&amp;tid=2">offsite dynamic</a>
 </body></html>
 """
 
@@ -33,6 +37,7 @@ THREAD = """
 <html><body>
 <a href="forum.php?mod=attachment&amp;aid=4242abcd">Show.S01.CHS.7z</a>
 <a href="forum.php?mod=attachment&amp;aid=4243abcd">notes.txt</a>
+<a href="forum.php?mod=attachment&amp;aid=Mzc5NzN8Zjc5NjNhY2F8MTc4NjQzMDAxM3wwfDEwODA2" id="aid37973" target="_blank">Show.S01.CHT.7z</a>
 <a href="https://elsewhere.example/forum.php?mod=attachment&amp;aid=1">offsite.7z</a>
 </body></html>
 """
@@ -116,6 +121,56 @@ def test_attachment_paths_are_restricted(value: str) -> None:
     assert _attachment_path(value) is None
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("/thread-12345-1-1.html", 12345),
+        ("https://bbs.acgrip.com/thread-12345-2-1.html", 12345),
+        ("forum.php?mod=viewthread&tid=10806", 10806),
+        ("forum.php?mod=viewthread&tid=10806&highlight=Show%2BTitle", 10806),
+        ("/forum.php?mod=viewthread&tid=10806&page=2", 10806),
+        ("/forum.php?mod=viewthread&tid=4&extra=page%3D1", 4),
+        ("https://bbs.acgrip.com/forum.php?mod=viewthread&tid=7", 7),
+    ],
+)
+def test_thread_links_of_both_discuz_styles_are_read(
+    value: str, expected: int
+) -> None:
+    assert _thread_id(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://evil.example/thread-1-1-1.html",
+        "https://evil.example/forum.php?mod=viewthread&tid=2",
+        "http://bbs.acgrip.com/forum.php?mod=viewthread&tid=3",
+        "/forum.php?mod=viewthread&tid=abc",
+        "/forum.php?mod=attachment&aid=1",
+        "/thread-12345-1-2.html",
+        "",
+    ],
+)
+def test_thread_links_off_the_expected_shape_are_refused(value: str) -> None:
+    assert _thread_id(value) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("我的百合乃工作是也!", "我的百合乃工作是也"),
+        ("Watashi no Yuri wa Oshigoto Desu!", "watashi no yuri wa oshigoto desu"),
+        ("[Group] Show (2024)", "group show 2024"),
+        ("!?", None),
+        ("", None),
+    ],
+)
+def test_relaxed_keywords_keep_only_term_runs(
+    value: str, expected: str | None
+) -> None:
+    assert _relaxed_keyword(value) == expected
+
+
 # ---- search -------------------------------------------------------------
 
 
@@ -124,15 +179,62 @@ async def test_search_follows_the_meta_refresh_and_lists_threads() -> None:
 
     threads = await client.search("Show")
 
-    assert [thread.thread_id for thread in threads] == [12345, 999]
+    assert [thread.thread_id for thread in threads] == [12345, 10806, 999]
     assert threads[0].title == "[Group] Show 简体 01-12 合集"
+    await client.aclose()
+
+
+async def test_dynamic_viewthread_links_are_listed() -> None:
+    client = make_client(default_handler)
+    threads = await client.search("Show")
+    assert any(
+        thread.thread_id == 10806 and "百合是我的工作" in thread.title
+        for thread in threads
+    )
     await client.aclose()
 
 
 async def test_offsite_thread_links_are_ignored() -> None:
     client = make_client(default_handler)
     threads = await client.search("Show")
-    assert all(thread.thread_id != 1 for thread in threads)
+    assert all(thread.thread_id not in (1, 2) for thread in threads)
+    await client.aclose()
+
+
+async def test_a_fullwidth_keyword_retries_relaxed_and_finds_threads() -> None:
+    keywords: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search.php" and request.method == "POST":
+            body = request.content.decode()
+            from urllib.parse import parse_qs
+
+            keywords.append(parse_qs(body)["srchtxt"][0])
+        if (
+            request.url.path == "/search.php"
+            and request.method == "GET"
+            and "searchid" in request.url.query.decode()
+        ):
+            # Only the relaxed, punctuation-free query matches anything. The
+            # empty page still links a pinned notice, as the live site does.
+            if keywords and keywords[-1] == "我的百合乃工作是也":
+                return httpx.Response(200, text=RESULTS)
+            return httpx.Response(
+                200,
+                text=(
+                    '<html><body><a href="/thread-4593-1-1.html">镜像站说明</a>'
+                    "对不起，没有找到匹配结果。</body></html>"
+                ),
+            )
+        return default_handler(request)
+
+    client = make_client(handler)
+
+    threads = await client.search("我的百合乃工作是也！")
+
+    # NFKC folds the full-width ！ to ASCII first; the relaxed retry drops it.
+    assert keywords == ["我的百合乃工作是也!", "我的百合乃工作是也"]
+    assert threads
     await client.aclose()
 
 
@@ -206,8 +308,12 @@ async def test_thread_attachments_are_listed_from_the_same_origin_only() -> None
     assert [item.filename for item in attachments] == [
         "Show.S01.CHS.7z",
         "notes.txt",
+        "Show.S01.CHT.7z",
     ]
     assert attachments[0].attachment_id == 4242
+    # A signed base64 aid takes its identity from the anchor's id attribute.
+    assert attachments[2].attachment_id == 37973
+    assert "Mzc5NzN8" in attachments[2].download_path
     await client.aclose()
 
 

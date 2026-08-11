@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import unicodedata
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -62,7 +63,9 @@ def parse_episode_number(filename: str) -> int | None:
     Giving up is fine: an unmatched file is simply not published.
     """
 
-    stem = PurePosixPath(filename).name
+    # NFKC first: release groups write episode numbers in full-width digits
+    # and brackets as often as ASCII ones.
+    stem = unicodedata.normalize("NFKC", PurePosixPath(filename).name)
     # Strip a resolution or year first so "1080p" and "2024" cannot be read
     # as episode numbers.
     stem = re.sub(r"(?i)\b\d{3,4}[pi]\b", " ", stem)
