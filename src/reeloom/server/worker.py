@@ -49,6 +49,8 @@ class Executor(Protocol):
 
     async def revert(self, run: Run, config: WatchConfig) -> None: ...
 
+    async def discard(self, run: Run, config: WatchConfig) -> int: ...
+
 
 class SubtitleService(Protocol):
     async def acquire(
@@ -228,6 +230,8 @@ class Worker:
                 await self._acquire(run, config)
             case RunState.REVERTING:
                 await self._revert(run, config)
+            case RunState.DISCARDING:
+                await self._discard(run, config)
             case _:
                 raise ReeloomError("unexpected_state", state=run.state.value)
 
@@ -239,7 +243,13 @@ class Worker:
             f"planned {plan.identity.title} ({plan.identity.year})",
             data={"moves": len(plan.moves), "unmapped": len(plan.unmapped)},
         )
-        await self._db.set_state(run.id, RunState.EXECUTING)
+        # A revision of an already-executed run has to undo the old layout
+        # first. Identifying before reverting means a failed revision leaves
+        # the library exactly as it was.
+        await self._db.set_state(
+            run.id,
+            RunState.REVERTING if run.executed_moves else RunState.EXECUTING,
+        )
 
     async def _execute(self, run: Run, config: WatchConfig) -> None:
         if run.plan is None:
@@ -284,6 +294,12 @@ class Worker:
         await self._db.clear_executed(run.id)
         await self._db.log(run.id, "reverted previous layout")
         await self._db.set_state(run.id, RunState.EXECUTING)
+
+    async def _discard(self, run: Run, config: WatchConfig) -> None:
+        moved = await self._executor.discard(run, config)
+        await self._db.log(run.id, f"discarded {moved} file(s) to the fail bucket")
+        await self._db.set_state(run.id, RunState.DISCARDED)
+        await self._notify(run.id, config)
 
     async def _settle(self, run: Run, config: WatchConfig) -> None:
         await self._db.set_state(run.id, RunState.DONE)

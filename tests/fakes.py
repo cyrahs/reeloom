@@ -15,6 +15,7 @@ from reeloom.adapters.llm import Conversation, ModelReply, ToolCall
 from reeloom.adapters.tmdb import TmdbHit
 from reeloom.models import (
     ExecutedMove,
+    MediaType,
     Plan,
     Run,
     RunResult,
@@ -163,6 +164,35 @@ class FakeDatabase:
 
     async def get_settings(self) -> dict[str, Any]:
         return dict(self.settings)
+
+    async def update_settings(self, values: dict[str, Any]) -> None:
+        allowed = {
+            "tmdb_api_key",
+            "llm_base_url",
+            "llm_api_key",
+            "llm_model",
+            "telegram_bot_token",
+            "telegram_chat_id",
+        }
+        self.settings.update(
+            {key: value for key, value in values.items() if key in allowed}
+        )
+
+    async def create_config(self, config: WatchConfig) -> WatchConfig:
+        self.configs[config.id] = config
+        return config
+
+    async def update_config(self, config_id: str, values: dict[str, Any]) -> None:
+        config = self.configs[config_id]
+        if "media_type" in values:
+            values = {**values, "media_type": MediaType(values["media_type"])}
+        self.configs[config_id] = replace(config, **values)
+
+    async def delete_config(self, config_id: str) -> None:
+        self.configs.pop(config_id, None)
+
+    async def delete_run(self, run_id: str) -> None:
+        self.runs.pop(run_id, None)
 
 
 class RecordingNotifier:

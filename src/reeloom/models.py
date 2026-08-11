@@ -85,6 +85,7 @@ class RunState(StrEnum):
     EXECUTING = "executing"
     ACQUIRING_SUBS = "acquiring_subs"
     REVERTING = "reverting"
+    DISCARDING = "discarding"
     DONE = "done"
     NEEDS_ATTENTION = "needs_attention"
     DISCARDED = "discarded"
@@ -111,6 +112,7 @@ _ACTIVE_STATES = frozenset(
         RunState.EXECUTING,
         RunState.ACQUIRING_SUBS,
         RunState.REVERTING,
+        RunState.DISCARDING,
     }
 )
 

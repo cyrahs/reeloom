@@ -108,6 +108,29 @@ class FilesystemExecutor:
         await self._db.append_executed(run.id, executed)
         return executed
 
+    async def discard(self, run: Run, config: WatchConfig) -> int:
+        """Give up on a folder: park all of it in the fail bucket.
+
+        Nothing is deleted, so a discard can be looked at afterwards and, if
+        it was a mistake, moved back by hand.
+        """
+
+        roots = _Roots.of(config)
+        moved = 0
+        for relative in await asyncio.to_thread(_remaining_files, roots.inbound, run):
+            move = Move(
+                kind=MoveKind.FAIL,
+                source_root=Root.INBOUND,
+                source_path=f"{run.folder_name}/{relative}",
+                dest_root=Root.INBOUND,
+                dest_path=f"{FAIL_BUCKET}/{run.folder_name}/{relative}",
+            )
+            executed = await self.apply_move(move, config, run)
+            if executed.outcome is MoveOutcome.MOVED:
+                moved += 1
+        await asyncio.to_thread(_remove_empty_tree, roots.inbound / run.folder_name)
+        return moved
+
     # ---- one move -----------------------------------------------------
 
     def _apply(self, move: Move, roots: _Roots, run: Run) -> ExecutedMove:

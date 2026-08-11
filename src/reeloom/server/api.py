@@ -1,0 +1,305 @@
+"""HTTP API.
+
+Single admin, same-origin UI, no sessions: one Bearer token guards every
+route. The UI polls; there is no event stream to reconnect, buffer or replay.
+"""
+
+from __future__ import annotations
+
+import logging
+import secrets
+import uuid
+from pathlib import Path
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+
+from reeloom.db import Database
+from reeloom.models import MediaType, Run, RunState
+from reeloom.models import WatchConfig as WatchConfigModel
+
+_LOGGER = logging.getLogger(__name__)
+
+MAX_MESSAGE_LENGTH = 2000
+
+
+class ConfigInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    inbound_root: str = Field(min_length=1, max_length=1024)
+    library_root: str = Field(min_length=1, max_length=1024)
+    media_type: MediaType
+    enabled: bool = True
+    stability_seconds: int = Field(default=120, ge=0, le=86_400)
+    acquire_subtitles: bool = False
+    notify: bool = True
+
+
+class ConfigPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    inbound_root: str | None = Field(default=None, min_length=1, max_length=1024)
+    library_root: str | None = Field(default=None, min_length=1, max_length=1024)
+    media_type: MediaType | None = None
+    enabled: bool | None = None
+    stability_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    acquire_subtitles: bool | None = None
+    notify: bool | None = None
+
+
+class SettingsInput(BaseModel):
+    tmdb_api_key: str | None = Field(default=None, max_length=200)
+    llm_base_url: str | None = Field(default=None, max_length=500)
+    llm_api_key: str | None = Field(default=None, max_length=500)
+    llm_model: str | None = Field(default=None, max_length=200)
+    telegram_bot_token: str | None = Field(default=None, max_length=200)
+    telegram_chat_id: str | None = Field(default=None, max_length=64)
+
+
+class MessageInput(BaseModel):
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
+
+
+def create_app(
+    *,
+    database: Database,
+    admin_token: str,
+    worker=None,
+    answerer=None,
+    static_dir: Path | None = None,
+) -> FastAPI:
+    app = FastAPI(title="Reeloom", version="2.0.0", docs_url=None, redoc_url=None)
+
+    async def authorize(
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> None:
+        expected = f"Bearer {admin_token}"
+        if authorization is None or not secrets.compare_digest(
+            authorization, expected
+        ):
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    api = APIRouter(prefix="/api", dependencies=[Depends(authorize)])
+
+    async def load(run_id: str) -> Run:
+        run = await database.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        return run
+
+    def nudge() -> None:
+        if worker is not None:
+            worker.wake()
+
+    # ---- runs ---------------------------------------------------------
+
+    @api.get("/runs")
+    async def list_runs(state: RunState | None = None, limit: int = 100):
+        runs = await database.list_runs(
+            states=[state] if state else None, limit=min(limit, 500)
+        )
+        return {"runs": [_run_summary(run) for run in runs]}
+
+    @api.get("/runs/{run_id}")
+    async def get_run(run_id: str):
+        run = await load(run_id)
+        return {
+            **_run_summary(run),
+            "snapshot": [item.to_json() for item in run.snapshot],
+            "plan": run.plan.to_json() if run.plan else None,
+            "executed_moves": [item.to_json() for item in run.executed_moves],
+            "logs": await database.list_logs(run_id),
+            "interactions": await database.list_interactions(run_id),
+        }
+
+    @api.post("/runs/{run_id}/ask")
+    async def ask(run_id: str, payload: MessageInput):
+        """Ask about a run. Read-only: it never changes state or the plan."""
+
+        run = await load(run_id)
+        if answerer is None:
+            raise HTTPException(status_code=503, detail="model_not_configured")
+        config = await database.get_config(run.config_id)
+        if config is None:
+            raise HTTPException(status_code=409, detail="config_deleted")
+        await database.add_interaction(run_id, "user", payload.message)
+        answer = await answerer.answer(run, config, payload.message)
+        await database.add_interaction(run_id, "agent", answer)
+        return {"answer": answer}
+
+    @api.post("/runs/{run_id}/revise")
+    async def revise(run_id: str, payload: MessageInput):
+        """Re-plan with feedback, undoing an executed layout first if needed."""
+
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        revisions = [*run.extra.get("revisions", []), payload.message]
+        await database.set_extra(run_id, {"revisions": revisions})
+        await database.add_interaction(run_id, "user", payload.message)
+        await database.log(run_id, "revision requested")
+        await database.set_state(run_id, RunState.IDENTIFYING)
+        nudge()
+        return {"state": RunState.IDENTIFYING.value}
+
+    @api.post("/runs/{run_id}/retry")
+    async def retry(run_id: str):
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        # Executed runs resume from their ledger; unexecuted ones re-identify.
+        state = RunState.EXECUTING if run.plan and run.executed_moves else RunState.PENDING
+        await database.set_state(run_id, state)
+        nudge()
+        return {"state": state.value}
+
+    @api.post("/runs/{run_id}/discard")
+    async def discard(run_id: str):
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        await database.set_state(run_id, RunState.DISCARDING)
+        nudge()
+        return {"state": RunState.DISCARDING.value}
+
+    @api.delete("/runs/{run_id}")
+    async def delete_run(run_id: str):
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        await database.delete_run(run_id)
+        return {"deleted": True}
+
+    # ---- configuration ------------------------------------------------
+
+    @api.get("/configs")
+    async def list_configs():
+        return {
+            "configs": [
+                _config_json(config) for config in await database.list_configs()
+            ]
+        }
+
+    @api.post("/configs", status_code=201)
+    async def create_config(payload: ConfigInput):
+        _check_roots(payload.inbound_root, payload.library_root)
+        config = WatchConfigModel(
+            id=str(uuid.uuid4()),
+            name=payload.name,
+            inbound_root=payload.inbound_root,
+            library_root=payload.library_root,
+            media_type=payload.media_type,
+            enabled=payload.enabled,
+            stability_seconds=payload.stability_seconds,
+            acquire_subtitles=payload.acquire_subtitles,
+            notify=payload.notify,
+        )
+        await database.create_config(config)
+        nudge()
+        return _config_json(config)
+
+    @api.patch("/configs/{config_id}")
+    async def update_config(config_id: str, payload: ConfigPatch):
+        if await database.get_config(config_id) is None:
+            raise HTTPException(status_code=404, detail="config_not_found")
+        values = payload.model_dump(exclude_none=True)
+        if "media_type" in values:
+            values["media_type"] = values["media_type"].value
+        if "inbound_root" in values or "library_root" in values:
+            _check_roots(values.get("inbound_root"), values.get("library_root"))
+        await database.update_config(config_id, values)
+        nudge()
+        return _config_json(await database.get_config(config_id))
+
+    @api.delete("/configs/{config_id}")
+    async def delete_config(config_id: str):
+        await database.delete_config(config_id)
+        return {"deleted": True}
+
+    # ---- settings -----------------------------------------------------
+
+    @api.get("/settings")
+    async def get_settings():
+        stored = await database.get_settings()
+        # Secrets are reported as present or absent, never echoed back.
+        return {
+            "llm_base_url": stored.get("llm_base_url", ""),
+            "llm_model": stored.get("llm_model", ""),
+            "telegram_chat_id": stored.get("telegram_chat_id", ""),
+            "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
+            "llm_api_key_set": bool(stored.get("llm_api_key")),
+            "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
+        }
+
+    @api.put("/settings")
+    async def put_settings(payload: SettingsInput):
+        await database.update_settings(payload.model_dump(exclude_none=True))
+        nudge()
+        return {"updated": True}
+
+    @app.get("/api/health")
+    async def health():
+        return {"status": "ok"}
+
+    app.include_router(api)
+
+    if static_dir is not None and static_dir.is_dir():
+        _mount_ui(app, static_dir)
+
+    return app
+
+
+def _mount_ui(app: FastAPI, static_dir: Path) -> None:
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    index = static_dir / "index.html"
+    app.mount(
+        "/assets",
+        StaticFiles(directory=static_dir / "assets", check_dir=False),
+        name="assets",
+    )
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="not_found")
+        return FileResponse(index)
+
+
+def _check_roots(inbound: str | None, library: str | None) -> None:
+    for value in (inbound, library):
+        if value is not None and not Path(value).is_absolute():
+            raise HTTPException(status_code=422, detail="roots_must_be_absolute")
+
+
+def _config_json(config: WatchConfigModel | None) -> dict[str, Any]:
+    if config is None:
+        raise HTTPException(status_code=404, detail="config_not_found")
+    return {
+        "id": config.id,
+        "name": config.name,
+        "inbound_root": config.inbound_root,
+        "library_root": config.library_root,
+        "media_type": config.media_type.value,
+        "enabled": config.enabled,
+        "stability_seconds": config.stability_seconds,
+        "acquire_subtitles": config.acquire_subtitles,
+        "notify": config.notify,
+    }
+
+
+def _run_summary(run: Run) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "config_id": run.config_id,
+        "folder_name": run.folder_name,
+        "state": run.state.value,
+        "title": run.plan.identity.title if run.plan else None,
+        "year": run.plan.identity.year if run.plan else None,
+        "tmdb_id": run.plan.identity.tmdb_id if run.plan else None,
+        "file_count": len(run.snapshot),
+        "move_count": len(run.plan.moves) if run.plan else 0,
+        "result": run.result.to_json() if run.result else None,
+        "error": run.error,
+        "attempts": run.attempts,
+    }
