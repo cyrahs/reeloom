@@ -18,7 +18,7 @@ from reeloom.models import (
     WatchConfig,
 )
 from reeloom.server.worker import NeedsAttention
-from tests.fakes import FakeTmdb, ScriptedModel, StubClients, call
+from tests.fakes import FakeDatabase, FakeTmdb, ScriptedModel, StubClients, call
 
 SNAPSHOT = (
     SnapshotFile("V1", "Show - 01.mkv", FileKind.VIDEO, 100),
@@ -53,10 +53,10 @@ def episodes(*pairs):
     ]
 
 
-async def identify(config: WatchConfig, *replies, run=None, tmdb=None):
+async def identify(config: WatchConfig, *replies, run=None, tmdb=None, database=None):
     tmdb = tmdb or FakeTmdb()
     model = ScriptedModel(*replies)
-    identifier = AgentIdentifier(StubClients(model, tmdb))
+    identifier = AgentIdentifier(StubClients(model, tmdb), database or FakeDatabase())
     return await identifier.identify(run or make_run(), config), model, tmdb
 
 
@@ -275,12 +275,15 @@ async def test_legacy_folder_is_renamed_to_carry_the_tmdb_id(
 async def test_revision_feedback_is_carried_into_the_conversation(
     config: WatchConfig,
 ) -> None:
-    run = make_run(extra={"revisions": ["these are season 2, not season 1"]})
+    database = FakeDatabase()
+    await database.add_interaction(
+        "run-1", "revision", "these are season 2, not season 1"
+    )
 
     _, model, _ = await identify(
         config,
         call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1))),
-        run=run,
+        database=database,
     )
 
     prompts = [
@@ -289,3 +292,29 @@ async def test_revision_feedback_is_carried_into_the_conversation(
         if message["role"] == "user"
     ]
     assert any("season 2, not season 1" in text for text in prompts)
+
+
+async def test_the_whole_chat_log_is_carried_into_the_conversation(
+    config: WatchConfig,
+) -> None:
+    database = FakeDatabase()
+    await database.add_interaction("run-1", "user", "is this the 2024 remake?")
+    await database.add_interaction("run-1", "agent", "Yes, tmdb-123 from 2024.")
+    await database.add_interaction("run-1", "revision", "map V2 as episode 3")
+
+    _, model, _ = await identify(
+        config,
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1))),
+        database=database,
+    )
+
+    prompts = [
+        message["content"]
+        for message in model.seen[0]
+        if message["role"] == "user"
+    ]
+    chat = next(text for text in prompts if "2024 remake" in text)
+    assert "Yes, tmdb-123 from 2024." in chat
+    # The revision arrives after the chat, as its own instruction.
+    assert any("map V2 as episode 3" in text for text in prompts)
+    assert prompts.index(chat) < len(prompts) - 1

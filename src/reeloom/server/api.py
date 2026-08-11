@@ -113,7 +113,12 @@ def create_app(
 
     @api.post("/runs/{run_id}/ask")
     async def ask(run_id: str, payload: MessageInput):
-        """Ask about a run. Read-only: it never changes state or the plan."""
+        """Ask about a run. Read-only: it never changes state or the plan.
+
+        The stored chat is the model's context: every earlier message of this
+        run is replayed, so the conversation the user sees is the conversation
+        the model has.
+        """
 
         run = await load(run_id)
         if answerer is None:
@@ -121,21 +126,25 @@ def create_app(
         config = await database.get_config(run.config_id)
         if config is None:
             raise HTTPException(status_code=409, detail="config_deleted")
+        history = await database.list_interactions(run_id)
         await database.add_interaction(run_id, "user", payload.message)
-        answer = await answerer.answer(run, config, payload.message)
+        answer = await answerer.answer(run, config, payload.message, history)
         await database.add_interaction(run_id, "agent", answer)
         return {"answer": answer}
 
     @api.post("/runs/{run_id}/revise")
     async def revise(run_id: str, payload: MessageInput):
-        """Re-plan with feedback, undoing an executed layout first if needed."""
+        """Re-plan with feedback, undoing an executed layout first if needed.
+
+        The message is stored as a ``revision`` interaction: it stays in the
+        chat log, and re-identification replays the whole log, revisions as
+        binding instructions and the rest as context.
+        """
 
         run = await load(run_id)
         if run.state.is_active:
             raise HTTPException(status_code=409, detail="run_is_busy")
-        revisions = [*run.extra.get("revisions", []), payload.message]
-        await database.set_extra(run_id, {"revisions": revisions})
-        await database.add_interaction(run_id, "user", payload.message)
+        await database.add_interaction(run_id, "revision", payload.message)
         await database.log(run_id, "revision requested")
         await database.set_state(run_id, RunState.IDENTIFYING)
         nudge()

@@ -64,6 +64,18 @@ def task_message(run: Run, config: WatchConfig) -> str:
     return "\n".join(lines)
 
 
+def chat_message(history: list[dict[str, str]]) -> str:
+    lines = [
+        "Earlier chat about this folder between the user and a read-only"
+        " assistant. The user's messages are trusted guidance for"
+        " identification; the assistant's replies are context only.",
+    ]
+    for item in history:
+        speaker = "User" if item["role"] == "user" else "Assistant"
+        lines.append(f"{speaker}: {item['content']}")
+    return "\n".join(lines)
+
+
 def revision_message(feedback: str, previous_note: str = "") -> str:
     lines = [
         "The previous plan was rejected by the user. Produce a corrected plan"

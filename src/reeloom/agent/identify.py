@@ -8,7 +8,12 @@ from typing import Protocol
 from reeloom.adapters.llm import Conversation, Model
 from reeloom.adapters.tmdb import TmdbClient
 from reeloom.agent.loop import Escalate, run_loop
-from reeloom.agent.prompts import SYSTEM, revision_message, task_message
+from reeloom.agent.prompts import (
+    SYSTEM,
+    chat_message,
+    revision_message,
+    task_message,
+)
 from reeloom.agent.tools import IdentificationTools
 from reeloom.models import Plan, Run, WatchConfig
 from reeloom.server.worker import NeedsAttention
@@ -27,8 +32,9 @@ class ClientFactory(Protocol):
 class AgentIdentifier:
     """Implements the worker's ``Identifier`` protocol."""
 
-    def __init__(self, clients: ClientFactory) -> None:
+    def __init__(self, clients: ClientFactory, database) -> None:
         self._clients = clients
+        self._db = database
 
     async def identify(self, run: Run, config: WatchConfig) -> Plan:
         if len(run.snapshot) > MAX_MAPPABLE_FILES:
@@ -37,8 +43,16 @@ class AgentIdentifier:
         conversation = Conversation()
         conversation.system(SYSTEM)
         conversation.user(task_message(run, config))
-        for note in run.extra.get("revisions", []):
-            conversation.user(revision_message(note))
+        # The run's whole chat log is the model's context: Q&A as background,
+        # revision messages as binding instructions, in that order so the
+        # instructions land last.
+        history = await self._db.list_interactions(run.id)
+        chat = [item for item in history if item["role"] != "revision"]
+        if chat:
+            conversation.user(chat_message(chat))
+        for item in history:
+            if item["role"] == "revision":
+                conversation.user(revision_message(item["content"]))
 
         model = await self._clients.model()
         tmdb = await self._clients.tmdb()
