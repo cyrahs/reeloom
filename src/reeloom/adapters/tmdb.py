@@ -108,7 +108,12 @@ class TmdbClient:
         if not query.strip():
             raise TmdbError("empty_query")
         path = "/search/movie" if movie else "/search/tv"
-        payload = await self._get(path, query=query[:200], language=_LANGUAGE)
+        payload = await self._get(
+            path,
+            query=query[:200],
+            language=_LANGUAGE,
+            include_adult="true",
+        )
         results = payload.get("results") or []
         hits: list[TmdbHit] = []
         for item in results[:_MAX_RESULTS]:
