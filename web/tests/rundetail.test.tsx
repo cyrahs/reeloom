@@ -96,9 +96,53 @@ describe("run detail page", () => {
 
     render(<RunDetailPage runId="run-1" />);
 
-    const bubble = (await screen.findByText("season 2 please")).closest("p");
+    const bubble = (await screen.findByText("season 2 please")).closest(".chat");
     expect(bubble).toHaveClass("user");
     expect(screen.getByText("修订")).toBeInTheDocument();
+  });
+
+  it("renders markdown in agent replies instead of raw markers", async () => {
+    mockDetail(
+      detail({
+        interactions: [
+          {
+            role: "agent",
+            content:
+              "It is **season 1** of `Show`.\n- ep01 → S01E01\n- ep02 → S01E02",
+            ts: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    const bold = await screen.findByText("season 1");
+    expect(bold.tagName).toBe("STRONG");
+    expect(screen.getByText("Show").tagName).toBe("CODE");
+    const bubble = bold.closest(".chat")!;
+    expect(bubble.querySelectorAll("li")).toHaveLength(2);
+    expect(bubble.textContent).not.toContain("**");
+  });
+
+  it("keeps underscored file names literal in chat", async () => {
+    mockDetail(
+      detail({
+        interactions: [
+          {
+            role: "agent",
+            content: "Renamed show_name_v2.mkv to match.",
+            ts: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(
+      await screen.findByText(/show_name_v2\.mkv/),
+    ).toBeInTheDocument();
   });
 
   it("collapses a fully archived subfolder to its name", async () => {

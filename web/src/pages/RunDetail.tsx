@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { ACTIVE_STATES, STATE_LABEL, api, type RunDetail } from "../api";
+import { Markdown } from "../Markdown";
 import { usePoll } from "../usePoll";
 
 function archivedSummary(run: RunDetail): string[] {
@@ -263,14 +264,14 @@ export function RunDetailPage({ runId }: { runId: string }) {
         </p>
         <div className="chat-log">
           {run.interactions.map((item, index) => (
-            <p
+            <div
               key={index}
               className={`chat ${item.role === "agent" ? "agent" : "user"}`}
             >
               <strong>{item.role === "agent" ? "Agent" : "你"}</strong>
               {item.role === "revision" && <span className="tag">修订</span>}
-              {item.content}
-            </p>
+              <Markdown text={item.content} />
+            </div>
           ))}
         </div>
         <textarea
