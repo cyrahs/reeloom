@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 from reeloom.adapters.telegram import TelegramClient, TelegramError
-from reeloom.models import Run, RunState, WatchConfig
+from reeloom.models import MediaType, ReeloomError, Run, RunState, WatchConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,8 +67,14 @@ def _join(values: tuple[str, ...], limit: int = 5) -> str:
 class TelegramNotifier:
     """Implements the worker's ``Notifier`` protocol."""
 
-    def __init__(self, clients) -> None:
+    def __init__(
+        self,
+        clients,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._clients = clients
+        self._transport = transport
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
         credentials = await self._clients.telegram()
@@ -74,12 +82,35 @@ class TelegramNotifier:
             return
         token, chat_id = credentials
         try:
-            client = TelegramClient(bot_token=token, chat_id=chat_id)
+            client = TelegramClient(
+                bot_token=token, chat_id=chat_id, transport=self._transport
+            )
         except TelegramError as error:
             _LOGGER.warning("telegram not usable: %s", error.code)
             return
+        text = render(run, config)
+        poster = await self._poster(run)
         try:
-            if not await client.send(render(run, config)):
+            sent = False
+            if poster is not None:
+                sent = await client.send_photo(poster, text)
+            if not sent and not await client.send(text):
                 _LOGGER.info("notification dropped for run=%s", run.id)
         finally:
             await client.aclose()
+
+    async def _poster(self, run: Run) -> str | None:
+        """Poster URL for the identified work; None means send text only."""
+
+        if run.plan is None:
+            return None
+        identity = run.plan.identity
+        try:
+            tmdb = await self._clients.tmdb()
+            return await tmdb.poster_url(
+                identity.tmdb_id,
+                movie=identity.media_type is MediaType.MOVIE,
+            )
+        except ReeloomError as error:
+            _LOGGER.info("poster lookup skipped: %s", error.code)
+            return None

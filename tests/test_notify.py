@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import parse_qs
+
 import httpx
 import pytest
 
@@ -13,7 +15,10 @@ from reeloom.models import (
     RunState,
     WatchConfig,
 )
+from reeloom.server.composition import NotConfigured
 from reeloom.server.notify import TelegramNotifier, render
+
+from tests.fakes import FakeTmdb
 
 TOKEN = "123456789:AAEEabcdefghijklmnopqrstuvwxyz012345"
 CHAT = "-1001234567890"
@@ -120,11 +125,17 @@ def test_long_lists_are_summarized(config: WatchConfig) -> None:
 
 
 class StubClients:
-    def __init__(self, credentials) -> None:
+    def __init__(self, credentials, tmdb=None) -> None:
         self.credentials = credentials
+        self._tmdb = tmdb
 
     async def telegram(self):
         return self.credentials
+
+    async def tmdb(self):
+        if self._tmdb is None:
+            raise NotConfigured("tmdb_not_configured")
+        return self._tmdb
 
 
 async def test_notifier_is_silent_when_telegram_is_not_configured(
@@ -139,3 +150,78 @@ async def test_notifier_survives_malformed_stored_credentials(
 ) -> None:
     notifier = TelegramNotifier(StubClients(("bad-token", CHAT)))
     await notifier.run_settled(make_run(), config)
+
+
+POSTER = "https://image.tmdb.org/t/p/w780/abc123.jpg"
+
+
+def identified_run() -> Run:
+    return make_run(plan=Plan(identity=IDENTITY, moves=()), result=RunResult(moved=3))
+
+
+async def test_notifier_attaches_the_poster_when_identified(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT), FakeTmdb(poster=POSTER)),
+        transport=httpx.MockTransport(handler),
+    )
+    await notifier.run_settled(identified_run(), config)
+
+    assert len(seen) == 1
+    assert seen[0].url.path.endswith("/sendPhoto")
+    fields = parse_qs(seen[0].content.decode())
+    assert fields["photo"] == [POSTER]
+    assert "整理完成" in fields["caption"][0]
+
+
+async def test_notifier_falls_back_to_text_when_the_photo_is_rejected(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/sendPhoto"):
+            return httpx.Response(400, json={"ok": False})
+        return httpx.Response(200, json={"ok": True})
+
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT), FakeTmdb(poster=POSTER)),
+        transport=httpx.MockTransport(handler),
+    )
+    await notifier.run_settled(identified_run(), config)
+
+    assert [request.url.path.rsplit("/", 1)[1] for request in seen] == [
+        "sendPhoto",
+        "sendMessage",
+    ]
+
+
+async def test_notifier_sends_plain_text_when_there_is_no_poster(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    # No TMDB configured at all, and configured but the work has no poster:
+    # both send the text message untouched.
+    for clients in (
+        StubClients((TOKEN, CHAT)),
+        StubClients((TOKEN, CHAT), FakeTmdb(poster=None)),
+    ):
+        notifier = TelegramNotifier(clients, transport=transport)
+        await notifier.run_settled(identified_run(), config)
+
+    assert len(seen) == 2
+    assert all(request.url.path.endswith("/sendMessage") for request in seen)

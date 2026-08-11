@@ -252,9 +252,10 @@ class FakeTmdb:
         "overview": "",
     }
 
-    def __init__(self, *, series=None, movie=None) -> None:
+    def __init__(self, *, series=None, movie=None, poster=None) -> None:
         self.series = series if series is not None else dict(self.SERIES)
         self.movie = movie if movie is not None else dict(self.MOVIE)
+        self.poster = poster
         self.calls: list[str] = []
 
     async def search(self, query: str, *, movie: bool):
@@ -277,6 +278,10 @@ class FakeTmdb:
     async def get_movie(self, tmdb_id: int):
         self.calls.append(f"get_movie:{tmdb_id}")
         return self.movie
+
+    async def poster_url(self, tmdb_id: int, *, movie: bool):
+        self.calls.append(f"poster_url:{tmdb_id}")
+        return self.poster
 
     async def get_season(self, tmdb_id: int, season: int):
         self.calls.append(f"get_season:{tmdb_id}:{season}")
