@@ -73,6 +73,7 @@ export interface WatchConfig {
   enabled: boolean;
   stability_seconds: number;
   acquire_subtitles: boolean;
+  subtitle_variant: "chs" | "cht";
   notify: boolean;
 }
 

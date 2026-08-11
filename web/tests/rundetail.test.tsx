@@ -194,6 +194,63 @@ describe("run detail page", () => {
     expect(line).not.toHaveTextContent("Discs/、");
   });
 
+  it("shows acquired subtitle renames inside the plan section", async () => {
+    mockDetail(
+      detail({
+        executed_moves: [
+          {
+            move: {
+              kind: "media",
+              source_root: "inbound",
+              source_path: "[Group] Show/ep01.mkv",
+              dest_root: "library",
+              dest_path: "Show (2024) {tmdb-123}/S01/Show S01E01.mkv",
+              candidate_id: "V1",
+            },
+            outcome: "moved",
+          },
+          {
+            move: {
+              kind: "acquired_subtitle",
+              source_root: "inbound",
+              source_path:
+                "archive/[Group] Show/.acquired/[Sub组] Show - 01 [CHS].ass",
+              dest_root: "library",
+              dest_path: "Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass",
+              candidate_id: null,
+            },
+            outcome: "moved",
+          },
+          {
+            move: {
+              kind: "acquired_subtitle",
+              source_root: "inbound",
+              source_path: "archive/[Group] Show/.acquired/dup.ass",
+              dest_root: "library",
+              dest_path: "Show (2024) {tmdb-123}/S01/Show S01E02.chs.ass",
+              candidate_id: null,
+            },
+            outcome: "duplicate",
+          },
+        ],
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    // The staging prefix is stripped down to the downloaded filename.
+    const source = await screen.findByText("[Sub组] Show - 01 [CHS].ass");
+    expect(source).toBeInTheDocument();
+    expect(
+      screen.getByText("Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("字幕")).toBeInTheDocument();
+    // Executed media moves already show as plan moves; not repeated. A
+    // non-moved acquired entry is not shown either.
+    expect(screen.getAllByText(/Show S01E01\.mkv/)).toHaveLength(1);
+    expect(screen.queryByText(/dup\.ass/)).not.toBeInTheDocument();
+  });
+
   it("puts the chat section between the result and the files", async () => {
     mockDetail(detail());
 
