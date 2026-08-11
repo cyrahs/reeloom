@@ -403,6 +403,22 @@ ul {
   box-shadow: var(--shadow-2);
 }
 
+/* Same card as a run row, but static: intake folders have no detail page. */
+.runs li .intake-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+}
+
 .run-main {
   flex: 1;
   min-width: 0;

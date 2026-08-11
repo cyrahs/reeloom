@@ -129,6 +129,67 @@ async def test_folder_left_behind_by_a_settled_run_is_not_reopened(
     assert len(database.runs) == 1
 
 
+async def test_settling_folder_is_reported_with_its_remaining_wait(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    database, worker = build(replace(config, stability_seconds=120))
+
+    await worker.scan()
+
+    assert database.runs == {}
+    [folder] = worker.intake_status()
+    assert folder.folder_name == "Show"
+    assert folder.status == "settling"
+    assert folder.remaining_seconds == 120.0
+    assert folder.file_count == 1
+
+
+async def test_empty_folder_is_reported_as_waiting_for_files(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    (inbound / "Show").mkdir()
+    database, worker = build(config)
+
+    await worker.scan()
+
+    assert database.runs == {}
+    [folder] = worker.intake_status()
+    assert folder.status == "empty"
+    assert folder.remaining_seconds is None
+
+
+async def test_skipped_folders_are_reported_with_their_reason(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Docs", "readme.txt")
+    _, worker = build(config)
+
+    await worker.scan()
+
+    [folder] = worker.intake_status()
+    assert folder.status == "skipped"
+    assert folder.reason == "no_video"
+
+
+async def test_folder_that_became_a_run_leaves_the_intake_report(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    _, worker = build(config)
+
+    await worker.scan()
+    assert worker.intake_status() == []
+
+    # The open run keeps the folder out of the report on later scans too.
+    await worker.scan()
+    assert worker.intake_status() == []
+
+
 async def test_changed_content_opens_a_fresh_run_for_the_same_name(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:

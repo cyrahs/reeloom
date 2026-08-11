@@ -36,6 +36,25 @@ export interface RunSummary {
   attempts: number;
 }
 
+export interface IntakeFolder {
+  config_id: string;
+  config_name: string;
+  folder_name: string;
+  file_count: number;
+  total_bytes: number;
+  status: "settling" | "empty" | "skipped";
+  reason: string | null;
+  /** Seconds left in the stability window, measured at scanned_at. */
+  remaining_seconds: number | null;
+  scanned_at: number;
+}
+
+export interface IntakeReport {
+  /** Server clock at response time, for turning remaining_seconds into a deadline. */
+  now: number;
+  folders: IntakeFolder[];
+}
+
 export interface Move {
   kind: string;
   source_root: string;
@@ -145,6 +164,7 @@ const post = <T,>(path: string, body?: unknown) =>
 
 export const api = {
   listRuns: () => request<{ runs: RunSummary[] }>("/runs"),
+  listIntake: () => request<IntakeReport>("/intake"),
   getRun: (id: string) => request<RunDetail>(`/runs/${id}`),
   ask: (id: string, message: string) =>
     post<{ answer: string }>(`/runs/${id}/ask`, { message }),
