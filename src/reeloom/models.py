@@ -26,6 +26,15 @@ class PlanError(ReeloomError):
     """Raised when an Agent-submitted mapping cannot be compiled."""
 
 
+class Deferred(ReeloomError):
+    """The deployment is not ready yet; this is not the run's fault.
+
+    Missing credentials are the case that matters: without this a fresh
+    install would burn every discovered folder into a failed run before the
+    admin has finished the settings page.
+    """
+
+
 class MediaType(StrEnum):
     ANIME = "anime"
     TV = "tv"

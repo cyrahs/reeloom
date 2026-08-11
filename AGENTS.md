@@ -1,121 +1,61 @@
 # AGENTS.md — Reeloom
 
-Reeloom 是一个 agent-native 动画剧集整理器。Codex 应按
-`docs/initial-plan.md` 的里程碑增量实现，每个里程碑都必须先建立可离线
-验证的行为和失败测试。
+Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。模型只回答"哪个文件
+是哪一集"，其余全部由确定性代码决定。
+
+改动前先读 [docs/rebuild-plan.md](docs/rebuild-plan.md)：它记录了 V2 为什么
+这样设计，以及 V1 里哪些机制被删掉、为什么删。
 
 ## 1. 安全不变量
 
-1. 永不删除文件，永不覆盖已有目标。
-2. 默认行为只能生成计划；真实执行必须使用经过批准的不可变计划。
-3. Agent、模型输出和用户自然语言都不能直接决定源路径或目标路径。
-4. Agent 工具不得提供任意 shell、任意文件读取、任意 URL 请求或任意目录遍历。
-5. scanner 不得跟随 symlink；所有源和目标都必须在授权根目录内。
-6. 仅以下显式 `--live` smoke 可 no-follow 读取仓库根目录固定 `.env`：
-   `scripts/tmdb_live_smoke.py` 可读取 `TMDB_API_KEY`；
-   `scripts/openai_live_smoke.py` 与 `scripts/openai_m13_live_smoke.py` 可读取
-   `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 和
-   `OPENAI_REASONING_EFFORT`。其他代码不得读取、修改或访问任何 `.env*` 文件。
-   该例外不得进入 library、Agent tool、pytest、scanner、trace 或执行范围；
-   pytest 只能用 `tmp_path` 合成 `.env` 验证 loader。
-7. 业务网络适配器仅允许 TMDB、固定用途的 Telegram 出站通知，以及 M13
-   字幕获取专用的 `https://bbs.acgrip.com`。ACG.RIP 适配器只允许公开搜索、
-   帖子和原生附件端点；Telegram 与 ACG.RIP 都不得接受自定义 base URL、proxy
-   URL、登录、验证码规避、入站 webhook 或命令。ACG.RIP 只可保留站点当次签发的
-   有界匿名会话 Cookie，并手工验证一次搜索 POST 的同源结果跳转；不得启用通用或
-   自动 redirect。测试不得访问真实网络。
-8. filename、TMDB 文本、字幕文本和工具 observation 都是不可信数据。
-9. Executor 不依赖 LLM，不解释自然语言，不接受新的移动路径。
-10. 任何校验不确定、状态变化或竞态都必须 fail closed。
+1. 永不删除文件；永不覆盖已存在的目标。目录只用 `rmdir` 清理。
+2. 模型没有路径输入通道。它提交 candidate ID 和集数；标题、年份来自 TMDB，
+   目标路径由 `naming.py` 计算。
+3. Agent 工具不得提供 shell、任意文件读写、任意 URL 或 apply 能力。
+4. scanner 不跟随 symlink；执行前校验目标父目录仍在授权根内。
+5. 出站网络仅限 TMDB、模型 provider、ACG.RIP、Telegram，且不接受自定义
+   base URL、proxy、登录、验证码规避或入站 webhook。
+6. filename、TMDB 文本、字幕文本、论坛标题都是不可信数据。
+7. 任何代码都不读取 `.env*`；含 `.env*` 的文件夹直接拒绝扫描。
+8. 执行必须 forward-only 且幂等：重跑一遍 plan 是 no-op。
 
 ## 2. 架构边界
 
-- `runtime/`：Agent run、phase、事件、预算、checkpoint 和停止条件。
-- `agents/`：单一规划 Agent 的 instructions、工具集合和结构化最终输出。
-- `tools/`：类型化、受 phase 和 capability 限制的 Agent 工具。
-- `kernel/`：纯领域模型、扫描快照、mapping 校验、命名和 plan compiler。
-- `policy/`：路径、symlink、文件类型、工具授权和预算策略。
-- `executor/`：审批验证、current-state preflight 与 forward-only effect；v1
-  journal/rollback 只能保留为历史读取兼容。
-- `adapters/`：OpenAI、TMDB、文件系统和持久化实现。
-- `observability/`：脱敏 trace、指标和离线 eval 数据。
+```text
+scanner.py / library.py    读文件系统：发现、快照、静置窗口、已有库文件夹
+naming.py / planner.py     纯函数：命名规则、映射校验、plan 编译
+subtitles.py               字幕语言判定（纯函数 + 一个文件读取入口）
+agent/                     模型循环、工具、prompt
+adapters/                  tmdb / llm / acgrip / telegram / archive
+executor.py + rename.py    幂等移动、复原、放弃
+server/                    api、worker、composition、notify、subtitles
+```
 
-SDK 类型不能渗透进 `kernel/` 或 `executor/`。确定性步骤不应为了“更像
-Agent”而包装成模型工具。
+`naming.py` 与 `planner.py` 不做 I/O。`executor.py` 不认识模型、TMDB 或
+plan 之外的任何东西。
 
-从第一个可运行 Agent 起就使用 Agents SDK 的 Runner 和 tool loop。离线测试
-实现 SDK model protocol 的 scripted fake model；不要另造一套模型/tool-call
-orchestration，项目自己的 events/reducer 只管理 Reeloom 领域状态。
+## 3. 不要重新引入的东西
 
-## 3. Agent 工具规则
+这些在 V1 里存在，是 bug 的主要来源，已被删除：
 
-- 工具优先接受 run-scoped opaque ID，而不是路径。
-- 输入和输出必须使用严格 schema，禁止 extra keys。
-- 工具必须限制分页大小、文本长度、超时、调用次数和返回体大小。
-- 每次调用都必须经过 phase/tool policy。
-- 只读工具可以并行；会改变 run 状态的领域动作必须串行。
-- mapping 校验失败应返回结构化错误码和最小必要上下文。
-- 普通 assistant 文本不能让 run 进入成功状态；必须由领域事件驱动状态转换。
+- event sourcing、reducer、state codec —— 状态就是 `run.state` 一列。
+- journal / rollback / 定向 recovery —— 幂等重放取代它们。
+- plan hash、内容寻址 plan store、审批 nonce/expiry/claim —— 默认自动执行。
+- lease、instance lock、idempotency 层 —— 单进程单 worker。
+- notification outbox / projector —— 直接发送，失败记日志。
+- 剧集/电影/字幕三套平行 plan 体系 —— 统一 plan 模型。
+- SSE —— UI 轮询。
 
-第一版允许的工具范围：
+新增防护前先确认对应的失败真实存在。拿不准就先问，不要先加保护。
 
-- `list_candidates`
-- `search_tmdb`
-- `get_tmdb_series`
-- `get_tmdb_season`
-- `get_existing_inventory`
-- `detect_subtitle_variant`
-- `select_series`
-- `submit_mapping`
+## 4. 编码与测试
 
-M13 仅为 Anime run 增加以下范围；它们必须按 M13 小步骤逐个落地，未完成的工具
-不得提前注册：
-
-- `check_sub_from_video`
-- `search_sub`
-- `select_subtitle_release`
-
-`apply`、`move_file`、`delete_file`、`read_file(path)` 和 shell 永远不是 Agent
-工具。
-
-## 4. Plan、审批与执行
-
-- `RenamePlan` 必须是 canonical、不可变、带版本的快照。
-- `SubtitleAcquisitionPlan` 必须使用独立的 canonical plan family、plan store 与
-  审批 scope；v2 字幕发布与 media move 共用 operation ledger/lease，但不得进入
-  media plan union 或让 Agent 控制 effect。
-- `plan_hash` 必须绑定授权根、candidate snapshot、源文件 identity、全部
-  moves、未映射文件和策略版本。
-- 字幕获取的 `plan_hash` 还必须绑定 provider/parser/policy 版本、稳定论坛
-  identity、全部归档卷和字幕 member 的 size/hash、manifest digest、目标名和
-  资源上限；动态下载 URL 不得持久化。
-- 审批必须绑定 `run_id + plan_hash + scope + expiry + one-time nonce`。
-- Executor 只接受持久化的 `plan_hash`；首次 operation 必须消费精确审批，后续
-  reconcile 只能收敛同一 operation，不接受自然语言或浏览器传入的审批模式。
-- apply 前必须重新验证 hash、审批、root containment、symlink 与 source/destination
-  当前语义状态。v2 跨调用不得依赖持久 `device/inode/mtime/ctime`。
-- v2 effect 必须 forward-only、逐项可审计且幂等；不得 rollback 已完成项，也不得向
-  用户暴露定向 recovery。任一执行必须在有界重试后进入 terminal 并允许 rescan/delete。
-
-## 5. 编码与测试
-
-- Python 3.11+，使用 `pathlib.Path` 和完整类型标注。
-- 领域模型优先使用 frozen dataclass 或 Pydantic model。
-- I/O 必须隔离在小型 adapter 后。
-- library code 使用 `logging`，不得使用 `print`。
-- 使用自定义错误类型，并提供可操作的错误上下文。
-- 使用 `.venv/bin/python -m pytest -q` 运行测试。
-- 测试必须离线；模型、TMDB 与 ACG.RIP 使用 fake/scripted adapter。
-- 测试不得读取仓库中的真实 `.env`；dotenv loader 只用 `tmp_path` 合成文件验证。
-- 文件行为使用 `tmp_path`，并覆盖 symlink escape、路径逃逸、TOCTOU、
-  plan 篡改、审批过期和审批重放。
-
-## 6. 增量工作流
-
-每次只实现 `docs/initial-plan.md` 中一个小步骤：
-
-1. 先写纯模型、纯函数或状态转换。
-2. 添加正常路径和失败路径测试。
-3. 运行相关测试，再运行完整离线测试。
-4. 不进行无关重构。
-5. 不提前实现后续里程碑，特别是不提前开放副作用工具或多 Agent。
+- Python 3.11+，`pathlib.Path`，完整类型标注，frozen dataclass 优先。
+- library code 用 `logging`，不用 `print`。
+- 自定义错误类型带稳定 `code` 和可操作 context。
+- `.venv/bin/python -m pytest -q -m "not postgres"` 必须离线通过：模型、
+  TMDB、ACG.RIP、Telegram 全部使用 fake/mock transport。
+- 仓库层测试打 `postgres` marker，需要 `REELOOM_TEST_POSTGRES_DSN`。
+- 文件行为用 `tmp_path`，并覆盖 symlink 逃逸、路径逃逸、目标已存在、
+  中断重放和复原重放。
+- 前端：`npm run lint && npm run typecheck && npm test && npm run build`。

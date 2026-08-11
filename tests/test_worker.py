@@ -185,6 +185,28 @@ async def test_unexpected_error_fails_the_run_without_touching_others(
     assert run.error is not None and run.error["detail"] == "boom"
 
 
+async def test_missing_credentials_park_the_run_instead_of_failing_it(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    from reeloom.models import Deferred
+
+    identifier = StubIdentifier(error=Deferred("model_not_configured"))
+    database, worker = build(config, identifier=identifier)
+
+    await drain(worker)
+
+    run = next(iter(database.runs.values()))
+    assert run.state is RunState.PENDING
+    assert run.attempts == 0
+
+    # Once configured, the parked run proceeds without any manual retry.
+    identifier.error = None
+    await drain(worker)
+    assert database.runs[run.id].state is RunState.DONE
+
+
 async def test_recover_rearms_interrupted_identification(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:

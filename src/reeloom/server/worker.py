@@ -16,6 +16,7 @@ from typing import Protocol
 
 from reeloom.db import Database
 from reeloom.models import (
+    Deferred,
     FileKind,
     MediaType,
     Plan,
@@ -191,6 +192,12 @@ class Worker:
             return True
         try:
             await self._step(run, config)
+        except Deferred as error:
+            # Nothing is wrong with the run; the deployment is not ready.
+            # Park it and wait to be woken — typically by the settings page.
+            _LOGGER.info("run=%s deferred: %s", run.id, error.code)
+            await self._db.set_state(run.id, RunState.PENDING)
+            return False
         except NeedsAttention as error:
             _LOGGER.info("run=%s needs attention: %s", run.id, error.code)
             await self._db.log(

@@ -13,15 +13,15 @@ from typing import Any
 from reeloom.adapters.llm import Conversation, Model, ModelError, OpenAICompatibleModel
 from reeloom.adapters.tmdb import TmdbClient
 from reeloom.db import Database
-from reeloom.models import ReeloomError, Run, WatchConfig
+from reeloom.models import Deferred, Run, WatchConfig
 
 _LOGGER = logging.getLogger(__name__)
 
 MAX_ANSWER_CHARS = 2000
 
 
-class NotConfigured(ReeloomError):
-    pass
+class NotConfigured(Deferred):
+    """Credentials are missing; the run waits rather than failing."""
 
 
 class Clients:

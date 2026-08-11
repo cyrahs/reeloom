@@ -8,14 +8,12 @@ RUN npm run build
 
 FROM python:3.13-slim-trixie
 
-ARG FFMPEG_PACKAGE_VERSION=7:7.1.5-0+deb13u1
+# 7-Zip unpacks subtitle releases (.7z/.zip/.rar), pinned by checksum.
 ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        "ffmpeg=${FFMPEG_PACKAGE_VERSION}" \
-        util-linux \
         xz-utils \
     && case "${TARGETARCH}" in \
         amd64) \
@@ -31,7 +29,6 @@ RUN apt-get update \
     && echo "${sevenzip_sha256}  /tmp/7zz.tar.xz" | sha256sum --check --strict \
     && tar --extract --xz --file /tmp/7zz.tar.xz --directory /tmp 7zz \
     && install --mode=0755 /tmp/7zz /usr/bin/7zz \
-    && /usr/bin/7zz i | grep -F '7-Zip (z) 26.02' \
     && rm -f /tmp/7zz /tmp/7zz.tar.xz \
     && apt-get purge -y --auto-remove curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -51,4 +48,4 @@ RUN useradd --create-home --uid 10001 reeloom \
 USER reeloom
 
 EXPOSE 8080
-ENTRYPOINT ["reeloom-server"]
+ENTRYPOINT ["reeloom"]

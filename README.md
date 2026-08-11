@@ -1,169 +1,116 @@
 # Reeloom
 
-Reeloom is an agent-native media organizer for anime, TV series, and movies.
-It identifies media with TMDB, builds an immutable rename plan, presents every
-move for review in a same-origin web UI, and executes only an exact approved
-plan.
+Reeloom watches a folder, works out what the media in it is, and files it into
+your library under a consistent name — anime, TV series and movies, with their
+Chinese subtitles.
 
-The model helps with uncertain semantic decisions. Deterministic code owns
-paths, naming, collision checks, approvals, file operations, rollback, and
-recovery.
-
-## What it does
-
-- Treats each stable direct child folder of a configured watch root as one
-  independent intake run.
-- Identifies anime, TV series, and single-feature movies through TMDB.
-- Associates external Chinese subtitles and classifies them as Simplified
-  (`chs`), Traditional (`cht`), or unknown Chinese (`chi`).
-- Shows immutable plan lineage and relative source/destination previews.
-- Supports questions, plan revisions, completed-layout reapply, manual approval,
-  deterministic automatic policy, rollback, and crash recovery.
-- Stores control-plane history in PostgreSQL and serves the React UI from the
-  same application image.
-- Moves successful residual content to the watch root's managed `archive`
-  bucket and eligible deterministic failures to `fail`.
-
-Typical output:
+A model handles the one genuinely uncertain question: *which file is which
+episode*. Everything else — paths, names, collisions, moves — is ordinary
+deterministic code.
 
 ```text
-<archive>/
-  Series Name (2024) {tmdb-123}/
-    S01/
-      Series Name S01E01.mkv
-      Series Name S01E01.chs.srt
-
-  Movie Name (2024) {tmdb-456}/
-    Movie Name (2024).mkv
-    Movie Name (2024).cht.ass
+watch root                          media library
+  [Group] Show S01/                   Show (2024) {tmdb-123}/
+    [Group] Show - 01 [1080p].mkv       S01/
+    [Group] Show - 01 [CHS].ass           Show S01E01.mkv
+    Show.torrent                          Show S01E01.chs.ass
 ```
 
-Movie v1 organizes one main video and zero or more Chinese subtitles. Extra
-videos, trailers, alternate cuts, and multipart movies remain unmapped.
+## How it works
+
+1. **Discover.** Each direct child folder of a watch root is one job. A folder
+   is picked up once its shape has stopped changing for a configured window
+   (120s by default) — CloudDrive-style offline downloads materialize files in
+   batches, and starting early would only see half of them.
+2. **Identify.** The Agent reads the file list, searches TMDB, checks the
+   season's episode numbering, and submits a mapping of candidate IDs to
+   episodes.
+3. **Execute.** Automatically, straight away. Files are renamed into the
+   library; anything left over goes to the watch root's `archive` bucket.
+4. **Subtitles.** For anime watches with the option on, episodes still missing
+   a Chinese subtitle get one from ACG.RIP.
+5. **Notify.** One Telegram message per finished job.
+
+Nothing is ever deleted, and an existing file is never overwritten: a
+duplicate goes to the `fail` bucket and the copy already in your library
+stays. If something looks wrong afterwards, tell the Agent what to fix and hit
+**修订并重做** — Reeloom puts every file it moved back where it found it, then
+applies the new plan.
 
 ## Safety model
 
-Reeloom is intentionally fail-closed:
+- The model never sees or supplies a filesystem path. It submits candidate IDs
+  and episode numbers; destinations are computed from the TMDB entry.
+- Title and year come from TMDB, not from model output.
+- Renames use `RENAME_NOREPLACE` / `RENAME_EXCL`, so an existing destination
+  makes the move fail rather than clobber.
+- Execution is forward-only and idempotent. Re-running a plan is a no-op, which
+  is how a crashed job finishes: it just runs again.
+- Nothing is deleted. Unmapped files go to `archive`, duplicates and discarded
+  jobs go to `fail`, and empty directories are removed with `rmdir` only.
+- The scanner never follows symlinks; `archive`, `fail`, hidden entries and
+  loose root files are skipped, and a folder containing a `.env*` file is
+  refused outright.
+- Outbound network access is limited to TMDB, your model provider, ACG.RIP and
+  Telegram. No shell, no arbitrary URLs, no inbound webhooks.
+- Inbound and library roots must be on one filesystem — moves are renames.
 
-- The default workflow is review-first; the Agent cannot approve or execute a
-  plan.
-- The Agent never receives arbitrary filesystem, shell, or URL capabilities.
-- All executable moves are derived from opaque candidate IDs by the
-  deterministic kernel.
-- Plans are canonical, immutable, content-addressed, and bound to source file
-  identity and authorized roots.
-- Approval is bound to the exact run and plan hash and can be claimed only once.
-- Execution never deletes media or overwrites an existing destination.
-- `archive`, `fail`, hidden top-level folders, loose root files, and symlinks
-  are excluded from discovery; any `.env*` entry blocks its intake folder.
-- Sources, roots, symlinks, collisions, and plan integrity are revalidated
-  immediately before execution.
-- Journaled rollback and durable recovery do not depend on an LLM.
-- Inbound and media-library paths used by one transaction must be on the same
-  filesystem.
-
-See the [threat model](docs/threat-model.md) and
-[deployment guide](docs/deployment.md) before enabling file operations.
-
-## Web workflow
-
-1. Sign in with the deployment-provided Admin Bearer token.
-2. Configure each inbound watch together with its media-library root,
-   TMDB-backed media type, model provider, and bounded Agent budget. New
-   configurations default to a 600-second run limit.
-3. Keep the first configuration in `plan_only`.
-4. Review discoveries, runs, immutable plans, unmapped files, and interaction
-   history.
-5. Revise the plan when needed, then approve the exact plan hash.
-6. Read the durable terminal settlement; do not infer success from a network
-   response or SSE disconnect.
-
-Drop each title into its own direct child folder under a watch root. Reeloom
-creates and ignores the watch-local `archive` and `fail` buckets automatically.
-
-The browser stores a successfully validated Admin token in `localStorage`.
-Deploy only behind a trusted origin with the supplied CSP and response headers
-intact.
-
-## Quick start with Docker Compose
-
-Requirements:
-
-- Docker with Compose support.
-- An absolute media root that can be mounted at the same absolute path.
-- A TMDB API key.
-- An OpenAI-compatible provider configured later through the Admin UI.
-
-Set credentials in the process environment; Reeloom itself does not load
-dotenv files:
+## Quick start
 
 ```bash
-export REELOOM_POSTGRES_PASSWORD="$(
-  python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
-)"
-export REELOOM_ADMIN_TOKEN="$(
-  python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
-)"
-export REELOOM_TMDB_API_KEY="replace-with-your-tmdb-key"
-export REELOOM_MEDIA_ROOT="/absolute/path/to/media"
-export REELOOM_ALLOWED_HOSTS="127.0.0.1,localhost"
-export REELOOM_ALLOWED_UI_ORIGINS="http://127.0.0.1:8080"
+export REELOOM_POSTGRES_PASSWORD="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')"
+export REELOOM_ADMIN_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')"
+export REELOOM_MEDIA_ROOT=/absolute/path/to/media
 
 docker compose up --build -d
 ```
 
-Open <http://127.0.0.1:8080/> and sign in with `REELOOM_ADMIN_TOKEN`. The
-included composition uses PostgreSQL 17; Reeloom supports PostgreSQL 16, 17,
-and 18.
+Open <http://127.0.0.1:8080/>, sign in with `REELOOM_ADMIN_TOKEN`, then on the
+settings page:
 
-## Production deployment
+1. Add your TMDB key, model Base URL / key / name, and optionally a Telegram
+   bot token and chat ID.
+2. Add a watch: an inbound folder, a library folder, and a media type.
 
-The published image is available as `ghcr.io/cyrahs/reeloom`. Pin a successful
-build by digest instead of deploying a mutable tag.
+Until the credentials are in place, discovered folders simply wait — they are
+not failed, and they start moving on their own once you save.
 
-Production requirements:
+### Environment
 
-- PostgreSQL 16, 17, or 18 with a `reeloom` login role that owns the
-  `reeloom` database.
-- Exactly one Reeloom process and one worker.
-- A persistent state root for secrets, plans, and executor journals.
-- Explicit media mounts and HTTPS-only provider Base URLs.
-- Exact Host and UI Origin allowlists.
-- A 16–4096 character base64url Admin token.
-- A reverse proxy that preserves Authorization and SSE reconnect headers,
-  disables response buffering for streams, and never logs Bearer credentials.
-- Coordinated backups of PostgreSQL, the Reeloom state root, and media storage.
+Only deployment facts live in the environment; everything operational is
+edited in the UI and stored in PostgreSQL.
 
-Environment contracts, database privileges, reverse-proxy requirements, and
-backup/recovery behavior are documented in the
-[deployment guide](docs/deployment.md). The stable HTTP contract is described
-in [API documentation](docs/api.md) and
-[OpenAPI](docs/openapi-v1.json).
+| Variable | Required | Default |
+| --- | --- | --- |
+| `REELOOM_DATABASE_URL` | yes | — |
+| `REELOOM_ADMIN_TOKEN` | yes, ≥16 chars | — |
+| `REELOOM_WORK_DIR` | no | `/var/lib/reeloom` |
+| `REELOOM_HOST` / `REELOOM_PORT` | no | `0.0.0.0` / `8080` |
+| `REELOOM_SCAN_INTERVAL_SECONDS` | no | `30` |
+
+Run exactly one process. There is no clustering, and the run's `state` column
+is the only coordination mechanism.
 
 ## Development
 
-Python 3.11+ and Node.js 24 are required. Tests are offline by default; model
-and TMDB behavior use scripted adapters.
-
 ```bash
+python -m venv .venv && .venv/bin/pip install -e . pytest pytest-asyncio
 .venv/bin/python -m pytest -q -m "not postgres"
-export REELOOM_TEST_POSTGRES_DSN="postgresql://user:password@127.0.0.1:5432/postgres"
-.venv/bin/python scripts/run_postgres_tests.py
 
-cd web
-npm ci
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm run e2e
+createdb reeloom_test
+REELOOM_TEST_POSTGRES_DSN=postgresql:///reeloom_test .venv/bin/python -m pytest -q
+
+cd web && npm ci && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
-Replace the example test DSN with a dedicated local database before running the
-PostgreSQL and browser journeys. Live model and TMDB smoke tests are opt-in and
-are documented in the
-[internal development status](docs/internal-development.md).
+Tests are offline: the model, TMDB and ACG.RIP are all substituted. To try the
+real thing against a folder without moving anything:
 
-Architecture decisions, milestone evidence, and implementation history are kept
-under [`docs/`](docs/), beginning with the
-[initial plan](docs/initial-plan.md).
+```bash
+python scripts/live_smoke.py --live --folder "/media/inbound/[Group] Show"
+```
+
+Layout: `scanner`/`library` read the filesystem, `naming`/`planner` decide
+destinations, `agent/` runs the model, `executor`+`rename` do the moving,
+`server/` is the API and the worker. See
+[docs/rebuild-plan.md](docs/rebuild-plan.md) for why it is shaped this way.
