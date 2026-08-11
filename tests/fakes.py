@@ -21,6 +21,7 @@ from reeloom.models import (
     RunResult,
     RunState,
     SnapshotFile,
+    SubtitleVariant,
     WatchConfig,
 )
 
@@ -182,6 +183,11 @@ class FakeDatabase:
         config = self.configs[config_id]
         if "media_type" in values:
             values = {**values, "media_type": MediaType(values["media_type"])}
+        if "subtitle_variant" in values:
+            values = {
+                **values,
+                "subtitle_variant": SubtitleVariant(values["subtitle_variant"]),
+            }
         self.configs[config_id] = replace(config, **values)
 
     async def delete_config(self, config_id: str) -> None:

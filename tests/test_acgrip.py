@@ -35,10 +35,17 @@ RESULTS = """
 
 THREAD = """
 <html><body>
+<table><tr><td class="t_f" id="postmessage_100">
+本帖字幕为 <strong>简体中文</strong>，
+<table><tr><td>外挂 ass 格式</td></tr></table>
+全 12 集。
+</td></tr></table>
 <a href="forum.php?mod=attachment&amp;aid=4242abcd">Show.S01.CHS.7z</a>
 <a href="forum.php?mod=attachment&amp;aid=4243abcd">notes.txt</a>
 <a href="forum.php?mod=attachment&amp;aid=Mzc5NzN8Zjc5NjNhY2F8MTc4NjQzMDAxM3wwfDEwODA2" id="aid37973" target="_blank">Show.S01.CHT.7z</a>
 <a href="https://elsewhere.example/forum.php?mod=attachment&amp;aid=1">offsite.7z</a>
+<table><tr><td class="t_f" id="postmessage_101">感谢分享！</td></tr></table>
+<td class="t_f">not a post: no postmessage id</td>
 </body></html>
 """
 
@@ -303,7 +310,7 @@ async def test_only_site_session_cookies_are_kept() -> None:
 async def test_thread_attachments_are_listed_from_the_same_origin_only() -> None:
     client = make_client(default_handler)
 
-    attachments = await client.get_attachments(12345)
+    attachments = (await client.get_thread(12345)).attachments
 
     assert [item.filename for item in attachments] == [
         "Show.S01.CHS.7z",
@@ -314,6 +321,39 @@ async def test_thread_attachments_are_listed_from_the_same_origin_only() -> None
     # A signed base64 aid takes its identity from the anchor's id attribute.
     assert attachments[2].attachment_id == 37973
     assert "Mzc5NzN8" in attachments[2].download_path
+    await client.aclose()
+
+
+async def test_thread_excerpt_collects_cleaned_post_text() -> None:
+    client = make_client(default_handler)
+
+    page = await client.get_thread(12345)
+
+    # Nested tables stay inside their post; posts join in page order; the
+    # td without a postmessage id is not a post.
+    assert "简体中文" in page.excerpt
+    assert "外挂 ass 格式" in page.excerpt
+    assert "全 12 集" in page.excerpt
+    assert "感谢分享" in page.excerpt
+    assert "not a post" not in page.excerpt
+    assert "\n" not in page.excerpt
+    await client.aclose()
+
+
+async def test_an_oversized_thread_page_is_truncated_not_refused() -> None:
+    padding = "填" * (2 * 1024 * 1024)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/forum.php":
+            return httpx.Response(200, text=THREAD + padding)
+        return default_handler(request)
+
+    client = make_client(handler)
+
+    page = await client.get_thread(12345)
+
+    assert [item.attachment_id for item in page.attachments] == [4242, 4243, 37973]
+    assert "简体中文" in page.excerpt
     await client.aclose()
 
 

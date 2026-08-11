@@ -366,6 +366,8 @@ class WatchConfig:
     enabled: bool = True
     stability_seconds: int = 120
     acquire_subtitles: bool = False
+    subtitle_variant: SubtitleVariant = SubtitleVariant.CHS
+    """Preferred Chinese variant for acquired subtitles; chs or cht only."""
     notify: bool = True
 
 

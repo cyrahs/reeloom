@@ -11,13 +11,13 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from reeloom.db import Database
-from reeloom.models import MediaType, Run, RunState
+from reeloom.models import MediaType, Run, RunState, SubtitleVariant
 from reeloom.models import WatchConfig as WatchConfigModel
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ class ConfigInput(BaseModel):
     enabled: bool = True
     stability_seconds: int = Field(default=120, ge=0, le=86_400)
     acquire_subtitles: bool = False
+    subtitle_variant: Literal["chs", "cht"] = "chs"
     notify: bool = True
 
 
@@ -44,6 +45,7 @@ class ConfigPatch(BaseModel):
     enabled: bool | None = None
     stability_seconds: int | None = Field(default=None, ge=0, le=86_400)
     acquire_subtitles: bool | None = None
+    subtitle_variant: Literal["chs", "cht"] | None = None
     notify: bool | None = None
 
 
@@ -217,6 +219,7 @@ def create_app(
             enabled=payload.enabled,
             stability_seconds=payload.stability_seconds,
             acquire_subtitles=payload.acquire_subtitles,
+            subtitle_variant=SubtitleVariant(payload.subtitle_variant),
             notify=payload.notify,
         )
         await database.create_config(config)
@@ -336,6 +339,7 @@ def _config_json(config: WatchConfigModel | None) -> dict[str, Any]:
         "enabled": config.enabled,
         "stability_seconds": config.stability_seconds,
         "acquire_subtitles": config.acquire_subtitles,
+        "subtitle_variant": config.subtitle_variant.value,
         "notify": config.notify,
     }
 
