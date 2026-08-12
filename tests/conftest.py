@@ -45,3 +45,41 @@ def postgres_dsn() -> str:
     if not dsn:
         pytest.skip("REELOOM_TEST_POSTGRES_DSN is not set")
     return dsn
+
+
+def _has_sevenzip() -> bool:
+    from reeloom.adapters.archive import find_sevenzip
+
+    return find_sevenzip() is not None
+
+
+def _has_ffmpeg() -> bool:
+    import shutil
+
+    from reeloom.adapters.ffprobe import find_ffprobe
+
+    return shutil.which("ffmpeg") is not None and find_ffprobe() is not None
+
+
+_BINARY_CHECKS = {"7z": _has_sevenzip, "ffmpeg": _has_ffmpeg}
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    """Real-binary tests skip only where skipping is allowed.
+
+    Locally a missing tool skips its ``binaries``-marked tests; with
+    ``REELOOM_TEST_REQUIRE_BINARIES=1`` (the CI binaries job) no skip is
+    added, so a broken toolchain install fails loudly instead of silently
+    shrinking the suite.
+    """
+
+    if os.environ.get("REELOOM_TEST_REQUIRE_BINARIES") == "1":
+        return
+    available = {tool: check() for tool, check in _BINARY_CHECKS.items()}
+    for item in items:
+        marker = item.get_closest_marker("binaries")
+        if marker is None:
+            continue
+        tool = marker.args[0]
+        if not available.get(tool, False):
+            item.add_marker(pytest.mark.skip(reason=f"{tool} is not installed"))

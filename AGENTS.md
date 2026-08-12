@@ -68,6 +68,9 @@ plan 之外的任何东西。
 - 依赖用 `uv sync` 安装（含 dev group 的 pytest）。
 - `uv run pytest -q -m "not postgres"` 必须离线通过：模型、
   TMDB、ACG.RIP、Telegram 全部使用 fake/mock transport。
+- 驱动真实外部二进制（7z、ffmpeg/ffprobe）的测试打 `binaries("<tool>")`
+  marker：本地缺工具时跳过；CI 的 python-binaries job 设
+  `REELOOM_TEST_REQUIRE_BINARIES=1`，缺工具会失败而不是静默跳过。
 - 仓库层测试打 `postgres` marker，需要 `REELOOM_TEST_POSTGRES_DSN`；
   本地不强制，CI 的 Tests workflow 会在 service container 上跑。
 - 文件行为用 `tmp_path`，并覆盖 symlink 逃逸、路径逃逸、目标已存在、

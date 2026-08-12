@@ -35,4 +35,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "postgres: requires an explicit REELOOM_TEST_POSTGRES_DSN",
+    "binaries(tool): drives a real external binary (7z, ffmpeg); skipped when it is absent unless REELOOM_TEST_REQUIRE_BINARIES=1",
 ]

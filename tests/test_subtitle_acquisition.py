@@ -92,7 +92,7 @@ def test_a_video_that_never_landed_is_not_wanted(
 # ---- archive extraction --------------------------------------------------
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_extraction_keeps_only_subtitles_and_flattens_them(
     tmp_path: Path,
 ) -> None:
@@ -198,7 +198,7 @@ SIMPLIFIED_TEXT = "这个国家发展了"
 TRADITIONAL_TEXT = "這個國家發展了"
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_acquired_subtitles_are_published_next_to_their_episodes(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -251,7 +251,7 @@ async def test_acquired_subtitles_are_published_next_to_their_episodes(
     assert kinds == [MoveKind.ACQUIRED_SUBTITLE, MoveKind.ACQUIRED_SUBTITLE]
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_an_existing_subtitle_is_never_overwritten(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -358,7 +358,7 @@ async def test_nothing_happens_when_every_episode_already_has_subtitles(
 # ---- variant preference --------------------------------------------------
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_a_dual_variant_batch_counts_episodes_not_files(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -404,7 +404,7 @@ async def test_a_dual_variant_batch_counts_episodes_not_files(
     assert (season / "Show S01E02.cht.ass").is_file()
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_partial_coverage_reports_missing_episodes(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -439,7 +439,7 @@ async def test_partial_coverage_reports_missing_episodes(
     assert result.subtitle_note == "1 集仍缺字幕"
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_a_non_preferred_release_is_retried_with_feedback(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -488,7 +488,7 @@ async def test_a_non_preferred_release_is_retried_with_feedback(
     assert any("[CHS].ass: chs" in text for text in feedback)
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_reselecting_the_same_attachment_accepts_it(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -528,7 +528,7 @@ async def test_reselecting_the_same_attachment_accepts_it(
     assert (season / "Show S01E01.chs.ass").is_file()
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_exhausted_attempts_publish_the_best_coverage(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -584,7 +584,7 @@ async def test_exhausted_attempts_publish_the_best_coverage(
     assert (season / "Show S01E02.chs.ass").is_file()
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_giving_up_after_a_download_publishes_nothing(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:
@@ -623,7 +623,7 @@ async def test_giving_up_after_a_download_publishes_nothing(
     assert not (season / "Show S01E01.chs.ass").exists()
 
 
-@pytest.mark.skipif(find_sevenzip() is None, reason="7-Zip is not installed")
+@pytest.mark.binaries("7z")
 async def test_a_dud_archive_consumes_an_attempt_then_a_good_one_succeeds(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:

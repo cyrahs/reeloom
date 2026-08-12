@@ -1,20 +1,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from reeloom.adapters import ffprobe
-from reeloom.adapters.ffprobe import (
-    Probe,
-    ProbeError,
-    _parse,
-    find_ffprobe,
-    probe_video,
-)
+from reeloom.adapters.ffprobe import Probe, ProbeError, _parse, probe_video
 
 VIDEO = Path("Show S01E01.mkv")
 
@@ -77,13 +70,10 @@ async def test_probe_without_binary_returns_none(monkeypatch) -> None:
 # The parser tests above pin our reading of the JSON; these pin the other
 # side of the contract — that the ffmpeg/ffprobe actually installed accepts
 # our fixed argv and answers with the fields the decision engine relies on.
-# CI installs ffmpeg for them; locally they skip when it is absent.
+# The CI binaries job runs them with REELOOM_TEST_REQUIRE_BINARIES=1, where
+# a missing toolchain fails instead of skipping.
 
-_HAS_TOOLCHAIN = shutil.which("ffmpeg") is not None and find_ffprobe() is not None
-
-needs_ffmpeg = pytest.mark.skipif(
-    not _HAS_TOOLCHAIN, reason="ffmpeg/ffprobe are not installed"
-)
+needs_ffmpeg = pytest.mark.binaries("ffmpeg")
 
 
 def render_sample(path: Path, *, height: int = 240) -> None:

@@ -28,14 +28,40 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked
 
-      - name: Install 7-Zip and ffmpeg for the adapter tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends p7zip-full ffmpeg
-
       - name: Run the offline suite
-        run: uv run pytest -q -m "not postgres"
+        run: uv run pytest -q -m "not postgres and not binaries"
 
       - name: Compile sources
         run: uv run python -m compileall -q src tests scripts
+
+  # Tests that drive real external binaries (7-Zip, ffmpeg/ffprobe) run in
+  # their own job with REELOOM_TEST_REQUIRE_BINARIES=1: a broken toolchain
+  # install fails the job instead of silently skipping the tests.
+  python-binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      REELOOM_TEST_REQUIRE_BINARIES: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Install 7-Zip and ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends p7zip-full ffmpeg
+
+      - name: Run the real-binary suite
+        run: uv run pytest -q -m binaries
 
   python-postgres:
     runs-on: ubuntu-latest
