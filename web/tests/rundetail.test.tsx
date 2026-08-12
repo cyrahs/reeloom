@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ReplaceDecision, RunDetail } from "../src/api";
@@ -297,11 +297,14 @@ describe("run detail page", () => {
 
     render(<RunDetailPage runId="run-1" />);
 
-    const line = await screen.findByText(/未映射（将归档）/);
-    expect(line).toHaveTextContent("Scans/、readme.txt");
-    expect(line).not.toHaveTextContent("cover.jpg");
+    const line = await screen.findByText(/未映射（3 个）移入/);
+    const block = within(line.closest(".trash-moves") as HTMLElement);
+    expect(block.getByText("archive/")).toBeInTheDocument();
+    expect(block.getByText("Scans/")).toBeInTheDocument();
+    expect(block.getByText("readme.txt")).toBeInTheDocument();
+    expect(block.queryByText(/cover\.jpg/)).not.toBeInTheDocument();
     // Extras holds a mapped file, so it is not reported as archived.
-    expect(line).not.toHaveTextContent("Extras");
+    expect(block.queryByText(/Extras/)).not.toBeInTheDocument();
   });
 
   it("collapses a fully unmapped run to the intake folder itself", async () => {
@@ -334,10 +337,11 @@ describe("run detail page", () => {
 
     render(<RunDetailPage runId="run-1" />);
 
-    const line = await screen.findByText(/未映射（将归档）/);
-    expect(line).toHaveTextContent("[Group] Show/");
-    expect(line).not.toHaveTextContent("nc01.mkv");
-    expect(line).not.toHaveTextContent("Scans");
+    const line = await screen.findByText(/未映射（2 个）移入/);
+    const block = within(line.closest(".trash-moves") as HTMLElement);
+    expect(block.getByText("[Group] Show/")).toBeInTheDocument();
+    expect(block.queryByText(/nc01\.mkv/)).not.toBeInTheDocument();
+    expect(block.queryByText(/Scans/)).not.toBeInTheDocument();
   });
 
   it("collapses a nested fully unmapped subfolder", async () => {
@@ -377,9 +381,10 @@ describe("run detail page", () => {
 
     render(<RunDetailPage runId="run-1" />);
 
-    const line = await screen.findByText(/未映射（将归档）/);
-    expect(line).toHaveTextContent("Discs/SPs/");
-    expect(line).not.toHaveTextContent("nc01.mkv");
+    const line = await screen.findByText(/未映射（2 个）移入/);
+    const block = within(line.closest(".trash-moves") as HTMLElement);
+    expect(block.getByText("Discs/SPs/")).toBeInTheDocument();
+    expect(block.queryByText(/nc01\.mkv/)).not.toBeInTheDocument();
   });
 
   it("lists leftover files of a partially archived subfolder", async () => {
@@ -412,9 +417,10 @@ describe("run detail page", () => {
 
     render(<RunDetailPage runId="run-1" />);
 
-    const line = await screen.findByText(/未映射（将归档）/);
-    expect(line).toHaveTextContent("Discs/log.txt");
-    expect(line).not.toHaveTextContent("Discs/、");
+    const line = await screen.findByText(/未映射（1 个）移入/);
+    const block = within(line.closest(".trash-moves") as HTMLElement);
+    expect(block.getByText("Discs/log.txt")).toBeInTheDocument();
+    expect(block.queryByText("Discs/")).not.toBeInTheDocument();
   });
 
   it("shows acquired subtitle renames inside the plan section", async () => {
@@ -614,8 +620,9 @@ describe("run detail page", () => {
 
     const order = screen
       .getAllByRole("heading", { level: 2 })
-      .map((heading) => heading.textContent);
+      .map((heading) => heading.textContent ?? "");
+    const files = order.findIndex((text) => text.startsWith("文件"));
     expect(order.indexOf("结果")).toBeLessThan(order.indexOf("交流"));
-    expect(order.indexOf("交流")).toBeLessThan(order.indexOf("文件"));
+    expect(order.indexOf("交流")).toBeLessThan(files);
   });
 });
