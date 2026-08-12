@@ -473,7 +473,8 @@ describe("run detail page", () => {
     expect(
       screen.getByText("Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass"),
     ).toBeInTheDocument();
-    expect(screen.getByText("下载字幕")).toBeInTheDocument();
+    // Acquired subtitles render like ordinary subtitle moves: no tag.
+    expect(screen.queryByText("下载字幕")).not.toBeInTheDocument();
     // Executed media moves already show as plan moves; not repeated. A
     // non-moved acquired entry is not shown either.
     expect(screen.getAllByText(/Show S01E01\.mkv/)).toHaveLength(1);
