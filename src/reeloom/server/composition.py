@@ -115,6 +115,15 @@ class Answerer:
     def __init__(self, clients: Clients) -> None:
         self._clients = clients
 
+    async def ping(self) -> str:
+        """Minimal round-trip so the settings page can verify the model."""
+
+        model = await self._clients.model()
+        conversation = Conversation()
+        conversation.user("Reply with the single word: ok")
+        reply = await model.complete(conversation, [])
+        return reply.content.strip()[:100]
+
     async def answer(
         self,
         run: Run,

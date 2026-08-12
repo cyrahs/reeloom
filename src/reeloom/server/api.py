@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from reeloom.db import Database
-from reeloom.models import MediaType, Run, RunState, SubtitleVariant
+from reeloom.models import MediaType, ReeloomError, Run, RunState, SubtitleVariant
 from reeloom.models import WatchConfig as WatchConfigModel
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,7 +65,9 @@ class SettingsInput(BaseModel):
     llm_api_key: str | None = Field(default=None, max_length=500)
     llm_model: str | None = Field(default=None, max_length=200)
     # Empty string means "provider default": the parameter is not sent at all.
-    llm_reasoning_effort: Literal["", "minimal", "low", "medium", "high"] | None = None
+    llm_reasoning_effort: (
+        Literal["", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = None
     telegram_bot_token: str | None = Field(default=None, max_length=200)
     telegram_chat_id: str | None = Field(default=None, max_length=64)
     trash_retention_days: int | None = Field(default=None, ge=0, le=365)
@@ -355,6 +357,20 @@ def create_app(
         await database.update_settings(payload.model_dump(exclude_none=True))
         nudge()
         return {"updated": True}
+
+    @api.post("/settings/test-llm")
+    async def test_llm():
+        """Fire a minimal completion at the configured model so the admin
+        can check the saved credentials from the settings page. Expected
+        failures come back as ``ok: false`` rather than an error status."""
+
+        if answerer is None:
+            return {"ok": False, "error": "model_not_configured"}
+        try:
+            reply = await answerer.ping()
+        except ReeloomError as error:
+            return {"ok": False, "error": str(error)[:500]}
+        return {"ok": True, "reply": reply}
 
     @app.get("/api/health")
     async def health():

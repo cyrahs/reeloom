@@ -3,19 +3,10 @@ import { useEffect, useState } from "react";
 import { api, type Settings, type WatchConfig } from "../api";
 import { DirPicker } from "../DirPicker";
 
-const EMPTY_CONFIG = {
-  name: "",
-  inbound_root: "",
-  library_root: "",
-  media_type: "anime" as WatchConfig["media_type"],
-  stability_seconds: 120,
-  acquire_subtitles: false,
-  subtitle_variant: "chs" as "chs" | "cht",
-  notify: true,
-  enabled: true,
-  replace_enabled: false,
-  replace_extra_dirs: [] as string[],
-  replace_auto_ratio: 1.2,
+const MEDIA_TYPE_LABELS: Record<WatchConfig["media_type"], string> = {
+  anime: "动画",
+  tv: "剧集",
+  movie: "电影",
 };
 
 interface ConfigForm {
@@ -24,10 +15,29 @@ interface ConfigForm {
   library_root: string;
   media_type: WatchConfig["media_type"];
   stability_seconds: number;
+  enabled: boolean;
+  notify: boolean;
+  acquire_subtitles: boolean;
+  subtitle_variant: "chs" | "cht";
   replace_enabled: boolean;
   replace_extra_dirs: string[];
   replace_auto_ratio: number;
 }
+
+const EMPTY_CONFIG: ConfigForm = {
+  name: "",
+  inbound_root: "",
+  library_root: "",
+  media_type: "anime",
+  stability_seconds: 120,
+  enabled: true,
+  notify: true,
+  acquire_subtitles: false,
+  subtitle_variant: "chs",
+  replace_enabled: false,
+  replace_extra_dirs: [],
+  replace_auto_ratio: 1.2,
+};
 
 function ConfigRow({
   config,
@@ -36,89 +46,36 @@ function ConfigRow({
   config: WatchConfig;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
 
-  async function patch(body: Partial<WatchConfig>) {
-    setBusy(true);
-    try {
-      await api.updateConfig(config.id, body);
-      onChanged();
-    } finally {
-      setBusy(false);
-    }
-  }
+  const features: string[] = [];
+  if (config.media_type === "anime" && config.acquire_subtitles)
+    features.push("字幕");
+  if (config.replace_enabled) features.push("洗版");
+  if (config.notify) features.push("通知");
 
   return (
     <li className="config">
       <div className="config-head">
         <strong>{config.name}</strong>
-        <span className="tag">{config.media_type}</span>
-        <label>
-          <input
-            type="checkbox"
-            checked={config.enabled}
-            disabled={busy}
-            onChange={(event) => patch({ enabled: event.target.checked })}
-          />
-          启用
-        </label>
-        <label title="仅对 anime 生效">
-          <input
-            type="checkbox"
-            checked={config.acquire_subtitles}
-            disabled={busy}
-            onChange={(event) =>
-              patch({ acquire_subtitles: event.target.checked })
-            }
-          />
-          自动找字幕
-        </label>
-        <label title="首选字幕语种（仅自动找字幕生效）">
-          <select
-            value={config.subtitle_variant}
-            disabled={busy}
-            onChange={(event) =>
-              patch({
-                subtitle_variant: event.target.value as "chs" | "cht",
-              })
-            }
-          >
-            <option value="chs">简体</option>
-            <option value="cht">繁体</option>
-          </select>
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={config.notify}
-            disabled={busy}
-            onChange={(event) => patch({ notify: event.target.checked })}
-          />
-          通知
-        </label>
-        <label title="发现库内或额外目录已有旧版本时自动替换/去重">
-          <input
-            type="checkbox"
-            checked={config.replace_enabled}
-            disabled={busy}
-            onChange={(event) =>
-              patch({ replace_enabled: event.target.checked })
-            }
-          />
-          洗版
-        </label>
+        <span className="tag">{MEDIA_TYPE_LABELS[config.media_type]}</span>
+        <span className={config.enabled ? "badge ok" : "badge"}>
+          {config.enabled ? "已启用" : "已停用"}
+        </span>
+        {features.map((feature) => (
+          <span key={feature} className="tag">
+            {feature}
+          </span>
+        ))}
         <span className="config-actions">
           <button
             className="link"
-            disabled={busy}
             onClick={() => setEditing((value) => !value)}
           >
             {editing ? "收起" : "编辑"}
           </button>
           <button
             className="link"
-            disabled={busy}
             onClick={async () => {
               if (!confirm(`删除监控 ${config.name}？`)) return;
               await api.deleteConfig(config.id);
@@ -225,7 +182,7 @@ function ExtraDirsField({
         添加目录
       </button>
       <span className="muted">
-        除媒体库外，还会在这些目录里检测旧版本（如 anirss 下载目录）。
+        除媒体库外，还会在这些目录里检测旧版本。
       </span>
     </div>
   );
@@ -240,39 +197,45 @@ function ConfigFields({
 }) {
   return (
     <>
-      <label className="field">
-        名称
-        <input
-          value={form.name}
-          onChange={(event) => onChange({ name: event.target.value })}
-          required
+      <div className="field-pair">
+        <label className="field">
+          名称
+          <input
+            value={form.name}
+            onChange={(event) => onChange({ name: event.target.value })}
+            required
+          />
+        </label>
+        <label className="field">
+          媒体类型
+          <select
+            value={form.media_type}
+            onChange={(event) =>
+              onChange({
+                media_type: event.target.value as WatchConfig["media_type"],
+              })
+            }
+          >
+            {Object.entries(MEDIA_TYPE_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="field-pair">
+        <PathField
+          label="监控目录"
+          value={form.inbound_root}
+          onChange={(inbound_root) => onChange({ inbound_root })}
         />
-      </label>
-      <PathField
-        label="监控目录"
-        value={form.inbound_root}
-        onChange={(inbound_root) => onChange({ inbound_root })}
-      />
-      <PathField
-        label="媒体库目录"
-        value={form.library_root}
-        onChange={(library_root) => onChange({ library_root })}
-      />
-      <label className="field">
-        媒体类型
-        <select
-          value={form.media_type}
-          onChange={(event) =>
-            onChange({
-              media_type: event.target.value as WatchConfig["media_type"],
-            })
-          }
-        >
-          <option value="anime">动画</option>
-          <option value="tv">剧集</option>
-          <option value="movie">电影</option>
-        </select>
-      </label>
+        <PathField
+          label="媒体库目录"
+          value={form.library_root}
+          onChange={(library_root) => onChange({ library_root })}
+        />
+      </div>
       <label className="field">
         静置秒数
         <input
@@ -287,12 +250,56 @@ function ConfigFields({
       <label className="field checkbox-field">
         <input
           type="checkbox"
+          checked={form.enabled}
+          onChange={(event) => onChange({ enabled: event.target.checked })}
+        />
+        启用监控
+      </label>
+      <label className="field checkbox-field">
+        <input
+          type="checkbox"
+          checked={form.notify}
+          onChange={(event) => onChange({ notify: event.target.checked })}
+        />
+        通知
+      </label>
+      {form.media_type === "anime" && (
+        <label className="field checkbox-field">
+          <input
+            type="checkbox"
+            checked={form.acquire_subtitles}
+            onChange={(event) =>
+              onChange({ acquire_subtitles: event.target.checked })
+            }
+          />
+          自动找字幕
+        </label>
+      )}
+      {form.media_type === "anime" && form.acquire_subtitles && (
+        <label className="field">
+          字幕偏好
+          <select
+            value={form.subtitle_variant}
+            onChange={(event) =>
+              onChange({
+                subtitle_variant: event.target.value as "chs" | "cht",
+              })
+            }
+          >
+            <option value="chs">简体</option>
+            <option value="cht">繁体</option>
+          </select>
+        </label>
+      )}
+      <label className="field checkbox-field">
+        <input
+          type="checkbox"
           checked={form.replace_enabled}
           onChange={(event) =>
             onChange({ replace_enabled: event.target.checked })
           }
         />
-        洗版：发现已有旧版本时自动替换/去重
+        洗版
       </label>
       {form.replace_enabled && (
         <>
@@ -343,6 +350,10 @@ function EditConfig({
     library_root: config.library_root,
     media_type: config.media_type,
     stability_seconds: config.stability_seconds,
+    enabled: config.enabled,
+    notify: config.notify,
+    acquire_subtitles: config.acquire_subtitles,
+    subtitle_variant: config.subtitle_variant,
     replace_enabled: config.replace_enabled,
     replace_extra_dirs: config.replace_extra_dirs,
     replace_auto_ratio: config.replace_auto_ratio,
@@ -402,21 +413,6 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
         form={form}
         onChange={(patch) => setForm({ ...form, ...patch })}
       />
-      <label className="field">
-        字幕偏好
-        <select
-          value={form.subtitle_variant}
-          onChange={(event) =>
-            setForm({
-              ...form,
-              subtitle_variant: event.target.value as "chs" | "cht",
-            })
-          }
-        >
-          <option value="chs">简体</option>
-          <option value="cht">繁体</option>
-        </select>
-      </label>
       <div className="form-actions">
         <button type="submit" className="primary">
           添加监控
@@ -442,6 +438,28 @@ function Credentials({
     trash_retention_days: String(settings.trash_retention_days),
   });
   const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    detail: string;
+  } | null>(null);
+
+  async function testLlm() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const body = await api.testLlm();
+      setTestResult(
+        body.ok
+          ? { ok: true, detail: "模型连通" }
+          : { ok: false, detail: body.error ?? "未知错误" },
+      );
+    } catch (thrown) {
+      setTestResult({ ok: false, detail: (thrown as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   const bind = (key: string) => ({
     value: form[key] ?? "",
@@ -521,8 +539,21 @@ function Credentials({
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
           </select>
         </label>
+        <div className="field llm-test">
+          <button type="button" disabled={testing} onClick={testLlm}>
+            {testing ? "测试中…" : "测试模型"}
+          </button>
+          {testResult && (
+            <span className={testResult.ok ? "muted" : "error"}>
+              {testResult.detail}
+            </span>
+          )}
+          <span className="muted">测试使用已保存的模型凭据。</span>
+        </div>
       </div>
       <div className="cred-group">
         <h3>回收区</h3>
@@ -541,7 +572,7 @@ function Credentials({
         </label>
       </div>
       <div className="cred-group">
-        <h3>Telegram</h3>
+        <h3>Telegram 通知</h3>
         {secretField(
           "telegram_bot_token",
           "Bot Token",
