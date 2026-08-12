@@ -34,6 +34,7 @@ const SETTINGS = {
 function mockSettingsApi(config: WatchConfig = CONFIG) {
   const patches: Record<string, unknown>[] = [];
   const puts: Record<string, unknown>[] = [];
+  const posts: Record<string, unknown>[] = [];
   const llmTest = {
     calls: 0,
     response: { ok: true, reply: "ok" } as Record<string, unknown>,
@@ -57,6 +58,15 @@ function mockSettingsApi(config: WatchConfig = CONFIG) {
       if (url.endsWith("/configs") && method === "GET") {
         return { ok: true, status: 200, json: async () => ({ configs: [config] }) };
       }
+      if (url.endsWith("/configs") && method === "POST") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        posts.push(body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ...config, ...body, id: "config-2" }),
+        };
+      }
       if (url.endsWith(`/configs/${config.id}`) && method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         patches.push(body);
@@ -65,7 +75,7 @@ function mockSettingsApi(config: WatchConfig = CONFIG) {
       throw new Error(`unexpected ${method} ${url}`);
     }),
   );
-  return { patches, puts, llmTest };
+  return { patches, puts, posts, llmTest };
 }
 
 describe("settings page", () => {
@@ -133,6 +143,57 @@ describe("settings page", () => {
       replace_extra_dirs: ["/data/anirss"],
       replace_auto_ratio: 1.2,
     });
+  });
+
+  it("keeps the add form collapsed behind a button", async () => {
+    const { posts } = mockSettingsApi();
+
+    render(<SettingsPage />);
+    await screen.findByText("动画收件箱");
+
+    // Collapsed by default: just the button, no form fields.
+    expect(screen.queryByLabelText("名称")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加监控" }));
+    expect(screen.getByLabelText("名称")).toBeInTheDocument();
+
+    // Cancel collapses without creating anything.
+    fireEvent.click(screen.getByText("取消"));
+    expect(screen.queryByLabelText("名称")).not.toBeInTheDocument();
+    expect(posts).toHaveLength(0);
+  });
+
+  it("creates a config through the add form", async () => {
+    const { posts } = mockSettingsApi();
+
+    render(<SettingsPage />);
+    await screen.findByText("动画收件箱");
+
+    fireEvent.click(screen.getByRole("button", { name: "添加监控" }));
+    const form = screen.getByLabelText("名称").closest("form")!;
+    fireEvent.change(within(form).getByLabelText("名称"), {
+      target: { value: "电影收件箱" },
+    });
+    fireEvent.change(within(form).getByLabelText("监控目录"), {
+      target: { value: "/data/movies-inbound" },
+    });
+    fireEvent.change(within(form).getByLabelText("媒体库目录"), {
+      target: { value: "/data/movies" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "添加监控" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({
+      name: "电影收件箱",
+      inbound_root: "/data/movies-inbound",
+      library_root: "/data/movies",
+      media_type: "anime",
+    });
+    // Creation collapses the form back to the button.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("名称")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "添加监控" })).toBeInTheDocument();
   });
 
   it("shows a summary card with a Chinese type tag and enabled state", async () => {
