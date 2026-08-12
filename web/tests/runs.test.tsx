@@ -75,6 +75,24 @@ describe("runs page", () => {
     expect(screen.getByText(/归档 1/)).toBeInTheDocument();
   });
 
+  it("leads with the TMDB title once matched, folder name below", async () => {
+    mockRuns([run()]);
+
+    render(<RunsPage />);
+
+    expect(await screen.findByText("Show (2024)")).toHaveClass("folder");
+    expect(screen.getByText("[Group] Show")).toHaveClass("title");
+  });
+
+  it("shows only the folder name while unidentified", async () => {
+    mockRuns([run({ title: null, year: null, tmdb_id: null })]);
+
+    render(<RunsPage />);
+
+    expect(await screen.findByText("[Group] Show")).toHaveClass("folder");
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
   it("counts the runs that need a human", async () => {
     mockRuns([
       run({ id: "a", state: "needs_attention", result: null }),
@@ -112,6 +130,31 @@ describe("runs page", () => {
     expect(screen.getByText(/缺失 1/)).toBeInTheDocument();
     expect(screen.getByText(/字幕 2/)).toBeInTheDocument();
     expect(screen.getByText(/下载字幕 3/)).toBeInTheDocument();
+  });
+
+  it("reports replacements and folds discards into duplicates", async () => {
+    mockRuns([
+      run({
+        result: {
+          moved: 1,
+          duplicates: ["ep01.mkv"],
+          missing: [],
+          archived: 0,
+          subtitles_moved: 0,
+          subtitles_acquired: 0,
+          subtitle_note: "",
+          replaced: ["ep02.mkv", "ep03.mkv"],
+          discarded: ["ep04.mkv"],
+        },
+      }),
+    ]);
+
+    render(<RunsPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/洗版 2/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/重复 2/)).toBeInTheDocument();
   });
 
   it("says so when there is nothing yet", async () => {
