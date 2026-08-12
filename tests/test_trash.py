@@ -8,6 +8,7 @@ from reeloom.trash import (
     TRASH_DIR,
     TrashError,
     list_trash_entries,
+    prune_trash,
     purge_run_trash,
     trash_relative,
 )
@@ -22,15 +23,17 @@ def _drop(root: Path, run_id: str, relative: str, content: bytes = b"x") -> Path
 
 def test_trash_relative_layout() -> None:
     assert (
-        trash_relative("run-1", "Show (2024)/S01/Show S01E01.mkv")
-        == f"{TRASH_DIR}/run-1/Show (2024)/S01/Show S01E01.mkv"
+        trash_relative("run-1", "library", "Show (2024)/S01/Show S01E01.mkv")
+        == f"{TRASH_DIR}/run-1/library/Show (2024)/S01/Show S01E01.mkv"
     )
 
 
 @pytest.mark.parametrize("bad", ["", ".", "..", "a/b", "a\\b", ".hidden"])
-def test_trash_relative_rejects_bad_run_ids(bad: str) -> None:
+def test_trash_relative_rejects_bad_components(bad: str) -> None:
     with pytest.raises(TrashError):
-        trash_relative(bad, "file.mkv")
+        trash_relative(bad, "library", "file.mkv")
+    with pytest.raises(TrashError):
+        trash_relative("run-1", bad, "file.mkv")
 
 
 def test_list_trash_entries(tmp_path: Path) -> None:
@@ -85,3 +88,24 @@ def test_purge_refuses_symlinked_entry(tmp_path: Path) -> None:
 def test_purge_refuses_run_id_traversal(tmp_path: Path) -> None:
     with pytest.raises(TrashError):
         purge_run_trash(tmp_path, "../victim")
+
+
+def test_prune_removes_empty_skeletons_but_no_files(tmp_path: Path) -> None:
+    kept = _drop(tmp_path, "run-a", "library/S01/a.mkv")
+    (tmp_path / TRASH_DIR / "run-b" / "extra-1" / "Show").mkdir(parents=True)
+
+    prune_trash(tmp_path)
+
+    assert kept.exists()
+    assert not (tmp_path / TRASH_DIR / "run-b").exists()
+
+
+def test_prune_removes_an_empty_trash_dir_entirely(tmp_path: Path) -> None:
+    (tmp_path / TRASH_DIR / "run-a" / "library").mkdir(parents=True)
+    prune_trash(tmp_path)
+    assert not (tmp_path / TRASH_DIR).exists()
+
+
+def test_prune_without_a_trash_dir_is_a_noop(tmp_path: Path) -> None:
+    prune_trash(tmp_path)
+    assert not (tmp_path / TRASH_DIR).exists()

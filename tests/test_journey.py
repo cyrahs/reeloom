@@ -384,13 +384,17 @@ async def test_a_bd_batch_washes_out_the_tv_version(
     # The BD version is what the library holds now.
     assert (season / "Show S01E01.mkv").stat().st_size == 999
     assert (season / "Show S01E02.mkv").stat().st_size == 999
-    # Both old instances went to their roots' trash areas, nothing deleted.
+    # Both old instances went to the watch root's trash area, nothing deleted.
+    trash = inbound / TRASH_DIR / run_id
     assert (
-        library / TRASH_DIR / run_id / CANONICAL / "S01" / "Show S01E01.mkv"
+        trash / "library" / CANONICAL / "S01" / "Show S01E01.mkv"
     ).stat().st_size == 16
     assert (
-        extra / TRASH_DIR / run_id / "Show" / "Season 1" / "Show - 01.mp4"
+        trash / "extra-1" / "Show" / "Season 1" / "Show - 01.mp4"
     ).is_file()
+    # The library holds nothing but media now.
+    assert not (library / TRASH_DIR).exists()
+    assert not (extra / TRASH_DIR).exists()
     assert not (extra / "Show" / "Season 1" / "Show - 01.mp4").exists()
     assert run.result.moved == 2
     assert len(run.result.replaced) == 4
@@ -436,6 +440,7 @@ async def test_covered_episodes_are_discarded_while_new_ones_import(
         inbound
         / TRASH_DIR
         / run_id
+        / "inbound"
         / "[Group] Show S1-S2"
         / "[Group] Show - 01.mkv"
     ).is_file()
@@ -491,5 +496,6 @@ async def test_a_gray_zone_upgrade_waits_for_the_user_and_obeys_them(
     assert run.state is RunState.DONE
     assert (library / CANONICAL / "S01" / "Show S01E01.mkv").stat().st_size == 110
     assert (
-        library / TRASH_DIR / run_id / CANONICAL / "S01" / "Show S01E01.mkv"
+        inbound / TRASH_DIR / run_id / "library" / CANONICAL / "S01"
+        / "Show S01E01.mkv"
     ).stat().st_size == 100

@@ -311,6 +311,10 @@ function ReplacePanel({
   return (
     <section>
       <h2>洗版</h2>
+      <p className="muted">
+        被淘汰的文件会移回监控目录下的 .reeloom-trash
+        回收区，保留期满后自动删除。
+      </p>
       {decision.groups.map((group, index) => (
         <GroupRow key={index} group={group} />
       ))}

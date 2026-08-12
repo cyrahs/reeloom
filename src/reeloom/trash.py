@@ -1,13 +1,18 @@
 """The trash area for version replacement.
 
 A replaced or duplicate file is never deleted in the execution path: it is
-renamed into ``<root>/.reeloom-trash/<run-id>/…`` under the same root it came
-from — same filesystem, hidden from the scanner and from media servers — and
-recorded in the run's ledger like any other move, so a revert can bring it
-back for as long as it exists. The periodic purge in the worker is the only
-place trash is actually deleted, once the run is settled and the retention
-window has passed.
+renamed into ``<inbound>/.reeloom-trash/<run-id>/<origin>/…`` under the watch
+root — never under the library, because media servers scan the library and a
+dot-directory there does not make the displaced version disappear from them —
+and recorded in the run's ledger like any other move, so a revert can bring
+it back for as long as it exists. The ``origin`` segment names where the file
+came from (``library``, ``inbound``, ``extra-1`` …) so displaced files from
+different roots cannot collide. The library and any extra directories must
+therefore share a filesystem with the watch root; a cross-filesystem trash
+move fails loudly instead of copying.
 
+The periodic purge in the worker is the only place trash is actually deleted,
+once the run is settled and the retention window has passed.
 ``purge_run_trash`` is the single hard-delete entry point in the codebase.
 """
 
@@ -24,18 +29,24 @@ from reeloom.models import ReeloomError
 _LOGGER = logging.getLogger(__name__)
 
 TRASH_DIR = ".reeloom-trash"
-"""Hidden per-root holding area; dot-prefixed so nothing else ever scans it."""
+"""Hidden holding area under the watch root; dot-prefixed so the scanner
+never picks trashed files back up as new arrivals."""
 
 
 class TrashError(ReeloomError):
     pass
 
 
-def trash_relative(run_id: str, relative: str) -> str:
-    """Root-relative trash destination for a file this run displaces."""
+def trash_relative(run_id: str, origin: str, relative: str) -> str:
+    """Inbound-relative trash destination for a file this run displaces.
 
-    _check_run_id(run_id)
-    return f"{TRASH_DIR}/{run_id}/{PurePosixPath(relative).as_posix()}"
+    ``origin`` names the root the file came from so equal relative paths
+    from different roots land side by side instead of colliding.
+    """
+
+    _check_component(run_id)
+    _check_component(origin)
+    return f"{TRASH_DIR}/{run_id}/{origin}/{PurePosixPath(relative).as_posix()}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +93,7 @@ def purge_run_trash(root: Path, run_id: str) -> tuple[int, int]:
     symlink at any level of the addressed path.
     """
 
-    _check_run_id(run_id)
+    _check_component(run_id)
     trash_root = root / TRASH_DIR
     if trash_root.is_symlink() or not trash_root.is_dir():
         return (0, 0)
@@ -101,15 +112,34 @@ def purge_run_trash(root: Path, run_id: str) -> tuple[int, int]:
     return (files, size)
 
 
-def _check_run_id(run_id: str) -> None:
-    if (
-        not run_id
-        or run_id in (".", "..")
-        or "/" in run_id
-        or "\\" in run_id
-        or run_id.startswith(".")
+def prune_trash(root: Path) -> None:
+    """Remove empty directories under the trash area, and the area itself.
+
+    Reverts and replayed moves leave empty directory skeletons behind; this
+    keeps the watch root clean without ever touching a file — only ``rmdir``,
+    which fails harmlessly on anything non-empty.
+    """
+
+    trash_root = root / TRASH_DIR
+    if trash_root.is_symlink() or not trash_root.is_dir():
+        return
+    for current, directories, _ in os.walk(
+        trash_root, topdown=False, followlinks=False
     ):
-        raise TrashError("invalid_run_id", run_id=run_id)
+        for name in directories:
+            _try_rmdir(Path(current) / name)
+    _try_rmdir(trash_root)
+
+
+def _check_component(name: str) -> None:
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or name.startswith(".")
+    ):
+        raise TrashError("invalid_trash_component", component=name)
 
 
 def _measure(folder: Path) -> tuple[int, int]:

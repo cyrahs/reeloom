@@ -316,6 +316,12 @@ function ConfigFields({
             dirs={form.replace_extra_dirs}
             onChange={(replace_extra_dirs) => onChange({ replace_extra_dirs })}
           />
+          <p className="muted">
+            被替换/判定重复的文件会移回监控目录下的隐藏回收区
+            .reeloom-trash（不放在媒体库内，避免被 Emby
+            继续扫到），保留期满后自动删除，清空后目录自动消失。因此媒体库
+            和额外目录需与监控目录在同一文件系统，否则洗版移动会报错转入待处理。
+          </p>
         </>
       )}
     </>
@@ -529,7 +535,7 @@ function Credentials({
             {...bind("trash_retention_days")}
           />
           <span className="muted">
-            被洗版替换/判定重复的文件先移入各根目录下的隐藏回收区
+            被洗版替换/判定重复的文件先移回监控目录下的隐藏回收区
             .reeloom-trash，到期后自动删除；0 表示任务完成即删。
           </span>
         </label>

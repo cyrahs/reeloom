@@ -35,7 +35,12 @@ from reeloom.scanner import (
     folder_shape,
     snapshot_folder,
 )
-from reeloom.trash import TrashError, list_trash_entries, purge_run_trash
+from reeloom.trash import (
+    TrashError,
+    list_trash_entries,
+    prune_trash,
+    purge_run_trash,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -475,6 +480,7 @@ class Worker:
         for root in await self._trash_roots():
             for entry in await asyncio.to_thread(list_trash_entries, root):
                 await self._purge_entry(root, entry.run_id, entry.mtime, cutoff)
+            await asyncio.to_thread(prune_trash, root)
 
     async def _purge_entry(
         self, root: Path, run_id: str, mtime: float, cutoff: float
@@ -522,26 +528,14 @@ class Worker:
         )
         if retention != 0:
             return
-        seen: set[str] = set()
-        for value in (
-            config.inbound_root,
-            config.library_root,
-            *config.replace_extra_dirs,
-        ):
-            if value in seen:
-                continue
-            seen.add(value)
-            await self._purge_run_trash(Path(value), run.id)
+        await self._purge_run_trash(Path(config.inbound_root), run.id)
 
     async def _trash_roots(self) -> list[Path]:
+        # Trash lives only under the watch roots; the library stays clean
+        # because media servers scan it.
         roots: dict[str, Path] = {}
         for config in await self._db.list_configs():
-            for value in (
-                config.inbound_root,
-                config.library_root,
-                *config.replace_extra_dirs,
-            ):
-                roots.setdefault(value, Path(value))
+            roots.setdefault(config.inbound_root, Path(config.inbound_root))
         return list(roots.values())
 
     async def _notify(self, run_id: str, config: WatchConfig) -> None:

@@ -604,22 +604,22 @@ def settled_run(config: WatchConfig, run_id: str, state: RunState) -> Run:
 async def test_purge_removes_expired_trash_of_settled_runs(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:
-    _, library = roots
+    inbound, _ = roots
     database, worker = build(config)
     run_id = str(uuid_module.uuid4())
     database.runs[run_id] = settled_run(config, run_id, RunState.DONE)
-    path = drop_trash(library, run_id)
+    path = drop_trash(inbound, run_id)
 
     await worker._purge_pass()
 
     assert not path.exists()
-    assert not (library / TRASH_DIR).exists()
+    assert not (inbound / TRASH_DIR).exists()
 
 
 async def test_purge_keeps_recent_and_active_trash(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:
-    inbound, library = roots
+    inbound, _ = roots
     database, worker = build(config)
     fresh_id = str(uuid_module.uuid4())
     active_id = str(uuid_module.uuid4())
@@ -627,7 +627,7 @@ async def test_purge_keeps_recent_and_active_trash(
     database.runs[active_id] = settled_run(
         config, active_id, RunState.REVERTING
     )
-    fresh = drop_trash(library, fresh_id, age_days=1.0)
+    fresh = drop_trash(inbound, fresh_id, age_days=1.0)
     active = drop_trash(inbound, active_id, age_days=30.0)
 
     await worker._purge_pass()
@@ -639,10 +639,10 @@ async def test_purge_keeps_recent_and_active_trash(
 async def test_purge_covers_orphans_and_leaves_foreign_dirs(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:
-    _, library = roots
+    inbound, _ = roots
     database, worker = build(config)
-    orphan = drop_trash(library, str(uuid_module.uuid4()))  # run deleted
-    foreign = drop_trash(library, "not-a-run-id")
+    orphan = drop_trash(inbound, str(uuid_module.uuid4()))  # run deleted
+    foreign = drop_trash(inbound, "not-a-run-id")
 
     await worker._purge_pass()
 
@@ -650,9 +650,13 @@ async def test_purge_covers_orphans_and_leaves_foreign_dirs(
     assert foreign.exists()  # never delete what reeloom did not write
 
 
-async def test_purge_reaches_extra_dirs(
+async def test_purge_never_reaches_outside_the_watch_roots(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    """Trash lives only under the watch root now; a stray trash directory in
+    the library or an extra dir is not reeloom's to delete."""
+
+    _, library = roots
     extra = tmp_path / "anirss"
     extra.mkdir()
     rconfig = replace(
@@ -661,11 +665,13 @@ async def test_purge_reaches_extra_dirs(
     database, worker = build(rconfig)
     run_id = str(uuid_module.uuid4())
     database.runs[run_id] = settled_run(rconfig, run_id, RunState.DONE)
-    path = drop_trash(extra, run_id)
+    stray_library = drop_trash(library, run_id)
+    stray_extra = drop_trash(extra, run_id)
 
     await worker._purge_pass()
 
-    assert not path.exists()
+    assert stray_library.exists()
+    assert stray_extra.exists()
 
 
 async def test_retention_zero_purges_when_the_run_settles(
@@ -678,7 +684,7 @@ async def test_retention_zero_purges_when_the_run_settles(
 
     await worker.scan()
     run_id = next(iter(database.runs))
-    trash = drop_trash(library, run_id, age_days=0.0)
+    trash = drop_trash(inbound, run_id, age_days=0.0)
     await drain(worker)
 
     assert database.runs[run_id].state is RunState.DONE
@@ -688,13 +694,13 @@ async def test_retention_zero_purges_when_the_run_settles(
 async def test_purge_passes_are_rate_limited(
     config: WatchConfig, roots: tuple[Path, Path]
 ) -> None:
-    _, library = roots
+    inbound, _ = roots
     database, worker = build(config)
     run_id = str(uuid_module.uuid4())
     database.runs[run_id] = settled_run(config, run_id, RunState.DONE)
 
     await worker._maybe_purge()
-    path = drop_trash(library, run_id)
+    path = drop_trash(inbound, run_id)
     await worker._maybe_purge()  # inside the hourly window: no pass runs
 
     assert path.exists()
