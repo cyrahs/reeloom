@@ -20,9 +20,8 @@ import os
 import re
 from dataclasses import replace as dc_replace
 from pathlib import Path, PurePosixPath
-from typing import Awaitable, Callable
 
-from reeloom.adapters.ffprobe import Probe, probe_video
+from reeloom.adapters.ffprobe import Probe, Prober, probe_video
 from reeloom.adapters.llm import Conversation
 from reeloom.library import folder_inventory, title_matches_folder
 from reeloom.models import (
@@ -67,8 +66,6 @@ naming the one folder that clearly holds this exact series (any language \
 of its title counts), or {"index": null} if none clearly does. When in \
 doubt, answer null — a wrong match is far worse than no match.
 """
-
-Prober = Callable[[Path], Awaitable[Probe | None]]
 
 
 class ReplaceComparer:

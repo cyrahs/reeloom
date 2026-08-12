@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reeloom.adapters.archive import extract_subtitles, find_sevenzip, is_archive
+from reeloom.adapters.ffprobe import Probe, ProbeError, SubtitleStream
 from reeloom.adapters.llm import ModelError
 from reeloom.models import (
     EpisodeSpan,
@@ -31,7 +32,7 @@ from reeloom.server.subtitles import (
     parse_special_number,
 )
 from tests.conftest import make_files
-from tests.fakes import FakeDatabase, ScriptedModel, StubClients, call
+from tests.fakes import FakeDatabase, FakeProber, ScriptedModel, StubClients, call
 
 IDENTITY = MediaIdentity(MediaType.ANIME, 123, "Show", 2024)
 LIBRARY_FOLDER = "Show (2024) {tmdb-123}"
@@ -143,26 +144,111 @@ def special_move(episode: int) -> Move:
     )
 
 
-def test_only_episodes_actually_lacking_a_subtitle_are_wanted(
+async def test_only_episodes_actually_lacking_a_subtitle_are_wanted(
     roots: tuple[Path, Path],
 ) -> None:
     _, library = roots
     season = library / LIBRARY_FOLDER / "S01"
     make_files(season, "Show S01E01.mkv", "Show S01E02.mkv", "Show S01E01.chs.ass")
     plan = Plan(identity=IDENTITY, moves=(video_move(1), video_move(2)))
+    prober = FakeProber()
 
-    wanted = _episodes_missing_subtitles(plan, library)
+    wanted = await _episodes_missing_subtitles(plan, library, prober)
 
     assert set(wanted) == {(False, 2)}
     assert wanted[(False, 2)] == EpisodeSpan(1, 2, 2)
+    # The sidecar settles episode 1 without spending a probe on it.
+    assert prober.seen == [str(season / "Show S01E02.mkv")]
 
 
-def test_a_video_that_never_landed_is_not_wanted(
+async def test_a_video_that_never_landed_is_not_wanted(
     roots: tuple[Path, Path],
 ) -> None:
     _, library = roots
     plan = Plan(identity=IDENTITY, moves=(video_move(1),))
-    assert _episodes_missing_subtitles(plan, library) == {}
+    assert await _episodes_missing_subtitles(plan, library, FakeProber()) == {}
+
+
+def probe_with(*streams: SubtitleStream) -> Probe:
+    return Probe(
+        height=1080,
+        duration_seconds=1420.0,
+        bit_rate=8_000_000,
+        video_codec="hevc",
+        subtitle_streams=streams,
+    )
+
+
+async def test_an_embedded_chinese_track_counts_as_having_subtitles(
+    roots: tuple[Path, Path],
+) -> None:
+    _, library = roots
+    season = library / LIBRARY_FOLDER / "S01"
+    make_files(season, "Show S01E01.mkv", "Show S01E02.mkv")
+    plan = Plan(identity=IDENTITY, moves=(video_move(1), video_move(2)))
+    prober = FakeProber(
+        {
+            "Show S01E01.mkv": probe_with(
+                SubtitleStream(
+                    codec="ass", language="chi", title="简体中文", forced=False
+                )
+            )
+        }
+    )
+
+    wanted = await _episodes_missing_subtitles(plan, library, prober)
+
+    assert set(wanted) == {(False, 2)}
+
+
+async def test_foreign_forced_or_untagged_tracks_do_not_count(
+    roots: tuple[Path, Path],
+) -> None:
+    _, library = roots
+    season = library / LIBRARY_FOLDER / "S01"
+    make_files(season, "Show S01E01.mkv", "Show S01E02.mkv", "Show S01E03.mkv")
+    plan = Plan(
+        identity=IDENTITY, moves=(video_move(1), video_move(2), video_move(3))
+    )
+    prober = FakeProber(
+        {
+            "Show S01E01.mkv": probe_with(
+                SubtitleStream(
+                    codec="subrip", language="eng", title=None, forced=False
+                )
+            ),
+            # A forced Chinese track only covers signs, not the dialogue.
+            "Show S01E02.mkv": probe_with(
+                SubtitleStream(
+                    codec="ass", language="chi", title=None, forced=True
+                )
+            ),
+            "Show S01E03.mkv": probe_with(
+                SubtitleStream(
+                    codec="ass", language=None, title=None, forced=False
+                )
+            ),
+        }
+    )
+
+    wanted = await _episodes_missing_subtitles(plan, library, prober)
+
+    assert set(wanted) == {(False, 1), (False, 2), (False, 3)}
+
+
+async def test_a_failed_probe_still_wants_subtitles(
+    roots: tuple[Path, Path],
+) -> None:
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    plan = Plan(identity=IDENTITY, moves=(video_move(1),))
+
+    async def prober(path: Path) -> Probe | None:
+        raise ProbeError("probe_failed", file=path.name)
+
+    assert set(await _episodes_missing_subtitles(plan, library, prober)) == {
+        (False, 1)
+    }
 
 
 # ---- archive extraction --------------------------------------------------
@@ -313,7 +399,7 @@ async def test_acquired_subtitles_are_published_next_to_their_episodes(
         call("select_release", attachment_id=99, reason="batch"),
     )
     service = SubtitleAcquisition(
-        database, StubClients(model, None), tmp_path / "work"
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
     )
 
     result = await service.acquire(run, config, RunResult(moved=2))
@@ -370,6 +456,7 @@ async def test_an_existing_subtitle_is_never_overwritten(
             None,
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult())
@@ -404,6 +491,7 @@ async def test_giving_up_leaves_the_run_finished(
             ScriptedModel(call("give_up", reason="nothing matches")), None
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))
@@ -429,7 +517,10 @@ async def test_a_model_failure_becomes_a_short_note(
     database = FakeDatabase([config])
     run = make_run(database, config, 1)
     service = SubtitleAcquisition(
-        database, StubClients(FailingModel(), None), tmp_path / "work"
+        database,
+        StubClients(FailingModel(), None),
+        tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))
@@ -450,7 +541,35 @@ async def test_nothing_happens_when_every_episode_already_has_subtitles(
     )
     database = FakeDatabase([config])
     run = make_run(database, config, 1)
-    service = SubtitleAcquisition(database, StubClients(None, None), tmp_path)
+    service = SubtitleAcquisition(
+        database, StubClients(None, None), tmp_path, prober=FakeProber()
+    )
+
+    result = await service.acquire(run, config, RunResult(moved=1))
+
+    assert result.subtitles_acquired == 0
+    assert result.subtitle_note == ""
+
+
+async def test_nothing_happens_when_subtitles_are_embedded(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path
+) -> None:
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    database = FakeDatabase([config])
+    run = make_run(database, config, 1)
+    prober = FakeProber(
+        {
+            "Show S01E01.mkv": probe_with(
+                SubtitleStream(
+                    codec="ass", language="chi", title="简体中文", forced=False
+                )
+            )
+        }
+    )
+    service = SubtitleAcquisition(
+        database, StubClients(None, None), tmp_path, prober=prober
+    )
 
     result = await service.acquire(run, config, RunResult(moved=1))
 
@@ -498,7 +617,7 @@ async def test_specials_and_episodes_with_the_same_number_are_routed_apart(
         call("select_release", attachment_id=99, reason="covers TV and OVA"),
     )
     service = SubtitleAcquisition(
-        database, StubClients(model, None), tmp_path / "work"
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
     )
 
     result = await service.acquire(run, config, RunResult(moved=2))
@@ -558,7 +677,7 @@ async def test_a_tv_only_release_cannot_satisfy_a_special(
         call("give_up", reason="only TV episode subtitles exist"),
     )
     service = SubtitleAcquisition(
-        database, StubClients(model, None), tmp_path / "work"
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))
@@ -613,6 +732,7 @@ async def test_a_dual_variant_batch_counts_episodes_not_files(
             None,
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=2))
@@ -650,6 +770,7 @@ async def test_partial_coverage_reports_missing_episodes(
             None,
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=2))
@@ -729,7 +850,7 @@ async def test_a_non_preferred_release_is_retried_with_feedback(
         call("select_release", attachment_id=100),
     )
     service = SubtitleAcquisition(
-        database, StubClients(model, None), tmp_path / "work"
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))
@@ -778,6 +899,7 @@ async def test_reselecting_the_same_attachment_accepts_it(
             None,
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))
@@ -832,6 +954,7 @@ async def test_exhausted_attempts_publish_the_best_coverage(
             None,
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=2))
@@ -874,6 +997,7 @@ async def test_giving_up_after_a_download_publishes_nothing(
             None,
         ),
         tmp_path / "work",
+        prober=FakeProber(),
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))
@@ -910,7 +1034,7 @@ async def test_a_dud_archive_consumes_an_attempt_then_a_good_one_succeeds(
         call("select_release", attachment_id=100),
     )
     service = SubtitleAcquisition(
-        database, StubClients(model, None), tmp_path / "work"
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
     )
 
     result = await service.acquire(run, config, RunResult(moved=1))

@@ -21,6 +21,7 @@ from typing import Any
 
 from reeloom.adapters.acgrip import AcgripClient, AcgripError, Attachment, Thread
 from reeloom.adapters.archive import ArchiveError, extract_subtitles, is_archive
+from reeloom.adapters.ffprobe import Prober, probe_video
 from reeloom.adapters.llm import Conversation, ModelError
 from reeloom.agent.loop import Escalate, Finished, run_loop
 from reeloom.executor import FilesystemExecutor
@@ -38,7 +39,7 @@ from reeloom.models import (
 from reeloom.models import Move
 from reeloom.naming import episode_path, span_from_name
 from reeloom.scanner import ACQUIRED_DIR, ARCHIVE_BUCKET, SUBTITLE_EXTENSIONS
-from reeloom.subtitles import detect_variant_for_file
+from reeloom.subtitles import detect_variant_for_file, variant_from_stream_tags
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -344,10 +345,18 @@ def _satisfies(attempt: _Attempt, preferred: SubtitleVariant) -> bool:
 class SubtitleAcquisition:
     """Implements the worker's ``SubtitleService`` protocol."""
 
-    def __init__(self, database, clients, work_dir: Path) -> None:
+    def __init__(
+        self,
+        database,
+        clients,
+        work_dir: Path,
+        *,
+        prober: Prober = probe_video,
+    ) -> None:
         self._db = database
         self._clients = clients
         self._work_dir = work_dir
+        self._prober = prober
         self._executor = FilesystemExecutor(database)
 
     async def acquire(
@@ -356,7 +365,9 @@ class SubtitleAcquisition:
         if run.plan is None:
             return result
 
-        wanted = _episodes_missing_subtitles(run.plan, Path(config.library_root))
+        wanted = await _episodes_missing_subtitles(
+            run.plan, Path(config.library_root), self._prober
+        )
         if not wanted:
             return replace(result, subtitle_note="")
         _LOGGER.info(
@@ -666,11 +677,13 @@ def _library_folder(plan: Plan) -> str:
     raise SubtitleError("plan_has_no_media_moves")
 
 
-def _episodes_missing_subtitles(
-    plan: Plan, library_root: Path
+async def _episodes_missing_subtitles(
+    plan: Plan, library_root: Path, prober: Prober = probe_video
 ) -> dict[tuple[bool, int], EpisodeSpan]:
-    """Episodes whose video is in the library with no Chinese subtitle beside it.
+    """Episodes whose video is in the library with no Chinese subtitle.
 
+    A sidecar file beside the video counts, and so does a Chinese subtitle
+    track muxed into the container; only videos with neither are wanted.
     Keyed by (is-special, episode) so a season-0 special and a TV episode
     with the same number stay distinct wants.
     """
@@ -687,8 +700,14 @@ def _episodes_missing_subtitles(
         if _has_subtitle(destination):
             continue
         span = span_from_name(destination.name)
-        if span is not None:
-            wanted[_wanted_key(span)] = span
+        if span is None:
+            continue
+        if await _has_embedded_chinese(destination, prober):
+            _LOGGER.info(
+                "%s carries an embedded Chinese subtitle track", destination.name
+            )
+            continue
+        wanted[_wanted_key(span)] = span
     return wanted
 
 
@@ -699,3 +718,21 @@ def _has_subtitle(video: Path) -> bool:
             if (video.parent / f"{stem}.{variant.value}{extension}").exists():
                 return True
     return False
+
+
+async def _has_embedded_chinese(video: Path, prober: Prober) -> bool:
+    """Unknown is False: a missing ffprobe, a failed probe and untagged
+    tracks all fall back to acquiring external subtitles."""
+
+    try:
+        probe = await prober(video)
+    except (ReeloomError, OSError) as error:
+        _LOGGER.debug("subtitle probe failed for %s: %s", video.name, error)
+        return False
+    if probe is None:
+        return False
+    return any(
+        not stream.forced
+        and variant_from_stream_tags(stream.language, stream.title) is not None
+        for stream in probe.subtitle_streams
+    )

@@ -239,7 +239,6 @@ function Moves({ run }: { run: RunDetail }) {
               {item.move.source_path.split("/").pop()}
             </code>
             <code className="to">{item.move.dest_path}</code>
-            <span className="tag">下载字幕</span>
           </li>
         ))}
       </ul>
@@ -330,19 +329,27 @@ function spanLabel(span: EpisodeSpan | null): string {
 function GroupRow({ group }: { group: ReplaceGroup }) {
   const title =
     group.season === null ? "电影" : `第 ${group.season} 季`;
+  const head = (
+    <>
+      <strong>{title}</strong>
+      <span className={`tag ${group.verdict}`}>
+        {VERDICT_LABEL[group.verdict]}
+      </span>
+      {group.ratio !== null && <span>体积比 {group.ratio.toFixed(2)}</span>}
+      {group.overlap.length > 0 && (
+        <span className="muted">{QUALITY_LABEL[group.quality]}</span>
+      )}
+      {group.new_episodes.length > 0 && (
+        <span className="muted">新增 {group.new_episodes.length} 集</span>
+      )}
+    </>
+  );
+  if (group.overlap.length === 0) {
+    return <div className="replace-group replace-summary">{head}</div>;
+  }
   return (
     <details className="replace-group">
-      <summary>
-        <strong>{title}</strong>
-        <span className={`tag ${group.verdict}`}>
-          {VERDICT_LABEL[group.verdict]}
-        </span>
-        {group.ratio !== null && <span>体积比 {group.ratio.toFixed(2)}</span>}
-        <span className="muted">{QUALITY_LABEL[group.quality]}</span>
-        {group.new_episodes.length > 0 && (
-          <span className="muted">新增 {group.new_episodes.length} 集</span>
-        )}
-      </summary>
+      <summary>{head}</summary>
       <ul className="replace-episodes">
         {group.overlap.map((item) => (
           <li key={item.candidate_id}>

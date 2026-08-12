@@ -473,7 +473,8 @@ describe("run detail page", () => {
     expect(
       screen.getByText("Show (2024) {tmdb-123}/S01/Show S01E01.chs.ass"),
     ).toBeInTheDocument();
-    expect(screen.getByText("下载字幕")).toBeInTheDocument();
+    // Acquired subtitles render like ordinary subtitle moves: no tag.
+    expect(screen.queryByText("下载字幕")).not.toBeInTheDocument();
     // Executed media moves already show as plan moves; not repeated. A
     // non-moved acquired entry is not shown either.
     expect(screen.getAllByText(/Show S01E01\.mkv/)).toHaveLength(1);
@@ -585,6 +586,61 @@ describe("run detail page", () => {
     await waitFor(() =>
       expect(posts).toContain("/api/runs/run-1/replace"),
     );
+  });
+
+  it("omits the quality tag for groups with nothing to compare", async () => {
+    const decision: ReplaceDecision = {
+      groups: [
+        {
+          season: 1,
+          verdict: "import",
+          ratio: null,
+          quality: "unknown",
+          overlap: [],
+          new_episodes: [1, 2],
+          reason: "no_overlap",
+        },
+        {
+          season: 2,
+          verdict: "manual",
+          ratio: 1.08,
+          quality: "better",
+          overlap: [
+            {
+              span: { season: 2, episode_start: 1, episode_end: 1 },
+              candidate_id: "V1",
+              incoming_bytes: 110,
+              existing: [
+                {
+                  root: "library",
+                  extra_base: null,
+                  relative_path:
+                    "Show (2024) {tmdb-123}/S02/Show S02E01.mkv",
+                  size_bytes: 100,
+                  span: { season: 2, episode_start: 1, episode_end: 1 },
+                },
+              ],
+              existing_bytes: 100,
+            },
+          ],
+          new_episodes: [],
+          reason: "ambiguous_upgrade",
+        },
+      ],
+      existing_subtitles: [],
+      needs_confirmation: false,
+      resolution: null,
+    };
+    mockDetail(detail({ replace_decision: decision }));
+
+    render(<RunDetailPage runId="run-1" />);
+
+    const importTag = await screen.findByText("全新入库");
+    expect(screen.queryByText("画质未知")).not.toBeInTheDocument();
+    expect(screen.getByText("画质更好")).toBeInTheDocument();
+    // Nothing to expand for a pure import, so it is a plain row.
+    expect(importTag.closest("details")).toBeNull();
+    expect(screen.getByText("需人工确认").closest("details")).not.toBeNull();
   });
 
   it("hides the resolve buttons once the run moved on", async () => {
