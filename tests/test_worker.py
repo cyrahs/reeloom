@@ -431,6 +431,77 @@ async def test_subtitle_failure_never_blocks_a_finished_run(
     assert "acgrip down" in run.result.subtitle_note
 
 
+async def test_retrying_an_executed_run_keeps_the_recorded_summary(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+
+    class FlakySubtitles:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def acquire(self, run, config, result):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("acgrip down")
+            return replace(result, subtitles_acquired=1, subtitle_note="")
+
+    ledger_move = ExecutedMove(
+        Move(
+            kind=MoveKind.MEDIA,
+            source_root=Root.INBOUND,
+            source_path="Show/ep01.mkv",
+            dest_root=Root.LIBRARY,
+            dest_path="Show (2024) {tmdb-1}/S01/Show S01E01.mkv",
+        ),
+        MoveOutcome.MOVED,
+    )
+
+    class IdempotentExecutor(StubExecutor):
+        async def execute(self, run: Run, config: WatchConfig) -> RunResult:
+            self.executed.append(run.id)
+            if run.executed_moves:
+                # The replay pass finds everything already done.
+                return RunResult()
+            await database.append_executed(run.id, ledger_move)
+            return RunResult(
+                moved=3,
+                archived=2,
+                duplicates=("dup.mkv",),
+                missing=("gone.mkv",),
+            )
+
+    subtitles = FlakySubtitles()
+    database, worker = build(
+        replace(config, acquire_subtitles=True),
+        executor=IdempotentExecutor(),
+        subtitles=subtitles,
+    )
+    await drain(worker)
+    run_id = next(iter(database.runs))
+    settled = database.runs[run_id]
+    assert settled.state is RunState.DONE
+    assert settled.result is not None and settled.result.moved == 3
+
+    # The retry endpoint re-enters EXECUTING; the replay must keep the
+    # summary while the subtitle stage gets its second chance.
+    await database.set_state(run_id, RunState.EXECUTING)
+    await drain(worker)
+
+    retried = database.runs[run_id]
+    assert retried.state is RunState.DONE
+    assert subtitles.calls == 2
+    assert retried.result == RunResult(
+        moved=3,
+        archived=2,
+        duplicates=("dup.mkv",),
+        # Missing files are re-derived every pass, not accumulated.
+        missing=(),
+        subtitles_acquired=1,
+    )
+
+
 # ---- version replacement routing ----------------------------------------
 
 

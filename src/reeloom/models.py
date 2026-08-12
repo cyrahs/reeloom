@@ -8,7 +8,7 @@ so they are kept small and obvious.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Self
 
@@ -380,6 +380,34 @@ class RunResult:
             replaced=tuple(payload.get("replaced", ())),
             discarded=tuple(payload.get("discarded", ())),
         )
+
+    def merge_replay(self, later: RunResult) -> RunResult:
+        """Fold a later execution pass into this recorded summary.
+
+        Execution is forward-only: a replay recognises earlier work as
+        already done and counts only what it newly did, so the counters add
+        and the name lists grow. ``missing`` is re-derived from the whole
+        plan on every pass, so the later value stands alone. The subtitle
+        acquisition fields stay untouched — acquisition runs after execution
+        and rewrites them itself.
+        """
+
+        return replace(
+            self,
+            moved=self.moved + later.moved,
+            duplicates=_merged_names(self.duplicates, later.duplicates),
+            missing=later.missing,
+            archived=self.archived + later.archived,
+            subtitles_moved=self.subtitles_moved + later.subtitles_moved,
+            replaced=_merged_names(self.replaced, later.replaced),
+            discarded=_merged_names(self.discarded, later.discarded),
+        )
+
+
+def _merged_names(
+    earlier: tuple[str, ...], later: tuple[str, ...]
+) -> tuple[str, ...]:
+    return earlier + tuple(name for name in later if name not in earlier)
 
 
 @dataclass(frozen=True, slots=True)
