@@ -51,6 +51,10 @@ jobs:
           docker run --rm --entrypoint /usr/bin/7zz reeloom:ci i | head -3
           docker run --rm --entrypoint python reeloom:ci -c \
             "import reeloom.server.main, reeloom.executor, reeloom.adapters.acgrip; print('imports ok')"
+          # The image's own ffmpeg/ffprobe must satisfy the probe adapter's
+          # contract (fixed argv, JSON fields the decision engine reads).
+          docker run --rm -v "$PWD/scripts:/scripts:ro" \
+            --entrypoint python reeloom:ci /scripts/check_ffprobe_runtime.py
 
   publish:
     if: github.event_name != 'pull_request'

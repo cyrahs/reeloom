@@ -28,8 +28,8 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked
 
-      - name: Install 7-Zip for the archive tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends p7zip-full
+      - name: Install 7-Zip and ffmpeg for the adapter tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends p7zip-full ffmpeg
 
       - name: Run the offline suite
         run: uv run pytest -q -m "not postgres"
