@@ -239,7 +239,6 @@ function Moves({ run }: { run: RunDetail }) {
               {item.move.source_path.split("/").pop()}
             </code>
             <code className="to">{item.move.dest_path}</code>
-            <span className="tag">下载字幕</span>
           </li>
         ))}
       </ul>
