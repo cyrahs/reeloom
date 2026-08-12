@@ -890,6 +890,77 @@ ul {
   white-space: nowrap;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  grid-column: 1 / -1;
+}
+
+.extra-dirs {
+  grid-column: 1 / -1;
+}
+
+.extra-dirs .path-row {
+  display: flex;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.extra-dirs .path-row .field {
+  flex: 1;
+}
+
+.extra-dirs > button {
+  justify-self: start;
+}
+
+/* ---- Version replacement ---- */
+
+.replace-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.replace-group summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.replace-group .tag.replace {
+  background: color-mix(in srgb, var(--ok, #16a34a) 18%, transparent);
+}
+
+.replace-group .tag.manual {
+  background: color-mix(in srgb, var(--warn, #d97706) 22%, transparent);
+}
+
+.replace-episodes {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.84rem;
+}
+
+.replace-episodes li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.replace-episodes .name {
+  font-weight: 600;
+  min-width: 5rem;
+}
+
 /* ---- Directory picker ---- */
 
 .modal-backdrop {

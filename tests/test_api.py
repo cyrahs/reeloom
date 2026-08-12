@@ -300,6 +300,74 @@ async def test_a_settled_run_can_be_deleted(client, database, config) -> None:
     assert (await client.delete("/api/runs/run-1", headers=AUTH)).status_code == 200
 
 
+# ---- replacement confirmations ------------------------------------------
+
+
+async def add_parked_replacement(database: FakeDatabase, config: WatchConfig) -> Run:
+    return await add_run(
+        database,
+        config,
+        state=RunState.NEEDS_ATTENTION,
+        error={"code": "replace_confirmation", "groups": []},
+        extra={"replace": {"groups": [], "resolution": None}},
+    )
+
+
+async def test_resolving_a_parked_replacement(client, database, config) -> None:
+    await add_parked_replacement(database, config)
+
+    response = await client.post(
+        "/api/runs/run-1/replace", headers=AUTH, json={"action": "replace"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "comparing"}
+    run = database.runs["run-1"]
+    assert run.state is RunState.COMPARING
+    assert run.extra["replace"]["resolution"] == "replace"
+
+
+async def test_resolving_needs_a_parked_confirmation(
+    client, database, config
+) -> None:
+    await add_run(database, config, state=RunState.DONE)
+    response = await client.post(
+        "/api/runs/run-1/replace", headers=AUTH, json={"action": "keep_both"}
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "not_awaiting_replace_confirmation"
+
+
+async def test_resolving_a_busy_run_is_refused(client, database, config) -> None:
+    await add_run(database, config, state=RunState.EXECUTING)
+    response = await client.post(
+        "/api/runs/run-1/replace", headers=AUTH, json={"action": "replace"}
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "run_is_busy"
+
+
+async def test_unknown_resolution_action_is_refused(
+    client, database, config
+) -> None:
+    await add_parked_replacement(database, config)
+    response = await client.post(
+        "/api/runs/run-1/replace", headers=AUTH, json={"action": "merge"}
+    )
+    assert response.status_code == 422
+
+
+async def test_run_detail_carries_the_replace_decision(
+    client, database, config
+) -> None:
+    await add_parked_replacement(database, config)
+    response = await client.get("/api/runs/run-1", headers=AUTH)
+    assert response.json()["replace_decision"] == {
+        "groups": [],
+        "resolution": None,
+    }
+
+
 # ---- configuration ------------------------------------------------------
 
 
@@ -318,6 +386,9 @@ async def test_config_crud(client, tmp_path: Path) -> None:
     config_id = created.json()["id"]
     assert created.json()["stability_seconds"] == 120
     assert created.json()["subtitle_variant"] == "chs"
+    assert created.json()["replace_enabled"] is False
+    assert created.json()["replace_extra_dirs"] == []
+    assert created.json()["replace_auto_ratio"] == 1.2
 
     patched = await client.patch(
         f"/api/configs/{config_id}", headers=AUTH, json={"enabled": False}
@@ -335,9 +406,69 @@ async def test_config_crud(client, tmp_path: Path) -> None:
     )
     assert refused.status_code == 422
 
+    patched = await client.patch(
+        f"/api/configs/{config_id}",
+        headers=AUTH,
+        json={
+            "replace_enabled": True,
+            "replace_extra_dirs": [str(tmp_path / "anirss")],
+            "replace_auto_ratio": 1.5,
+        },
+    )
+    assert patched.json()["replace_enabled"] is True
+    assert patched.json()["replace_extra_dirs"] == [str(tmp_path / "anirss")]
+    assert patched.json()["replace_auto_ratio"] == 1.5
+
     assert (
         await client.delete(f"/api/configs/{config_id}", headers=AUTH)
     ).status_code == 200
+
+
+async def test_extra_dirs_must_be_absolute_and_disjoint(
+    client, tmp_path: Path
+) -> None:
+    def body(dirs: list[str]) -> dict:
+        return {
+            "name": "anime",
+            "inbound_root": str(tmp_path / "in"),
+            "library_root": str(tmp_path / "lib"),
+            "media_type": "anime",
+            "replace_extra_dirs": dirs,
+        }
+
+    for dirs in (
+        ["relative/dir"],
+        [str(tmp_path / "lib")],  # equals a root
+        [str(tmp_path / "lib" / "nested")],  # inside a root
+        [str(tmp_path)],  # contains both roots
+        [str(tmp_path / "a"), str(tmp_path / "a")],  # duplicate
+    ):
+        response = await client.post("/api/configs", headers=AUTH, json=body(dirs))
+        assert response.status_code == 422, dirs
+
+
+async def test_extra_dirs_are_checked_against_the_stored_roots(
+    client, tmp_path: Path
+) -> None:
+    created = await client.post(
+        "/api/configs",
+        headers=AUTH,
+        json={
+            "name": "anime",
+            "inbound_root": str(tmp_path / "in"),
+            "library_root": str(tmp_path / "lib"),
+            "media_type": "anime",
+        },
+    )
+    config_id = created.json()["id"]
+    # A patch that only sets extra dirs still validates against the roots
+    # the config already has.
+    refused = await client.patch(
+        f"/api/configs/{config_id}",
+        headers=AUTH,
+        json={"replace_extra_dirs": [str(tmp_path / "lib")]},
+    )
+    assert refused.status_code == 422
 
 
 async def test_relative_roots_are_refused(client) -> None:
@@ -446,6 +577,22 @@ async def test_reasoning_effort_roundtrips_including_reset(client) -> None:
     )
     body = (await client.get("/api/settings", headers=AUTH)).json()
     assert body["llm_reasoning_effort"] == ""
+
+
+async def test_trash_retention_roundtrips(client) -> None:
+    response = await client.get("/api/settings", headers=AUTH)
+    assert response.json()["trash_retention_days"] == 3
+
+    await client.put(
+        "/api/settings", headers=AUTH, json={"trash_retention_days": 0}
+    )
+    response = await client.get("/api/settings", headers=AUTH)
+    assert response.json()["trash_retention_days"] == 0
+
+    refused = await client.put(
+        "/api/settings", headers=AUTH, json={"trash_retention_days": 999}
+    )
+    assert refused.status_code == 422
 
 
 async def test_reasoning_effort_rejects_unknown_values(client) -> None:

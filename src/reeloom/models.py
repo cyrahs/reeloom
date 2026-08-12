@@ -62,6 +62,8 @@ class Root(StrEnum):
 
     INBOUND = "inbound"
     LIBRARY = "library"
+    EXTRA = "extra"
+    """An extra replacement-detection directory; the move carries its base."""
 
 
 class MoveKind(StrEnum):
@@ -75,6 +77,10 @@ class MoveKind(StrEnum):
     """Residual content moved to the watch root's ``archive`` bucket."""
     FAIL = "fail"
     """A duplicate or unusable file moved to the watch root's ``fail`` bucket."""
+    TRASH_REPLACED = "trash_replaced"
+    """An existing file displaced into the trash area by a better version."""
+    TRASH_DUPLICATE = "trash_duplicate"
+    """An incoming file judged a duplicate and moved to the trash area."""
 
 
 class MoveOutcome(StrEnum):
@@ -91,6 +97,7 @@ class MoveOutcome(StrEnum):
 class RunState(StrEnum):
     PENDING = "pending"
     IDENTIFYING = "identifying"
+    COMPARING = "comparing"
     EXECUTING = "executing"
     ACQUIRING_SUBS = "acquiring_subs"
     REVERTING = "reverting"
@@ -118,6 +125,7 @@ _ACTIVE_STATES = frozenset(
     {
         RunState.PENDING,
         RunState.IDENTIFYING,
+        RunState.COMPARING,
         RunState.EXECUTING,
         RunState.ACQUIRING_SUBS,
         RunState.REVERTING,
@@ -239,6 +247,9 @@ class Move:
     dest_root: Root
     dest_path: str
     candidate_id: str | None = None
+    extra_base: str | None = None
+    """Absolute base of the ``EXTRA`` root, recorded on the move itself so the
+    ledger stays meaningful even if the watch config changes afterwards."""
 
     def reversed(self) -> Move:
         return Move(
@@ -248,6 +259,7 @@ class Move:
             dest_root=self.source_root,
             dest_path=self.source_path,
             candidate_id=self.candidate_id,
+            extra_base=self.extra_base,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -258,6 +270,7 @@ class Move:
             "dest_root": self.dest_root.value,
             "dest_path": self.dest_path,
             "candidate_id": self.candidate_id,
+            "extra_base": self.extra_base,
         }
 
     @classmethod
@@ -269,6 +282,7 @@ class Move:
             dest_root=Root(payload["dest_root"]),
             dest_path=payload["dest_path"],
             candidate_id=payload.get("candidate_id"),
+            extra_base=payload.get("extra_base"),
         )
 
 
@@ -335,6 +349,10 @@ class RunResult:
     """Subtitles bundled with the release; ``moved`` excludes them."""
     subtitles_acquired: int = 0
     subtitle_note: str = ""
+    replaced: tuple[str, ...] = ()
+    """Old versions displaced into the trash area by this run."""
+    discarded: tuple[str, ...] = ()
+    """Incoming files judged duplicates and moved to the trash area."""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -345,6 +363,8 @@ class RunResult:
             "subtitles_moved": self.subtitles_moved,
             "subtitles_acquired": self.subtitles_acquired,
             "subtitle_note": self.subtitle_note,
+            "replaced": list(self.replaced),
+            "discarded": list(self.discarded),
         }
 
     @classmethod
@@ -357,6 +377,8 @@ class RunResult:
             subtitles_moved=payload.get("subtitles_moved", 0),
             subtitles_acquired=payload.get("subtitles_acquired", 0),
             subtitle_note=payload.get("subtitle_note", ""),
+            replaced=tuple(payload.get("replaced", ())),
+            discarded=tuple(payload.get("discarded", ())),
         )
 
 
@@ -373,6 +395,12 @@ class WatchConfig:
     subtitle_variant: SubtitleVariant = SubtitleVariant.CHS
     """Preferred Chinese variant for acquired subtitles; chs or cht only."""
     notify: bool = True
+    replace_enabled: bool = False
+    """Compare incoming files against existing versions and replace/dedupe."""
+    replace_extra_dirs: tuple[str, ...] = ()
+    """Extra absolute directories checked for existing versions (e.g. anirss)."""
+    replace_auto_ratio: float = 1.2
+    """Season size ratio at or above which a replacement runs unattended."""
 
 
 @dataclass(frozen=True, slots=True)

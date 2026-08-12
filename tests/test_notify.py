@@ -268,3 +268,26 @@ async def test_notifier_sends_plain_text_when_there_is_no_poster(
 
     assert len(seen) == 2
     assert all(request.url.path.endswith("/sendMessage") for request in seen)
+
+
+def test_replacement_lines_and_confirmation_hint(config: WatchConfig) -> None:
+    run = make_run(
+        plan=Plan(identity=IDENTITY, moves=()),
+        result=RunResult(
+            moved=12,
+            replaced=("Show S01E01.mkv",),
+            discarded=("dup01.mkv",),
+        ),
+    )
+    text = render(run, config)
+    assert "洗版替换（旧版已入回收区）：Show S01E01.mkv" in text
+    assert "重复（已入回收区）：dup01.mkv" in text
+
+    parked = make_run(
+        state=RunState.NEEDS_ATTENTION,
+        plan=Plan(identity=IDENTITY, moves=()),
+        error={"code": "replace_confirmation", "groups": []},
+    )
+    text = render(parked, config)
+    assert "等待洗版确认" in text
+    assert "replace_confirmation" not in text

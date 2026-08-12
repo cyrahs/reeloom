@@ -23,6 +23,8 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
       subtitles_moved: 0,
       subtitles_acquired: 0,
       subtitle_note: "",
+      replaced: [],
+      discarded: [],
     },
     error: null,
     attempts: 0,
@@ -96,6 +98,8 @@ describe("runs page", () => {
           subtitles_moved: 2,
           subtitles_acquired: 3,
           subtitle_note: "",
+          replaced: [],
+          discarded: [],
         },
       }),
     ]);

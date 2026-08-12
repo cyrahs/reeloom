@@ -545,3 +545,206 @@ async def test_path_traversal_in_a_stored_plan_is_refused(
 
     with pytest.raises(Exception):
         await engine.execute(run, config)
+
+
+# ---- version replacement (trash moves) ----------------------------------
+
+
+from reeloom.trash import TRASH_DIR, purge_run_trash  # noqa: E402
+
+DEST = "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"
+
+
+def trash_replaced(
+    relative: str, *, root: Root = Root.LIBRARY, extra_base: str | None = None
+) -> Move:
+    return Move(
+        kind=MoveKind.TRASH_REPLACED,
+        source_root=root,
+        source_path=relative,
+        dest_root=root,
+        dest_path=f"{TRASH_DIR}/run-1/{relative}",
+        extra_base=extra_base,
+    )
+
+
+def replacement_run(*, extra_base: str | None = None) -> Run:
+    moves = [trash_replaced(DEST)]
+    if extra_base is not None:
+        moves.append(
+            trash_replaced(
+                "Show/ep01.mp4", root=Root.EXTRA, extra_base=extra_base
+            )
+        )
+    moves.append(media_move("ep01.mkv", DEST))
+    return build_run(*moves)
+
+
+async def test_replacement_displaces_the_old_version_then_imports(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    make_files(library, DEST, size=16)
+    engine, database = executor
+    run = replacement_run()
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    assert (library / DEST).stat().st_size == 32
+    assert (library / TRASH_DIR / "run-1" / DEST).stat().st_size == 16
+    assert result.replaced == ("Show S01E01.mkv",)
+    assert result.moved == 1
+    assert result.duplicates == ()
+
+
+async def test_replacement_reaches_into_extra_dirs(
+    config: WatchConfig, roots: tuple[Path, Path], executor, tmp_path: Path
+) -> None:
+    inbound, library = roots
+    extra = tmp_path / "anirss"
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    make_files(library, DEST, size=16)
+    make_files(extra, "Show/ep01.mp4", size=8)
+    engine, database = executor
+    run = replacement_run(extra_base=str(extra))
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    assert (extra / TRASH_DIR / "run-1" / "Show/ep01.mp4").is_file()
+    assert not (extra / "Show/ep01.mp4").exists()
+    assert result.replaced == ("Show S01E01.mkv", "ep01.mp4")
+
+
+async def test_replaying_a_completed_replacement_changes_nothing(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    make_files(library, DEST, size=16)
+    engine, database = executor
+    run = replacement_run()
+    database.runs[run.id] = run
+    await engine.execute(run, config)
+
+    # Replay: the trash destination exists, so the trash move is done — the
+    # new file now sitting at the old path must not be displaced again.
+    replay = await engine.execute(database.runs[run.id], config)
+
+    assert (library / DEST).stat().st_size == 32
+    assert (library / TRASH_DIR / "run-1" / DEST).stat().st_size == 16
+    assert replay.replaced == ()
+    assert replay.duplicates == ()
+
+
+async def test_half_completed_replacement_resumes(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    # The crash happened after the old file was trashed.
+    make_files(library, f"{TRASH_DIR}/run-1/{DEST}", size=16)
+    engine, database = executor
+    run = replacement_run()
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    assert (library / DEST).stat().st_size == 32
+    assert result.moved == 1
+    assert result.replaced == ()  # already trashed by the pre-crash pass
+
+
+async def test_discarded_duplicate_lands_in_trash_not_fail(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=16)
+    engine, database = executor
+    source = f"{FOLDER}/ep01.mkv"
+    move = Move(
+        kind=MoveKind.TRASH_DUPLICATE,
+        source_root=Root.INBOUND,
+        source_path=source,
+        dest_root=Root.INBOUND,
+        dest_path=f"{TRASH_DIR}/run-1/{source}",
+        candidate_id="V1",
+    )
+    run = build_run(move)
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, config)
+
+    assert (inbound / TRASH_DIR / "run-1" / source).is_file()
+    assert not (inbound / "fail").exists()
+    assert result.discarded == ("ep01.mkv",)
+    assert result.moved == 0
+
+
+async def test_revert_restores_both_sides_of_a_replacement(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    make_files(library, DEST, size=16)
+    engine, database = executor
+    run = replacement_run()
+    database.runs[run.id] = run
+    await engine.execute(run, config)
+
+    await engine.revert(database.runs[run.id], config)
+
+    assert (library / DEST).stat().st_size == 16
+    assert (inbound / FOLDER / "ep01.mkv").stat().st_size == 32
+    assert not (library / TRASH_DIR / "run-1" / DEST).exists()
+
+
+async def test_revert_after_purge_skips_the_lost_file(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    make_files(library, DEST, size=16)
+    engine, database = executor
+    run = replacement_run()
+    database.runs[run.id] = run
+    await engine.execute(run, config)
+    purge_run_trash(library, "run-1")
+
+    await engine.revert(database.runs[run.id], config)
+
+    # The new file went back to the inbound folder; the purged old version
+    # is gone and its restore was skipped rather than failing the revert.
+    assert (inbound / FOLDER / "ep01.mkv").stat().st_size == 32
+    assert not (library / DEST).exists()
+
+
+async def test_extra_move_without_a_base_is_refused(
+    config: WatchConfig, roots: tuple[Path, Path], executor
+) -> None:
+    engine, database = executor
+    run = build_run(trash_replaced("Show/ep01.mp4", root=Root.EXTRA))
+    database.runs[run.id] = run
+    with pytest.raises(ExecutionError):
+        await engine.execute(run, config)
+
+
+async def test_extra_trash_cannot_escape_through_a_symlink(
+    config: WatchConfig, roots: tuple[Path, Path], executor, tmp_path: Path
+) -> None:
+    extra = tmp_path / "anirss"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    make_files(extra, "Show/ep01.mp4")
+    (extra / TRASH_DIR).symlink_to(outside)
+    engine, database = executor
+    run = build_run(
+        trash_replaced("Show/ep01.mp4", root=Root.EXTRA, extra_base=str(extra))
+    )
+    database.runs[run.id] = run
+
+    with pytest.raises(ExecutionError):
+        await engine.execute(run, config)
+    assert (extra / "Show/ep01.mp4").is_file()

@@ -120,6 +120,9 @@ class FakeDatabase:
     async def set_result(self, run_id: str, result: RunResult) -> None:
         self.runs[run_id] = replace(self.runs[run_id], result=result)
 
+    async def set_extra(self, run_id: str, extra: dict[str, Any]) -> None:
+        self.runs[run_id] = replace(self.runs[run_id], extra=extra)
+
     async def set_snapshot(
         self, run_id: str, snapshot: Sequence[SnapshotFile]
     ) -> None:
@@ -171,6 +174,7 @@ class FakeDatabase:
             "llm_reasoning_effort",
             "telegram_bot_token",
             "telegram_chat_id",
+            "trash_retention_days",
         }
         self.settings.update(
             {key: value for key, value in values.items() if key in allowed}
@@ -188,6 +192,11 @@ class FakeDatabase:
             values = {
                 **values,
                 "subtitle_variant": SubtitleVariant(values["subtitle_variant"]),
+            }
+        if "replace_extra_dirs" in values:
+            values = {
+                **values,
+                "replace_extra_dirs": tuple(values["replace_extra_dirs"]),
             }
         self.configs[config_id] = replace(config, **values)
 
@@ -307,3 +316,18 @@ class StubClients:
 
     async def tmdb(self):
         return self._tmdb
+
+
+class FakeProber:
+    """Path-keyed probe results standing in for ffprobe."""
+
+    def __init__(self, probes: dict[str, Any] | None = None) -> None:
+        self.probes = probes or {}
+        self.seen: list[str] = []
+
+    async def __call__(self, path):
+        self.seen.append(str(path))
+        for key, probe in self.probes.items():
+            if str(path).endswith(key):
+                return probe
+        return None

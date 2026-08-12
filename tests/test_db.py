@@ -70,11 +70,22 @@ async def test_config_round_trip(database: Database, watch: WatchConfig) -> None
     assert await database.get_config(watch.id) == watch
 
     await database.update_config(
-        watch.id, {"name": "renamed", "enabled": False, "subtitle_variant": "cht"}
+        watch.id,
+        {
+            "name": "renamed",
+            "enabled": False,
+            "subtitle_variant": "cht",
+            "replace_enabled": True,
+            "replace_extra_dirs": ["/data/anirss"],
+            "replace_auto_ratio": 1.5,
+        },
     )
     stored = await database.get_config(watch.id)
     assert stored is not None and stored.name == "renamed"
     assert stored.subtitle_variant is SubtitleVariant.CHT
+    assert stored.replace_enabled is True
+    assert stored.replace_extra_dirs == ("/data/anirss",)
+    assert stored.replace_auto_ratio == 1.5
     assert await database.list_configs(enabled_only=True) == []
 
     await database.delete_config(watch.id)

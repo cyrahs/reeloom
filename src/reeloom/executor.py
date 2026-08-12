@@ -14,6 +14,10 @@ source present, dest present the library wins; source   DUPLICATE
                              goes to the fail bucket
 neither present              nothing to do              MISSING
 ===========================  ==================================
+
+Trash moves (version replacement) share the same primitives but never divert
+to the fail bucket: their destination embeds the run id, so an existing
+destination always means a previous pass already did it.
 """
 
 from __future__ import annotations
@@ -44,8 +48,11 @@ from reeloom.scanner import (
     SUBTITLE_EXTENSIONS,
     safe_relative,
 )
+from reeloom.trash import TRASH_DIR
 
 _LOGGER = logging.getLogger(__name__)
+
+_TRASH_KINDS = frozenset({MoveKind.TRASH_REPLACED, MoveKind.TRASH_DUPLICATE})
 
 
 class ExecutionError(ReeloomError):
@@ -67,6 +74,8 @@ class FilesystemExecutor:
         subtitles_moved = 0
         duplicates: list[str] = []
         missing: list[str] = []
+        replaced: list[str] = []
+        discarded: list[str] = []
 
         for move in run.plan.moves:
             executed = await asyncio.to_thread(self._apply, move, roots, run)
@@ -75,6 +84,14 @@ class FilesystemExecutor:
             if executed.move.kind is MoveKind.FAIL:
                 # The move was diverted: the library already held this episode.
                 duplicates.append(name)
+            elif executed.move.kind in _TRASH_KINDS:
+                if executed.outcome is MoveOutcome.MOVED:
+                    if executed.move.kind is MoveKind.TRASH_REPLACED:
+                        replaced.append(name)
+                    else:
+                        discarded.append(name)
+                elif executed.outcome is MoveOutcome.MISSING:
+                    missing.append(name)
             elif executed.outcome is MoveOutcome.MOVED:
                 if PurePosixPath(name).suffix.lower() in SUBTITLE_EXTENSIONS:
                     subtitles_moved += 1
@@ -90,6 +107,8 @@ class FilesystemExecutor:
             missing=tuple(missing),
             archived=archived,
             subtitles_moved=subtitles_moved,
+            replaced=tuple(replaced),
+            discarded=tuple(discarded),
         )
 
     async def revert(self, run: Run, config: WatchConfig) -> None:
@@ -141,11 +160,13 @@ class FilesystemExecutor:
     # ---- one move -----------------------------------------------------
 
     def _apply(self, move: Move, roots: _Roots, run: Run) -> ExecutedMove:
-        source = roots.resolve(move.source_root, move.source_path)
-        destination = roots.resolve(move.dest_root, move.dest_path)
+        source = roots.resolve(move.source_root, move.source_path, move.extra_base)
+        destination = roots.resolve(move.dest_root, move.dest_path, move.extra_base)
 
         if move.kind is MoveKind.FOLDER_RENAME:
             return ExecutedMove(move, self._rename_folder(source, destination))
+        if move.kind in _TRASH_KINDS:
+            return self._trash_apply(move, source, destination, roots)
 
         outcome = self._move_file(source, destination, roots.base(move.dest_root))
         if outcome is not MoveOutcome.DUPLICATE:
@@ -160,6 +181,29 @@ class FilesystemExecutor:
             redirect,
             self._move_file(source, fail_destination, roots.base(redirect.dest_root)),
         )
+
+    def _trash_apply(
+        self, move: Move, source: Path, destination: Path, roots: _Roots
+    ) -> ExecutedMove:
+        """A move into — or, reversed during revert, out of — the trash area.
+
+        Never diverts to the fail bucket. Forward, the destination embeds the
+        run id, so an existing destination always means a previous pass did
+        it: replaying a completed replacement must not displace the new file
+        that now sits at the old path. Reversed, an occupied original path is
+        recorded as DUPLICATE and the file simply stays in the trash area,
+        where the purge will eventually collect it.
+        """
+
+        forward = _in_trash(move.dest_path)
+        if forward and _exists(destination):
+            return ExecutedMove(move, MoveOutcome.ALREADY_DONE)
+        outcome = self._move_file(
+            source, destination, roots.base(move.dest_root, move.extra_base)
+        )
+        if forward and outcome is MoveOutcome.DUPLICATE:
+            outcome = MoveOutcome.ALREADY_DONE
+        return ExecutedMove(move, outcome)
 
     def _move_file(self, source: Path, destination: Path, base: Path) -> MoveOutcome:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -289,15 +333,29 @@ class _Roots:
             )
         return cls(inbound, library)
 
-    def base(self, root: Root) -> Path:
+    def base(self, root: Root, extra_base: str | None = None) -> Path:
+        if root is Root.EXTRA:
+            # The base travels on the move itself so the ledger stays valid
+            # even if the watch config's extra dirs change afterwards.
+            if extra_base is None:
+                raise ExecutionError("extra_base_missing")
+            path = Path(extra_base)
+            if not path.is_absolute():
+                raise ExecutionError("extra_base_must_be_absolute", base=extra_base)
+            return path
         return self.inbound if root is Root.INBOUND else self.library
 
-    def resolve(self, root: Root, relative: str) -> Path:
-        return self.base(root) / safe_relative(relative).as_posix()
+    def resolve(self, root: Root, relative: str, extra_base: str | None = None) -> Path:
+        return self.base(root, extra_base) / safe_relative(relative).as_posix()
 
 
 def _exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
+
+
+def _in_trash(relative: str) -> bool:
+    parts = PurePosixPath(relative).parts
+    return bool(parts) and parts[0] == TRASH_DIR
 
 
 def _check_within(base: Path, destination: Path) -> None:

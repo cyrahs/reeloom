@@ -95,6 +95,31 @@ def parse_tmdb_id(name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+_SPAN_IN_NAME = re.compile(r"S(\d{2,3})E(\d{2,4})(?:-E(\d{2,4}))?")
+
+
+def span_from_name(name: str) -> EpisodeSpan | None:
+    """Read an ``SxxEyy[-Ezz]`` span back out of a filename, or give up.
+
+    Giving up is fine everywhere this is used: a file without a parseable
+    span is simply not considered.
+    """
+
+    match = _SPAN_IN_NAME.search(name)
+    if match is None:
+        return None
+    start = int(match.group(2))
+    try:
+        return EpisodeSpan(
+            season=int(match.group(1)),
+            episode_start=start,
+            episode_end=int(match.group(3)) if match.group(3) else start,
+        )
+    except PlanError:
+        # Arbitrary filenames can spell an inverted span; treat as unparseable.
+        return None
+
+
 def season_name(span: EpisodeSpan) -> str:
     return f"S{span.season:02d}"
 

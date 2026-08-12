@@ -1,6 +1,14 @@
 import { useState } from "react";
 
-import { ACTIVE_STATES, STATE_LABEL, api, type RunDetail } from "../api";
+import {
+  ACTIVE_STATES,
+  STATE_LABEL,
+  api,
+  type EpisodeSpan,
+  type ReplaceAction,
+  type ReplaceGroup,
+  type RunDetail,
+} from "../api";
 import { Markdown } from "../Markdown";
 import { usePoll } from "../usePoll";
 
@@ -194,7 +202,8 @@ function Moves({ run }: { run: RunDetail }) {
 
 function Result({ run }: { run: RunDetail }) {
   if (!run.result) return null;
-  const { duplicates, missing, subtitle_note: note } = run.result;
+  const { duplicates, missing, replaced, discarded, subtitle_note: note } =
+    run.result;
   return (
     <section>
       <h2>结果</h2>
@@ -202,6 +211,14 @@ function Result({ run }: { run: RunDetail }) {
         移动 {run.result.moved} · 归档 {run.result.archived} · 字幕{" "}
         {run.result.subtitles_moved} · 下载字幕 {run.result.subtitles_acquired}
       </p>
+      {replaced.length > 0 && (
+        <p className="warn-text">
+          洗版替换（旧版已入回收区）：{replaced.join(", ")}
+        </p>
+      )}
+      {discarded.length > 0 && (
+        <p className="warn-text">重复（已入回收区）：{discarded.join(", ")}</p>
+      )}
       {duplicates.length > 0 && (
         <p className="warn-text">重复（已放入 fail）：{duplicates.join(", ")}</p>
       )}
@@ -209,6 +226,123 @@ function Result({ run }: { run: RunDetail }) {
         <p className="warn-text">缺失：{missing.join(", ")}</p>
       )}
       {note && <p className="warn-text">字幕：{note}</p>}
+    </section>
+  );
+}
+
+const VERDICT_LABEL: Record<ReplaceGroup["verdict"], string> = {
+  import: "全新入库",
+  replace: "洗版替换",
+  discard: "丢弃新下载",
+  manual: "需人工确认",
+};
+
+const QUALITY_LABEL: Record<ReplaceGroup["quality"], string> = {
+  better: "画质更好",
+  same: "画质相近",
+  worse: "画质更差",
+  unknown: "画质未知",
+};
+
+function spanLabel(span: EpisodeSpan | null): string {
+  if (!span) return "正片";
+  const head = `S${String(span.season).padStart(2, "0")}E${String(
+    span.episode_start,
+  ).padStart(2, "0")}`;
+  return span.episode_end !== span.episode_start
+    ? `${head}-E${String(span.episode_end).padStart(2, "0")}`
+    : head;
+}
+
+function GroupRow({ group }: { group: ReplaceGroup }) {
+  const title =
+    group.season === null ? "电影" : `第 ${group.season} 季`;
+  return (
+    <details className="replace-group">
+      <summary>
+        <strong>{title}</strong>
+        <span className={`tag ${group.verdict}`}>
+          {VERDICT_LABEL[group.verdict]}
+        </span>
+        {group.ratio !== null && <span>体积比 {group.ratio.toFixed(2)}</span>}
+        <span className="muted">{QUALITY_LABEL[group.quality]}</span>
+        {group.new_episodes.length > 0 && (
+          <span className="muted">新增 {group.new_episodes.length} 集</span>
+        )}
+      </summary>
+      <ul className="replace-episodes">
+        {group.overlap.map((item) => (
+          <li key={item.candidate_id}>
+            <span className="name">{spanLabel(item.span)}</span>
+            <span>
+              新 {formatSize(item.incoming_bytes)} ↔ 旧{" "}
+              {formatSize(item.existing_bytes)}
+            </span>
+            <span className="muted">
+              {item.existing
+                .map((file) =>
+                  file.extra_base
+                    ? `${file.extra_base}/${file.relative_path}`
+                    : file.relative_path,
+                )
+                .join("；")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function ReplacePanel({
+  run,
+  busy,
+  onResolve,
+}: {
+  run: RunDetail;
+  busy: boolean;
+  onResolve: (action: ReplaceAction) => void;
+}) {
+  const decision = run.replace_decision;
+  if (!decision || decision.groups.length === 0) return null;
+  const awaiting =
+    run.state === "needs_attention" &&
+    run.error?.code === "replace_confirmation";
+  return (
+    <section>
+      <h2>洗版</h2>
+      {decision.groups.map((group, index) => (
+        <GroupRow key={index} group={group} />
+      ))}
+      {decision.resolution && (
+        <p className="muted">已选择：{decision.resolution}</p>
+      )}
+      {awaiting && (
+        <div className="actions">
+          <button
+            className="primary"
+            disabled={busy}
+            title="旧版本移入回收区，保留期后删除；新版本入库"
+            onClick={() => onResolve("replace")}
+          >
+            确认替换旧版
+          </button>
+          <button
+            disabled={busy}
+            title="保留现有版本，新下载的重叠文件移入回收区"
+            onClick={() => onResolve("discard_incoming")}
+          >
+            丢弃新下载
+          </button>
+          <button
+            disabled={busy}
+            title="不做洗版：与库内冲突的文件会进入 fail 目录"
+            onClick={() => onResolve("keep_both")}
+          >
+            两版共存
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -267,6 +401,11 @@ export function RunDetailPage({ runId }: { runId: string }) {
         </p>
       )}
 
+      <ReplacePanel
+        run={run}
+        busy={busy}
+        onResolve={(action) => act(() => api.resolveReplace(runId, action))}
+      />
       <Moves run={run} />
       <Result run={run} />
 

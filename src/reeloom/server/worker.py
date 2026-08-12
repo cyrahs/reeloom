@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -20,6 +21,7 @@ from reeloom.models import (
     Deferred,
     FileKind,
     MediaType,
+    MoveKind,
     Plan,
     ReeloomError,
     Run,
@@ -33,8 +35,12 @@ from reeloom.scanner import (
     folder_shape,
     snapshot_folder,
 )
+from reeloom.trash import TrashError, list_trash_entries, purge_run_trash
 
 _LOGGER = logging.getLogger(__name__)
+
+PURGE_INTERVAL_SECONDS = 3600
+DEFAULT_TRASH_RETENTION_DAYS = 3
 
 
 class NeedsAttention(ReeloomError):
@@ -80,6 +86,12 @@ class Identifier(Protocol):
         """Return a compiled plan or raise NeedsAttention."""
 
 
+class Comparer(Protocol):
+    async def compare(self, run: Run, config: WatchConfig) -> Plan | None:
+        """Return an augmented plan, None to keep the current one, or raise
+        NeedsAttention to park the run for a replacement confirmation."""
+
+
 class Executor(Protocol):
     async def execute(self, run: Run, config: WatchConfig) -> RunResult: ...
 
@@ -105,6 +117,7 @@ class Worker:
         *,
         identifier: Identifier,
         executor: Executor,
+        comparer: Comparer | None = None,
         subtitles: SubtitleService | None = None,
         notifier: Notifier | None = None,
         tracker: StabilityTracker | None = None,
@@ -113,12 +126,14 @@ class Worker:
         self._db = database
         self._identifier = identifier
         self._executor = executor
+        self._comparer = comparer
         self._subtitles = subtitles
         self._notifier = notifier
         self._tracker = tracker or StabilityTracker()
         self._scan_interval = scan_interval_seconds
         self._wake = asyncio.Event()
         self._intake: list[IntakeFolder] = []
+        self._last_purge = float("-inf")
 
     def wake(self) -> None:
         """Ask the loop to run a step now instead of waiting for the timer."""
@@ -138,6 +153,7 @@ class Worker:
             except Exception:
                 _LOGGER.exception("worker tick failed")
                 progressed = False
+            await self._maybe_purge()
             if progressed:
                 continue
             try:
@@ -151,7 +167,9 @@ class Worker:
 
         Identification has no filesystem side effects, so the safe recovery is
         simply to run it again. Runs interrupted while executing or reverting
-        are left alone: replaying their ledger is idempotent.
+        are left alone: replaying their ledger is idempotent. COMPARING also
+        needs nothing here — it has no filesystem side effects and is simply
+        re-entered (the comparer recognizes an already-augmented plan).
         """
 
         for run in await self._db.list_runs(states=[RunState.IDENTIFYING]):
@@ -304,6 +322,8 @@ class Worker:
                 await self._db.set_state(run.id, RunState.IDENTIFYING)
             case RunState.IDENTIFYING:
                 await self._identify(run, config)
+            case RunState.COMPARING:
+                await self._compare(run, config)
             case RunState.EXECUTING:
                 await self._execute(run, config)
             case RunState.ACQUIRING_SUBS:
@@ -328,8 +348,45 @@ class Worker:
         # the library exactly as it was.
         await self._db.set_state(
             run.id,
-            RunState.REVERTING if run.executed_moves else RunState.EXECUTING,
+            RunState.REVERTING
+            if run.executed_moves
+            else self._post_plan_state(config),
         )
+
+    def _wants_compare(self, config: WatchConfig) -> bool:
+        return config.replace_enabled and self._comparer is not None
+
+    def _post_plan_state(self, config: WatchConfig) -> RunState:
+        # Every path into EXECUTING for a replace-enabled run goes through
+        # COMPARING, so a replacement decision is always recomputed against
+        # the filesystem as it is right now.
+        return (
+            RunState.COMPARING
+            if self._wants_compare(config)
+            else RunState.EXECUTING
+        )
+
+    async def _compare(self, run: Run, config: WatchConfig) -> None:
+        if not self._wants_compare(config) or run.plan is None:
+            # Toggled off (or lost its plan) while parked; fall through.
+            await self._db.set_state(run.id, RunState.EXECUTING)
+            return
+        assert self._comparer is not None
+        plan = await self._comparer.compare(run, config)
+        if plan is not None and plan != run.plan:
+            trash_moves = sum(
+                1
+                for move in plan.moves
+                if move.kind
+                in (MoveKind.TRASH_REPLACED, MoveKind.TRASH_DUPLICATE)
+            )
+            await self._db.log(
+                run.id,
+                "plan augmented for replacement",
+                data={"trash_moves": trash_moves},
+            )
+            await self._db.set_plan(run.id, plan)
+        await self._db.set_state(run.id, RunState.EXECUTING)
 
     async def _execute(self, run: Run, config: WatchConfig) -> None:
         if run.plan is None:
@@ -373,7 +430,7 @@ class Worker:
         await self._executor.revert(run, config)
         await self._db.clear_executed(run.id)
         await self._db.log(run.id, "reverted previous layout")
-        await self._db.set_state(run.id, RunState.EXECUTING)
+        await self._db.set_state(run.id, self._post_plan_state(config))
 
     async def _discard(self, run: Run, config: WatchConfig) -> None:
         # An executed run (typically a done one being abandoned) is reverted
@@ -387,11 +444,105 @@ class Worker:
         await self._db.log(run.id, f"discarded {moved} file(s) to the fail bucket")
         await self._db.set_state(run.id, RunState.DISCARDED)
         await self._notify(run.id, config)
+        await self._purge_after_settle(run, config)
 
     async def _settle(self, run: Run, config: WatchConfig) -> None:
         await self._db.set_state(run.id, RunState.DONE)
         await self._db.log(run.id, "done")
         await self._notify(run.id, config)
+        await self._purge_after_settle(run, config)
+
+    # ---- trash purging -------------------------------------------------
+
+    async def _maybe_purge(self) -> None:
+        """The only place trash is actually deleted, at most hourly."""
+
+        now = time.monotonic()
+        if now - self._last_purge < PURGE_INTERVAL_SECONDS:
+            return
+        self._last_purge = now
+        try:
+            await self._purge_pass()
+        except Exception:
+            _LOGGER.exception("trash purge failed")
+
+    async def _purge_pass(self) -> None:
+        settings = await self._db.get_settings()
+        retention = settings.get(
+            "trash_retention_days", DEFAULT_TRASH_RETENTION_DAYS
+        )
+        cutoff = time.time() - retention * 86400
+        for root in await self._trash_roots():
+            for entry in await asyncio.to_thread(list_trash_entries, root):
+                await self._purge_entry(root, entry.run_id, entry.mtime, cutoff)
+
+    async def _purge_entry(
+        self, root: Path, run_id: str, mtime: float, cutoff: float
+    ) -> None:
+        try:
+            uuid.UUID(run_id)
+        except ValueError:
+            # Not something reeloom wrote; never delete what we don't own.
+            _LOGGER.warning("unrecognized trash entry left alone: %s/%s", root, run_id)
+            return
+        run = await self._db.get_run(run_id)
+        if run is not None and not run.state.is_terminal:
+            return
+        if mtime > cutoff:
+            return
+        await self._purge_run_trash(root, run_id)
+
+    async def _purge_run_trash(self, root: Path, run_id: str) -> None:
+        try:
+            files, size = await asyncio.to_thread(purge_run_trash, root, run_id)
+        except TrashError as error:
+            _LOGGER.warning("trash purge refused: %s", error)
+            return
+        if files:
+            _LOGGER.info(
+                "purged trash run=%s root=%s files=%d bytes=%d",
+                run_id,
+                root,
+                files,
+                size,
+            )
+            if await self._db.get_run(run_id) is not None:
+                await self._db.log(
+                    run_id,
+                    f"purged {files} file(s) from the trash area",
+                    data={"bytes": size, "root": str(root)},
+                )
+
+    async def _purge_after_settle(self, run: Run, config: WatchConfig) -> None:
+        """Retention 0 means storage is reclaimed the moment a run settles."""
+
+        settings = await self._db.get_settings()
+        retention = settings.get(
+            "trash_retention_days", DEFAULT_TRASH_RETENTION_DAYS
+        )
+        if retention != 0:
+            return
+        seen: set[str] = set()
+        for value in (
+            config.inbound_root,
+            config.library_root,
+            *config.replace_extra_dirs,
+        ):
+            if value in seen:
+                continue
+            seen.add(value)
+            await self._purge_run_trash(Path(value), run.id)
+
+    async def _trash_roots(self) -> list[Path]:
+        roots: dict[str, Path] = {}
+        for config in await self._db.list_configs():
+            for value in (
+                config.inbound_root,
+                config.library_root,
+                *config.replace_extra_dirs,
+            ):
+                roots.setdefault(value, Path(value))
+        return list(roots.values())
 
     async def _notify(self, run_id: str, config: WatchConfig) -> None:
         if self._notifier is None or not config.notify:
