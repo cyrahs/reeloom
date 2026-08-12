@@ -5,6 +5,7 @@ import {
   STATE_LABEL,
   api,
   type EpisodeSpan,
+  type Move,
   type ReplaceAction,
   type ReplaceGroup,
   type RunDetail,
@@ -13,31 +14,42 @@ import { Markdown } from "../Markdown";
 import { usePoll } from "../usePoll";
 
 function archivedSummary(run: RunDetail): string[] {
-  if (!run.plan) return [];
+  if (!run.plan || run.snapshot.length === 0) return [];
   const unmapped = new Set(run.plan.unmapped);
-  // A first-level subfolder whose files are all unmapped is archived whole,
-  // so it collapses to "folder/"; partial folders list their leftover files.
-  const folders = new Map<string, { total: number; unmapped: string[] }>();
-  const looseFiles: string[] = [];
-  for (const item of run.snapshot) {
-    const slash = item.relative_path.indexOf("/");
-    if (slash === -1) {
-      if (unmapped.has(item.candidate_id)) looseFiles.push(item.relative_path);
-      continue;
-    }
-    const folder = item.relative_path.slice(0, slash);
-    const group = folders.get(folder) ?? { total: 0, unmapped: [] };
-    group.total += 1;
-    if (unmapped.has(item.candidate_id)) group.unmapped.push(item.relative_path);
-    folders.set(folder, group);
-  }
+  // A subfolder whose files are all unmapped is archived whole, so it
+  // collapses to "folder/" at the shallowest level that covers it; a fully
+  // unmapped run collapses to the intake folder itself.
   const shown: string[] = [];
-  for (const [folder, group] of folders) {
-    if (group.unmapped.length === 0) continue;
-    if (group.unmapped.length === group.total) shown.push(`${folder}/`);
-    else shown.push(...group.unmapped);
+  if (collapseUnmapped(buildTree(run.snapshot), "", unmapped, shown)) {
+    return [`${run.folder_name}/`];
   }
-  return [...shown, ...looseFiles];
+  return shown;
+}
+
+// Appends this subtree's unmapped listing to `out` and reports whether every
+// file below `node` is unmapped, in which case the caller discards the
+// listing and shows the folder itself instead.
+function collapseUnmapped(
+  node: DirNode,
+  prefix: string,
+  unmapped: Set<string>,
+  out: string[],
+): boolean {
+  let all = true;
+  for (const [name, child] of node.dirs) {
+    const lines: string[] = [];
+    if (collapseUnmapped(child, `${prefix}${name}/`, unmapped, lines)) {
+      out.push(`${prefix}${name}/`);
+    } else {
+      out.push(...lines);
+      all = false;
+    }
+  }
+  for (const file of node.files) {
+    if (unmapped.has(file.candidate_id)) out.push(file.relative_path);
+    else all = false;
+  }
+  return all;
 }
 
 type SnapshotItem = RunDetail["snapshot"][number];
@@ -159,9 +171,46 @@ function Files({ run }: { run: RunDetail }) {
   );
 }
 
+const TRASH_KIND_LABEL: Record<string, string> = {
+  trash_replaced: "洗版替换",
+  trash_duplicate: "重复",
+};
+
+interface TrashGroup {
+  kind: string;
+  dir: string;
+  moves: Move[];
+}
+
+// A trash move keeps its relative path under the trash directory, so the
+// per-file destination is noise; show each trash directory once with the
+// files that went in.
+function groupTrashMoves(moves: Move[]): TrashGroup[] {
+  const groups = new Map<string, TrashGroup>();
+  for (const move of moves) {
+    if (!(move.kind in TRASH_KIND_LABEL)) continue;
+    const dir = move.dest_path.slice(
+      0,
+      move.dest_path.length - move.source_path.length,
+    );
+    const key = `${move.kind}|${dir}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { kind: move.kind, dir, moves: [] };
+      groups.set(key, group);
+    }
+    group.moves.push(move);
+  }
+  return [...groups.values()];
+}
+
 function Moves({ run }: { run: RunDetail }) {
   if (!run.plan) return null;
   const archived = archivedSummary(run);
+  const planMoves = run.plan.moves.filter(
+    (move) => !(move.kind in TRASH_KIND_LABEL),
+  );
+  const trash = groupTrashMoves(run.plan.moves);
   // Acquired subtitles are planned only after execution, so their renames
   // live in the executed ledger rather than in plan.moves.
   const acquired = run.executed_moves.filter(
@@ -176,7 +225,7 @@ function Moves({ run }: { run: RunDetail }) {
       </p>
       {run.plan.notes && <p className="notes">{run.plan.notes}</p>}
       <ul className="moves">
-        {run.plan.moves.map((move, index) => (
+        {planMoves.map((move, index) => (
           <li key={index}>
             <code className="from">{move.source_path}</code>
             <code className="to">{move.dest_path}</code>
@@ -193,6 +242,21 @@ function Moves({ run }: { run: RunDetail }) {
           </li>
         ))}
       </ul>
+      {trash.map((group) => (
+        <div className="trash-moves" key={`${group.kind}|${group.dir}`}>
+          <p className="trash-dest">
+            {TRASH_KIND_LABEL[group.kind]}（{group.moves.length} 个）移入{" "}
+            <code>{group.dir}</code>
+          </p>
+          <ul className="trash-files">
+            {group.moves.map((move, index) => (
+              <li key={index}>
+                <code>{move.source_path}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
       {archived.length > 0 && (
         <p className="unmapped">未映射（将归档）：{archived.join("、")}</p>
       )}
@@ -204,24 +268,21 @@ function Result({ run }: { run: RunDetail }) {
   if (!run.result) return null;
   const { duplicates, missing, replaced, discarded, subtitle_note: note } =
     run.result;
+  // The plan section already names every replaced and duplicate file, so the
+  // summary line carries only their counts.
+  const summary = [
+    `移动 ${run.result.moved}`,
+    `归档 ${run.result.archived}`,
+    `字幕 ${run.result.subtitles_moved}`,
+    `下载字幕 ${run.result.subtitles_acquired}`,
+  ];
+  if (replaced.length > 0) summary.push(`洗版 ${replaced.length}`);
+  const duplicateCount = discarded.length + duplicates.length;
+  if (duplicateCount > 0) summary.push(`重复 ${duplicateCount}`);
   return (
     <section>
       <h2>结果</h2>
-      <p>
-        移动 {run.result.moved} · 归档 {run.result.archived} · 字幕{" "}
-        {run.result.subtitles_moved} · 下载字幕 {run.result.subtitles_acquired}
-      </p>
-      {replaced.length > 0 && (
-        <p className="warn-text">
-          洗版替换（旧版已入回收区）：{replaced.join(", ")}
-        </p>
-      )}
-      {discarded.length > 0 && (
-        <p className="warn-text">重复（已入回收区）：{discarded.join(", ")}</p>
-      )}
-      {duplicates.length > 0 && (
-        <p className="warn-text">重复（已放入 fail）：{duplicates.join(", ")}</p>
-      )}
+      <p>{summary.join(" · ")}</p>
       {missing.length > 0 && (
         <p className="warn-text">缺失：{missing.join(", ")}</p>
       )}
