@@ -102,6 +102,7 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
             archived=3,
             subtitles_moved=24,
             subtitles_acquired=12,
+            subtitles_embedded=2,
             duplicates=("ep01.mkv",),
         ),
     )
@@ -112,6 +113,7 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
     assert "整理完成" in text
     assert "移动 12" in text and "归档 3" in text
     assert "字幕 24" in text and "下载字幕 12" in text
+    assert "内封 2" in text
     assert "重复 1" in text
     # Duplicate file names belong to the web UI, not the notification.
     assert "ep01.mkv" not in text

@@ -22,6 +22,7 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
       archived: 1,
       subtitles_moved: 0,
       subtitles_acquired: 0,
+      subtitles_embedded: 0,
       subtitle_note: "",
       replaced: [],
       discarded: [],
@@ -115,6 +116,7 @@ describe("runs page", () => {
           archived: 0,
           subtitles_moved: 2,
           subtitles_acquired: 3,
+          subtitles_embedded: 4,
           subtitle_note: "",
           replaced: [],
           discarded: [],
@@ -130,6 +132,7 @@ describe("runs page", () => {
     expect(screen.getByText(/缺失 1/)).toBeInTheDocument();
     expect(screen.getByText(/字幕 2/)).toBeInTheDocument();
     expect(screen.getByText(/下载字幕 3/)).toBeInTheDocument();
+    expect(screen.getByText(/内封 4/)).toBeInTheDocument();
   });
 
   it("reports replacements and folds discards into duplicates", async () => {
@@ -142,6 +145,7 @@ describe("runs page", () => {
           archived: 0,
           subtitles_moved: 0,
           subtitles_acquired: 0,
+          subtitles_embedded: 0,
           subtitle_note: "",
           replaced: ["ep02.mkv", "ep03.mkv"],
           discarded: ["ep04.mkv"],

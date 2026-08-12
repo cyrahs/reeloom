@@ -35,6 +35,8 @@ function summary(run: RunSummary): string {
     parts.push(`字幕 ${run.result.subtitles_moved}`);
   if (run.result.subtitles_acquired)
     parts.push(`下载字幕 ${run.result.subtitles_acquired}`);
+  if (run.result.subtitles_embedded)
+    parts.push(`内封 ${run.result.subtitles_embedded}`);
   return parts.join(" · ");
 }
 

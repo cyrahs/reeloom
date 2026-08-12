@@ -386,9 +386,22 @@ class SubtitleAcquisition:
         if run.plan is None:
             return result
 
-        wanted = await _episodes_missing_subtitles(
+        wanted, embedded = await _episodes_missing_subtitles(
             run.plan, Path(config.library_root), self._prober
         )
+        if embedded:
+            await self._db.log(
+                run.id,
+                "embedded subtitles: "
+                + ", ".join(
+                    f"{_span_label(span)} ({variant.value})"
+                    for span, variant in sorted(
+                        embedded.values(),
+                        key=lambda pair: (pair[0].season, pair[0].episode_start),
+                    )
+                ),
+            )
+        result = replace(result, subtitles_embedded=len(embedded))
         if not wanted:
             return replace(result, subtitle_note="")
         _LOGGER.info(
@@ -737,17 +750,23 @@ def _library_folder(plan: Plan) -> str:
 
 async def _episodes_missing_subtitles(
     plan: Plan, library_root: Path, prober: Prober = probe_video
-) -> dict[tuple[int, int], EpisodeSpan]:
+) -> tuple[
+    dict[tuple[int, int], EpisodeSpan],
+    dict[tuple[int, int], tuple[EpisodeSpan, SubtitleVariant]],
+]:
     """Episodes whose video is in the library with no Chinese subtitle.
 
     A sidecar file beside the video counts, and so does a Chinese subtitle
     track muxed into the container; only videos with neither are wanted.
-    Keyed by (season, episode) so a season-0 special and a TV episode with
-    the same number stay distinct wants — and so do two seasons of the same
-    show landing in one run.
+    Episodes settled by an embedded track come back separately with the
+    track's variant, so the run can say why they were skipped. Keyed by
+    (season, episode) so a season-0 special and a TV episode with the same
+    number stay distinct wants — and so do two seasons of the same show
+    landing in one run.
     """
 
     wanted: dict[tuple[int, int], EpisodeSpan] = {}
+    embedded: dict[tuple[int, int], tuple[EpisodeSpan, SubtitleVariant]] = {}
     for move in plan.moves:
         if move.kind is not MoveKind.MEDIA:
             continue
@@ -761,13 +780,15 @@ async def _episodes_missing_subtitles(
         span = span_from_name(destination.name)
         if span is None:
             continue
-        if await _has_embedded_chinese(destination, prober):
+        variant = await _embedded_chinese_variant(destination, prober)
+        if variant is not None:
             _LOGGER.info(
                 "%s carries an embedded Chinese subtitle track", destination.name
             )
+            embedded[_wanted_key(span)] = (span, variant)
             continue
         wanted[_wanted_key(span)] = span
-    return wanted
+    return wanted, embedded
 
 
 def _has_subtitle(video: Path) -> bool:
@@ -779,19 +800,25 @@ def _has_subtitle(video: Path) -> bool:
     return False
 
 
-async def _has_embedded_chinese(video: Path, prober: Prober) -> bool:
-    """Unknown is False: a missing ffprobe, a failed probe and untagged
-    tracks all fall back to acquiring external subtitles."""
+async def _embedded_chinese_variant(
+    video: Path, prober: Prober
+) -> SubtitleVariant | None:
+    """Variant of the first identifiably Chinese non-forced track, if any.
+
+    Unknown is None: a missing ffprobe, a failed probe and untagged tracks
+    all fall back to acquiring external subtitles."""
 
     try:
         probe = await prober(video)
     except (ReeloomError, OSError) as error:
         _LOGGER.debug("subtitle probe failed for %s: %s", video.name, error)
-        return False
+        return None
     if probe is None:
-        return False
-    return any(
-        not stream.forced
-        and variant_from_stream_tags(stream.language, stream.title) is not None
-        for stream in probe.subtitle_streams
-    )
+        return None
+    for stream in probe.subtitle_streams:
+        if stream.forced:
+            continue
+        variant = variant_from_stream_tags(stream.language, stream.title)
+        if variant is not None:
+            return variant
+    return None

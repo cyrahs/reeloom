@@ -22,6 +22,7 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
       archived: 0,
       subtitles_moved: 0,
       subtitles_acquired: 0,
+      subtitles_embedded: 0,
       subtitle_note: "",
       replaced: [],
       discarded: [],
@@ -159,6 +160,7 @@ describe("run detail page", () => {
           archived: 2,
           subtitles_moved: 0,
           subtitles_acquired: 0,
+          subtitles_embedded: 3,
           subtitle_note: "",
           replaced: ["old.mkv"],
           discarded: ["dup01.mkv"],
@@ -170,7 +172,7 @@ describe("run detail page", () => {
 
     expect(
       await screen.findByText(
-        "移动 1 · 归档 2 · 字幕 0 · 下载字幕 0 · 洗版 1 · 重复 2",
+        "移动 1 · 归档 2 · 字幕 0 · 下载字幕 0 · 内封 3 · 洗版 1 · 重复 2",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/dup01\.mkv/)).not.toBeInTheDocument();
