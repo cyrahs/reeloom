@@ -120,7 +120,18 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
     assert "未映射" not in text
 
 
-def test_the_title_is_bold_and_links_to_tmdb(config: WatchConfig) -> None:
+def test_the_title_links_to_the_run_page(config: WatchConfig) -> None:
+    run = make_run(plan=Plan(identity=IDENTITY, moves=()))
+
+    assert (
+        '<b><a href="https://reeloom.example/#/runs/run-1">Show (2024)</a></b>'
+        in render(run, config, "https://reeloom.example")
+    )
+
+
+def test_the_title_falls_back_to_tmdb_without_a_public_url(
+    config: WatchConfig,
+) -> None:
     run = make_run(plan=Plan(identity=IDENTITY, moves=()))
 
     assert (
@@ -129,7 +140,7 @@ def test_the_title_is_bold_and_links_to_tmdb(config: WatchConfig) -> None:
     )
 
 
-def test_a_movie_links_to_the_movie_page(config: WatchConfig) -> None:
+def test_a_movie_falls_back_to_the_tmdb_movie_page(config: WatchConfig) -> None:
     identity = MediaIdentity(MediaType.MOVIE, 77, "Film", 2020)
     run = make_run(plan=Plan(identity=identity, moves=()))
 
@@ -247,6 +258,26 @@ async def test_notifier_falls_back_to_text_when_the_photo_is_rejected(
         "sendPhoto",
         "sendMessage",
     ]
+
+
+async def test_notifier_threads_the_public_url_into_the_message(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)),
+        public_url="https://reeloom.example",
+        transport=httpx.MockTransport(handler),
+    )
+    await notifier.run_settled(identified_run(), config)
+
+    fields = parse_qs(seen[0].content.decode())
+    assert "https://reeloom.example/#/runs/run-1" in fields["text"][0]
 
 
 async def test_notifier_sends_plain_text_when_there_is_no_poster(

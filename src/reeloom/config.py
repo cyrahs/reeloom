@@ -36,6 +36,9 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8080
     scan_interval_seconds: int = 30
+    public_url: str = ""
+    """Where a browser reaches the web UI; empty means links fall back to
+    TMDB. Deployment-level because only the operator knows the ingress."""
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> Settings:
@@ -66,6 +69,7 @@ class Settings:
             scan_interval_seconds=_int(
                 env, "REELOOM_SCAN_INTERVAL_SECONDS", 30, 5, 3600
             ),
+            public_url=env.get("REELOOM_PUBLIC_URL", "").strip().rstrip("/"),
         )
 
 

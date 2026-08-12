@@ -57,6 +57,17 @@ def test_an_injected_value_landing_on_an_int_key_falls_back(
     assert "REELOOM_SCAN_INTERVAL_SECONDS" in caplog.text
 
 
+def test_public_url_defaults_to_empty() -> None:
+    assert Settings.from_env(env()).public_url == ""
+
+
+def test_public_url_drops_the_trailing_slash() -> None:
+    settings = Settings.from_env(
+        env(REELOOM_PUBLIC_URL="https://reeloom.example/")
+    )
+    assert settings.public_url == "https://reeloom.example"
+
+
 def test_a_mistyped_integer_still_fails() -> None:
     with pytest.raises(ConfigError) as error:
         Settings.from_env(env(REELOOM_LISTEN_PORT="808O"))
