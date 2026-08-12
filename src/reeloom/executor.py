@@ -48,7 +48,7 @@ from reeloom.scanner import (
     SUBTITLE_EXTENSIONS,
     safe_relative,
 )
-from reeloom.trash import TRASH_DIR, prune_trash
+from reeloom.trash import TRASH_DIR, prune_trash, rmdir_if_empty
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -448,12 +448,5 @@ def _remove_empty_tree(folder: Path) -> None:
         return
     for current, directories, _ in os.walk(folder, topdown=False, followlinks=False):
         for name in directories:
-            _try_rmdir(Path(current) / name)
-    _try_rmdir(folder)
-
-
-def _try_rmdir(path: Path) -> None:
-    try:
-        path.rmdir()
-    except OSError:
-        pass
+            rmdir_if_empty(Path(current) / name)
+    rmdir_if_empty(folder)

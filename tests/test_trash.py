@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from reeloom.trash import (
     list_trash_entries,
     prune_trash,
     purge_run_trash,
+    rmdir_if_empty,
     trash_relative,
 )
 
@@ -109,3 +111,47 @@ def test_prune_removes_an_empty_trash_dir_entirely(tmp_path: Path) -> None:
 def test_prune_without_a_trash_dir_is_a_noop(tmp_path: Path) -> None:
     prune_trash(tmp_path)
     assert not (tmp_path / TRASH_DIR).exists()
+
+
+def test_prune_never_calls_rmdir_on_a_non_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CloudDrive-style FUSE mounts implement rmdir as a recursive delete
+    # instead of failing with ENOTEMPTY; pruning must not rely on that
+    # failure to protect the trashed files.
+    kept = _drop(tmp_path, "run-a", "inbound/Show/a.mkv")
+
+    def cloud_rmdir(self: Path) -> None:
+        shutil.rmtree(self)
+
+    monkeypatch.setattr(Path, "rmdir", cloud_rmdir)
+    prune_trash(tmp_path)
+
+    assert kept.exists()
+
+
+def test_rmdir_if_empty_removes_only_empty_directories(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    full = tmp_path / "full"
+    full.mkdir()
+    (full / "keep.mkv").write_bytes(b"data")
+
+    rmdir_if_empty(empty)
+    rmdir_if_empty(full)
+    rmdir_if_empty(tmp_path / "absent")
+
+    assert not empty.exists()
+    assert (full / "keep.mkv").exists()
+
+
+def test_rmdir_if_empty_leaves_symlinks_alone(tmp_path: Path) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(victim)
+
+    rmdir_if_empty(link)
+
+    assert link.is_symlink()
+    assert victim.is_dir()

@@ -108,7 +108,7 @@ def purge_run_trash(root: Path, run_id: str) -> tuple[int, int]:
     files, size = _measure(target)
     _LOGGER.info("purging trash %s (%d files, %d bytes)", target, files, size)
     shutil.rmtree(target)
-    _try_rmdir(trash_root)
+    rmdir_if_empty(trash_root)
     return (files, size)
 
 
@@ -116,8 +116,8 @@ def prune_trash(root: Path) -> None:
     """Remove empty directories under the trash area, and the area itself.
 
     Reverts and replayed moves leave empty directory skeletons behind; this
-    keeps the watch root clean without ever touching a file — only ``rmdir``,
-    which fails harmlessly on anything non-empty.
+    keeps the watch root clean without ever touching a file — each directory
+    is checked to be empty before it is removed.
     """
 
     trash_root = root / TRASH_DIR
@@ -127,8 +127,8 @@ def prune_trash(root: Path) -> None:
         trash_root, topdown=False, followlinks=False
     ):
         for name in directories:
-            _try_rmdir(Path(current) / name)
-    _try_rmdir(trash_root)
+            rmdir_if_empty(Path(current) / name)
+    rmdir_if_empty(trash_root)
 
 
 def _check_component(name: str) -> None:
@@ -155,8 +155,20 @@ def _measure(folder: Path) -> tuple[int, int]:
     return (files, size)
 
 
-def _try_rmdir(path: Path) -> None:
+def rmdir_if_empty(path: Path) -> None:
+    """Remove a directory only after checking it holds nothing.
+
+    POSIX ``rmdir`` refuses a non-empty directory, but cloud-drive FUSE
+    mounts (CloudDrive2's CloudFS) implement it as a recursive delete, so
+    ENOTEMPTY cannot be trusted to protect the files inside.
+    """
+
+    if path.is_symlink():
+        return
     try:
+        with os.scandir(path) as scanned:
+            for _ in scanned:
+                return
         path.rmdir()
     except OSError:
         pass
