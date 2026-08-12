@@ -216,18 +216,43 @@ class RecordingNotifier:
 
 
 class ScriptedModel:
-    """Replays a fixed sequence of replies through the real tool loop."""
+    """Replays a fixed sequence of replies through the real tool loop.
+
+    Every ``complete`` call first checks the conversation the way OpenAI
+    does: an assistant message with tool calls must be answered by matching
+    ``tool`` messages before anything else, or the real API rejects the
+    request with "No tool output found for function call".
+    """
 
     def __init__(self, *replies: ModelReply) -> None:
         self.replies = list(replies)
         self.seen: list[Conversation] = []
 
     async def complete(self, conversation, tools):
+        assert_tool_calls_answered(conversation.messages)
         self.tools = tools
         self.seen.append(list(conversation.messages))
         if not self.replies:
             return ModelReply(content="I have nothing further.")
         return self.replies.pop(0)
+
+
+def assert_tool_calls_answered(messages: list[dict[str, Any]]) -> None:
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        index += 1
+        if message.get("role") != "assistant" or not message.get("tool_calls"):
+            continue
+        expected = sorted(item["id"] for item in message["tool_calls"])
+        answered = []
+        while index < len(messages) and messages[index].get("role") == "tool":
+            answered.append(messages[index].get("tool_call_id"))
+            index += 1
+        assert sorted(answered) == expected, (
+            f"assistant tool calls {expected} answered by {sorted(answered)};"
+            " the real API rejects this conversation"
+        )
 
 
 def call(name: str, **arguments: Any) -> ModelReply:

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reeloom.adapters.archive import extract_subtitles, find_sevenzip, is_archive
+from reeloom.adapters.llm import ModelError
 from reeloom.models import (
     EpisodeSpan,
     MediaIdentity,
@@ -334,6 +335,33 @@ async def test_giving_up_leaves_the_run_finished(
 
     assert result.subtitles_acquired == 0
     assert result.subtitle_note == "未找到合适的字幕发布"
+
+
+async def test_a_model_failure_becomes_a_short_note(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient",
+        lambda **kwargs: FakeAcgrip(tmp_path / "absent.7z"),
+    )
+
+    class FailingModel:
+        async def complete(self, conversation, tools):
+            raise ModelError("model_error", status=400, detail="{...provider json...}")
+
+    database = FakeDatabase([config])
+    run = make_run(database, config, 1)
+    service = SubtitleAcquisition(
+        database, StubClients(FailingModel(), None), tmp_path / "work"
+    )
+
+    result = await service.acquire(run, config, RunResult(moved=1))
+
+    # The provider's error body stays in the logs; the note is just the code.
+    assert result.subtitle_note == "model_error"
+    assert result.subtitles_acquired == 0
 
 
 async def test_nothing_happens_when_every_episode_already_has_subtitles(
