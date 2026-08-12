@@ -103,7 +103,8 @@ async def test_clear_upgrade_returns_an_augmented_plan(
         MoveKind.MEDIA,
     ]
     assert augmented.moves[0].source_path == LIB_EP1
-    assert augmented.moves[0].dest_path == f"{TRASH_DIR}/run-1/{LIB_EP1}"
+    assert augmented.moves[0].dest_root is Root.INBOUND
+    assert augmented.moves[0].dest_path == f"{TRASH_DIR}/run-1/library/{LIB_EP1}"
 
 
 async def test_gray_zone_parks_for_confirmation(
@@ -213,8 +214,8 @@ async def test_an_already_augmented_plan_is_left_alone(
         kind=MoveKind.TRASH_REPLACED,
         source_root=Root.LIBRARY,
         source_path=LIB_EP1,
-        dest_root=Root.LIBRARY,
-        dest_path=f"{TRASH_DIR}/run-1/{LIB_EP1}",
+        dest_root=Root.INBOUND,
+        dest_path=f"{TRASH_DIR}/run-1/library/{LIB_EP1}",
     )
     run = build_run(pair)
     run = replace(run, plan=Plan(identity=IDENTITY, moves=(trash, pair[1])))

@@ -307,9 +307,16 @@ done → （修订会话得到新计划）→ reverting → executing → … �
   TRASH_DUPLICATE move 编译进 plan（先腾旧、再入新，从不覆盖），
   崩溃重放、revert、结果统计全部复用既有 executor 机制。
   `run.extra.replace` 只存决策 JSON 供展示与确认。
-- 淘汰文件 rename 进同根 `.reeloom-trash/<run-id>/`（Emby 与 scanner
-  均不可见，同文件系统必然成功），worker 每小时清理一次：run 终态且
-  超过全局 `trash_retention_days`（默认 3，0=run 结束即删）才由
-  `trash.purge_run_trash` 真正删除——这是全代码库唯一的硬删除点。
-  保留期内 revert 可整体复原；purge 后 revert 对缺失源记 missing 跳过，
-  与 §11.1 的降级规则一致。
+- 淘汰文件 rename 进监控目录下的
+  `.reeloom-trash/<run-id>/<来源>/`（来源段为 library / inbound /
+  extra-N，防止不同根的同名相对路径相撞）。回收区不放媒体库内：
+  Emby 会扫描媒体库，库内的 dot 目录并不能让已入库的旧版从 Emby
+  消失；统一移回监控目录才是真正的"下架"。代价是媒体库与额外目录
+  必须和监控目录同文件系统——跨文件系统时 rename 报
+  `cross_filesystem_move` 转待处理，从不退化为复制。worker 每小时
+  清理一次：run 终态且超过全局 `trash_retention_days`（默认 3，
+  0=run 结束即删）才由 `trash.purge_run_trash` 真正删除——这是全
+  代码库唯一的硬删除点。空目录（revert 或重放留下的骨架）由
+  `trash.prune_trash` 随执行、revert 与 purge 顺手 rmdir，回收区
+  清空后目录本身也消失。保留期内 revert 可整体复原；purge 后
+  revert 对缺失源记 missing 跳过，与 §11.1 的降级规则一致。

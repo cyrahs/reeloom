@@ -311,14 +311,17 @@ def test_replacement_trashes_every_existing_instance_first() -> None:
         MoveKind.MEDIA,
     ]
     trash_lib, trash_extra = augmented.moves[0], augmented.moves[1]
+    # Both trash into the watch root, each under its own origin segment.
     assert trash_lib.source_root is Root.LIBRARY
+    assert trash_lib.dest_root is Root.INBOUND
     assert trash_lib.dest_path == (
-        f"{TRASH_DIR}/{RUN_ID}/{library.relative_path}"
+        f"{TRASH_DIR}/{RUN_ID}/library/{library.relative_path}"
     )
     assert trash_extra.source_root is Root.EXTRA
+    assert trash_extra.dest_root is Root.INBOUND
     assert trash_extra.extra_base == "/data/anirss"
     assert trash_extra.dest_path == (
-        f"{TRASH_DIR}/{RUN_ID}/{extra.relative_path}"
+        f"{TRASH_DIR}/{RUN_ID}/extra-1/{extra.relative_path}"
     )
     # The import move itself is untouched.
     assert augmented.moves[2] == plan.moves[0]
@@ -343,7 +346,7 @@ def test_s1_duplicates_are_trashed_while_s2_still_imports() -> None:
     assert discarded.kind is MoveKind.TRASH_DUPLICATE
     assert discarded.dest_root is Root.INBOUND
     assert discarded.dest_path == (
-        f"{TRASH_DIR}/{RUN_ID}/Drop/[BD] Show - 01.mkv"
+        f"{TRASH_DIR}/{RUN_ID}/inbound/Drop/[BD] Show - 01.mkv"
     )
     assert discarded.candidate_id == "V1"
     # S2 imports exactly as planned.
@@ -374,7 +377,31 @@ def test_folder_rename_redirects_library_trash_paths() -> None:
     assert trash.kind is MoveKind.TRASH_REPLACED
     # The rename has already happened by the time the trash move runs.
     assert trash.source_path == f"{FOLDER}/S01/Show S01E01.mkv"
-    assert trash.dest_path == f"{TRASH_DIR}/{RUN_ID}/{FOLDER}/S01/Show S01E01.mkv"
+    assert trash.dest_path == (
+        f"{TRASH_DIR}/{RUN_ID}/library/{FOLDER}/S01/Show S01E01.mkv"
+    )
+
+
+def test_two_extra_dirs_with_equal_relative_paths_do_not_collide() -> None:
+    plan, snapshot = series_plan(incoming_episode(1, 300))
+    first = extra_file(1, 50)
+    second = ExistingFile(
+        root=Root.EXTRA,
+        extra_base="/data/other",
+        relative_path=first.relative_path,
+        size_bytes=40,
+        span=EpisodeSpan(1, 1, 1),
+    )
+    decision = decide(plan, snapshot, [lib_file(1, 200), first, second])
+    augmented = apply_decision(plan, decision, run_id=RUN_ID)
+
+    dests = [
+        move.dest_path
+        for move in augmented.moves
+        if move.kind is MoveKind.TRASH_REPLACED
+    ]
+    assert len(dests) == 3
+    assert len(set(dests)) == 3
 
 
 def test_bundled_subtitle_follows_its_discarded_episode_only_if_present() -> None:

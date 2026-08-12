@@ -493,6 +493,23 @@ def apply_decision(plan: Plan, decision: ReplacementDecision, *, run_id: str) ->
             for item in group.overlap:
                 discard_ids.add(item.candidate_id)
 
+    # Everything trashes into the watch root, so each origin gets its own
+    # path segment: equal relative paths from two extra dirs must not collide.
+    extra_origins = {
+        base: f"extra-{index}"
+        for index, base in enumerate(
+            sorted(
+                {
+                    item.extra_base
+                    for pair in replace_pairs.values()
+                    for item in pair
+                    if item.extra_base is not None
+                }
+            ),
+            start=1,
+        )
+    }
+
     rename = next(
         (move for move in plan.moves if move.kind is MoveKind.FOLDER_RENAME), None
     )
@@ -510,7 +527,9 @@ def apply_decision(plan: Plan, decision: ReplacementDecision, *, run_id: str) ->
                 if existing.key in trashed:
                     continue
                 trashed.add(existing.key)
-                moves.append(_trash_existing(existing, rename, run_id))
+                moves.append(
+                    _trash_existing(existing, rename, run_id, extra_origins)
+                )
             moves.append(move)
         elif candidate_id in discard_ids:
             moves.append(_trash_incoming(move, run_id))
@@ -523,7 +542,10 @@ def apply_decision(plan: Plan, decision: ReplacementDecision, *, run_id: str) ->
 
 
 def _trash_existing(
-    existing: ExistingFile, rename: Move | None, run_id: str
+    existing: ExistingFile,
+    rename: Move | None,
+    run_id: str,
+    extra_origins: Mapping[str, str],
 ) -> Move:
     relative = existing.relative_path
     # A folder rename runs first, so a library file recorded under the old
@@ -535,12 +557,17 @@ def _trash_existing(
     ):
         parts = PurePosixPath(relative).parts
         relative = PurePosixPath(rename.dest_path, *parts[1:]).as_posix()
+    origin = (
+        extra_origins[existing.extra_base]
+        if existing.extra_base is not None
+        else existing.root.value
+    )
     return Move(
         kind=MoveKind.TRASH_REPLACED,
         source_root=existing.root,
         source_path=relative,
-        dest_root=existing.root,
-        dest_path=trash_relative(run_id, relative),
+        dest_root=Root.INBOUND,
+        dest_path=trash_relative(run_id, origin, relative),
         extra_base=existing.extra_base,
     )
 
@@ -550,7 +577,7 @@ def _trash_incoming(move: Move, run_id: str) -> Move:
         move,
         kind=MoveKind.TRASH_DUPLICATE,
         dest_root=Root.INBOUND,
-        dest_path=trash_relative(run_id, move.source_path),
+        dest_path=trash_relative(run_id, Root.INBOUND.value, move.source_path),
     )
 
 

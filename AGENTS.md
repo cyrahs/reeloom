@@ -12,11 +12,12 @@ Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。
    清理。受控例外仅两处：
    (a) discard 会删除 reeloom 自己下载的 `.acquired` 字幕暂存
    （可重新下载），保证 fail/ 里是与原始下载一致的内容；
-   (b) 洗版：被替换或判定为重复的文件先以 rename 移入同根的
-   `.reeloom-trash/<run-id>/` 回收区（记入 executed_moves，保留期内可
-   revert 复原），再由 worker 的定期清理（`trash.purge_run_trash`，
-   全代码库唯一硬删除点）在 `trash_retention_days` 到期且 run 终态后
-   删除。洗版判定完全由确定性代码做出（`replace.py`）；模型从不决定
+   (b) 洗版：被替换或判定为重复的文件先以 rename 移入监控目录下的
+   `.reeloom-trash/<run-id>/<来源>/` 回收区（不放媒体库内，Emby 会扫库；
+   记入 executed_moves，保留期内可 revert 复原），再由 worker 的定期
+   清理（`trash.purge_run_trash`，全代码库唯一硬删除点）在
+   `trash_retention_days` 到期且 run 终态后删除；空目录只用 `rmdir`
+   顺手清掉。洗版判定完全由确定性代码做出（`replace.py`）；模型从不决定
    删除。额外目录匹配时模型只见顶层文件夹名清单，返回序号或放弃，
    从不产生路径。
 2. 模型没有路径输入通道。它提交 candidate ID 和集数；标题、年份来自 TMDB，
