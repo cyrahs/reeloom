@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from reeloom.adapters import ffprobe
-from reeloom.adapters.ffprobe import Probe, ProbeError, _parse, probe_video
+from reeloom.adapters.ffprobe import (
+    Probe,
+    ProbeError,
+    SubtitleStream,
+    _parse,
+    probe_video,
+)
 
 VIDEO = Path("Show S01E01.mkv")
 
@@ -50,6 +56,52 @@ def test_parse_tolerates_garbage_values() -> None:
     )
     assert probe == Probe(
         height=None, duration_seconds=None, bit_rate=None, video_codec=None
+    )
+
+
+def test_parse_collects_subtitle_streams() -> None:
+    payload = _payload(
+        streams=[
+            {"codec_type": "video", "codec_name": "hevc", "height": 1080},
+            {
+                "codec_type": "subtitle",
+                "codec_name": "ass",
+                "disposition": {"forced": 0},
+                "tags": {"language": "chi", "title": "简体中文"},
+            },
+            {
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "disposition": {"forced": 1},
+                "tags": {"language": "eng"},
+            },
+        ]
+    )
+
+    probe = _parse(payload, VIDEO)
+
+    assert probe.subtitle_streams == (
+        SubtitleStream(codec="ass", language="chi", title="简体中文", forced=False),
+        SubtitleStream(codec="subrip", language="eng", title=None, forced=True),
+    )
+
+
+def test_parse_tolerates_garbage_subtitle_fields() -> None:
+    payload = _payload(
+        streams=[
+            {
+                "codec_type": "subtitle",
+                "codec_name": 7,
+                "tags": "zh",
+                "disposition": [],
+            }
+        ]
+    )
+
+    probe = _parse(payload, VIDEO)
+
+    assert probe.subtitle_streams == (
+        SubtitleStream(codec=None, language=None, title=None, forced=False),
     )
 
 
@@ -130,6 +182,53 @@ async def test_real_ffprobe_ranks_resolutions(tmp_path: Path) -> None:
     assert low_probe is not None and high_probe is not None
     assert low_probe.height is not None and high_probe.height is not None
     assert high_probe.height > low_probe.height
+
+
+@needs_ffmpeg
+async def test_real_ffprobe_reports_embedded_subtitle_tags(tmp_path: Path) -> None:
+    """The tag and disposition names the wanting logic reads must round-trip."""
+
+    plain = tmp_path / "plain.mkv"
+    render_sample(plain)
+    subs = tmp_path / "subs.srt"
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\n这个国家\n", "utf-8")
+    muxed = tmp_path / "muxed.mkv"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(plain),
+            "-i",
+            str(subs),
+            "-map",
+            "0:v",
+            "-map",
+            "1:s",
+            "-c:v",
+            "copy",
+            "-c:s",
+            "srt",
+            "-metadata:s:s:0",
+            "language=chi",
+            "-metadata:s:s:0",
+            "title=简体中文",
+            str(muxed),
+        ],
+        check=True,
+        timeout=60,
+    )
+
+    probe = await probe_video(muxed)
+
+    assert probe is not None
+    assert probe.video_codec == "mpeg4"
+    assert probe.subtitle_streams == (
+        SubtitleStream(
+            codec="subrip", language="chi", title="简体中文", forced=False
+        ),
+    )
 
 
 @needs_ffmpeg

@@ -56,6 +56,39 @@ def variant_from_name(name: str) -> SubtitleVariant | None:
     return None
 
 
+# Language tags release groups actually mux: ISO 639-2 chi/zho, bare zh and
+# BCP-47 zh-*, cmn/yue, plus the non-standard but common chs/cht.
+_CHINESE_LANGUAGE_TAGS = frozenset({"chi", "zho", "zh", "chs", "cht", "cmn", "yue"})
+
+
+def variant_from_stream_tags(
+    language: str | None, title: str | None
+) -> SubtitleVariant | None:
+    """Classify an embedded subtitle track by its container tags.
+
+    ``None`` means the track is not identifiably Chinese; an untagged track
+    stays unknown rather than guessed.
+    """
+
+    if title:
+        from_title = variant_from_name(title)
+        if from_title is not None:
+            return from_title
+    if not language:
+        return None
+    normalized = (
+        unicodedata.normalize("NFKC", language).casefold().replace("_", "-")
+    )
+    base = normalized.split("-", 1)[0]
+    if base not in _CHINESE_LANGUAGE_TAGS:
+        return None
+    if base == "chs" or "hans" in normalized:
+        return SubtitleVariant.CHS
+    if base == "cht" or "hant" in normalized:
+        return SubtitleVariant.CHT
+    return SubtitleVariant.CHI
+
+
 def _decodings(sample: bytes) -> list[str]:
     bounded = sample[:MAX_SAMPLE_BYTES]
     if bounded.startswith((b"\xff\xfe", b"\xfe\xff")):
