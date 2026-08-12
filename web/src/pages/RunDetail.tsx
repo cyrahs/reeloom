@@ -152,21 +152,22 @@ function TreeLevel({ node }: { node: DirNode }) {
 
 function Files({ run }: { run: RunDetail }) {
   const total = run.snapshot.reduce((sum, item) => sum + item.size_bytes, 0);
+  if (run.snapshot.length === 0) {
+    return (
+      <section>
+        <h2>文件</h2>
+        <p className="muted">无</p>
+      </section>
+    );
+  }
   return (
     <section>
-      <h2>文件</h2>
-      {run.snapshot.length === 0 ? (
-        <p className="muted">无</p>
-      ) : (
-        <>
-          <p className="files-total">
-            共 {run.snapshot.length} 个文件 · {formatSize(total)}
-          </p>
-          <div className="files">
-            <TreeLevel node={buildTree(run.snapshot)} />
-          </div>
-        </>
-      )}
+      <h2 className="files-heading">
+        文件 · 共 {run.snapshot.length} 个文件 · {formatSize(total)}
+      </h2>
+      <div className="files">
+        <TreeLevel node={buildTree(run.snapshot)} />
+      </div>
     </section>
   );
 }
@@ -258,7 +259,18 @@ function Moves({ run }: { run: RunDetail }) {
         </div>
       ))}
       {archived.length > 0 && (
-        <p className="unmapped">未映射（将归档）：{archived.join("、")}</p>
+        <div className="trash-moves">
+          <p className="trash-dest">
+            未映射（{run.plan.unmapped.length} 个）移入 <code>archive/</code>
+          </p>
+          <ul className="trash-files">
+            {archived.map((path) => (
+              <li key={path}>
+                <code>{path}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );

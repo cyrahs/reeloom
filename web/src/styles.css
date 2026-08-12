@@ -545,16 +545,18 @@ ul {
   color: var(--muted);
 }
 
-.files-total {
-  color: var(--muted);
-  font-size: 0.84rem;
-  margin: 0 0 0.4rem;
+/* Sizes like "22.1 GiB" keep their casing in the heading. */
+.files-heading {
+  text-transform: none;
 }
 
 .files {
   max-height: 22rem;
   overflow-y: auto;
   font-size: 0.9rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
 }
 
 .tree .tree {
