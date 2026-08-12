@@ -287,6 +287,8 @@ function Result({ run }: { run: RunDetail }) {
     `字幕 ${run.result.subtitles_moved}`,
     `下载字幕 ${run.result.subtitles_acquired}`,
   ];
+  if (run.result.subtitles_embedded > 0)
+    summary.push(`内封 ${run.result.subtitles_embedded}`);
   if (replaced.length > 0) summary.push(`洗版 ${replaced.length}`);
   const duplicateCount = discarded.length + duplicates.length;
   if (duplicateCount > 0) summary.push(`重复 ${duplicateCount}`);

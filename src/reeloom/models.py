@@ -348,6 +348,8 @@ class RunResult:
     subtitles_moved: int = 0
     """Subtitles bundled with the release; ``moved`` excludes them."""
     subtitles_acquired: int = 0
+    subtitles_embedded: int = 0
+    """Episodes covered by a Chinese subtitle track muxed into the video."""
     subtitle_note: str = ""
     replaced: tuple[str, ...] = ()
     """Old versions displaced into the trash area by this run."""
@@ -362,6 +364,7 @@ class RunResult:
             "archived": self.archived,
             "subtitles_moved": self.subtitles_moved,
             "subtitles_acquired": self.subtitles_acquired,
+            "subtitles_embedded": self.subtitles_embedded,
             "subtitle_note": self.subtitle_note,
             "replaced": list(self.replaced),
             "discarded": list(self.discarded),
@@ -376,6 +379,7 @@ class RunResult:
             archived=payload.get("archived", 0),
             subtitles_moved=payload.get("subtitles_moved", 0),
             subtitles_acquired=payload.get("subtitles_acquired", 0),
+            subtitles_embedded=payload.get("subtitles_embedded", 0),
             subtitle_note=payload.get("subtitle_note", ""),
             replaced=tuple(payload.get("replaced", ())),
             discarded=tuple(payload.get("discarded", ())),

@@ -20,6 +20,7 @@ export interface RunResult {
   archived: number;
   subtitles_moved: number;
   subtitles_acquired: number;
+  subtitles_embedded: number;
   subtitle_note: string;
   replaced: string[];
   discarded: string[];

@@ -54,6 +54,8 @@ def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
             summary.append(f"字幕 {result.subtitles_moved}")
         if result.subtitles_acquired:
             summary.append(f"下载字幕 {result.subtitles_acquired}")
+        if result.subtitles_embedded:
+            summary.append(f"内封 {result.subtitles_embedded}")
         if result.replaced:
             summary.append(f"洗版 {len(result.replaced)}")
         duplicate_count = len(result.discarded) + len(result.duplicates)

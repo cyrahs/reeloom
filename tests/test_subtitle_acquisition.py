@@ -168,10 +168,11 @@ async def test_only_episodes_actually_lacking_a_subtitle_are_wanted(
     plan = Plan(identity=IDENTITY, moves=(video_move(1), video_move(2)))
     prober = FakeProber()
 
-    wanted = await _episodes_missing_subtitles(plan, library, prober)
+    wanted, embedded = await _episodes_missing_subtitles(plan, library, prober)
 
     assert set(wanted) == {(1, 2)}
     assert wanted[(1, 2)] == EpisodeSpan(1, 2, 2)
+    assert embedded == {}
     # The sidecar settles episode 1 without spending a probe on it.
     assert prober.seen == [str(season / "Show S01E02.mkv")]
 
@@ -181,7 +182,10 @@ async def test_a_video_that_never_landed_is_not_wanted(
 ) -> None:
     _, library = roots
     plan = Plan(identity=IDENTITY, moves=(video_move(1),))
-    assert await _episodes_missing_subtitles(plan, library, FakeProber()) == {}
+    assert await _episodes_missing_subtitles(plan, library, FakeProber()) == (
+        {},
+        {},
+    )
 
 
 async def test_two_seasons_wanting_the_same_episode_number_stay_distinct(
@@ -198,7 +202,7 @@ async def test_two_seasons_wanting_the_same_episode_number_stay_distinct(
         moves=(video_move(1, season=2), video_move(1, season=1)),
     )
 
-    wanted = await _episodes_missing_subtitles(plan, library, FakeProber())
+    wanted, _ = await _episodes_missing_subtitles(plan, library, FakeProber())
 
     assert set(wanted) == {(1, 1), (2, 1)}
     assert wanted[(2, 1)] == EpisodeSpan(2, 1, 1)
@@ -231,9 +235,10 @@ async def test_an_embedded_chinese_track_counts_as_having_subtitles(
         }
     )
 
-    wanted = await _episodes_missing_subtitles(plan, library, prober)
+    wanted, embedded = await _episodes_missing_subtitles(plan, library, prober)
 
     assert set(wanted) == {(1, 2)}
+    assert embedded == {(1, 1): (EpisodeSpan(1, 1, 1), SubtitleVariant.CHS)}
 
 
 async def test_foreign_forced_or_untagged_tracks_do_not_count(
@@ -266,9 +271,10 @@ async def test_foreign_forced_or_untagged_tracks_do_not_count(
         }
     )
 
-    wanted = await _episodes_missing_subtitles(plan, library, prober)
+    wanted, embedded = await _episodes_missing_subtitles(plan, library, prober)
 
     assert set(wanted) == {(1, 1), (1, 2), (1, 3)}
+    assert embedded == {}
 
 
 async def test_a_failed_probe_still_wants_subtitles(
@@ -281,9 +287,9 @@ async def test_a_failed_probe_still_wants_subtitles(
     async def prober(path: Path) -> Probe | None:
         raise ProbeError("probe_failed", file=path.name)
 
-    assert set(await _episodes_missing_subtitles(plan, library, prober)) == {
-        (1, 1)
-    }
+    wanted, embedded = await _episodes_missing_subtitles(plan, library, prober)
+    assert set(wanted) == {(1, 1)}
+    assert embedded == {}
 
 
 # ---- archive extraction --------------------------------------------------
@@ -583,6 +589,7 @@ async def test_nothing_happens_when_every_episode_already_has_subtitles(
     result = await service.acquire(run, config, RunResult(moved=1))
 
     assert result.subtitles_acquired == 0
+    assert result.subtitles_embedded == 0
     assert result.subtitle_note == ""
 
 
@@ -609,7 +616,10 @@ async def test_nothing_happens_when_subtitles_are_embedded(
     result = await service.acquire(run, config, RunResult(moved=1))
 
     assert result.subtitles_acquired == 0
+    assert result.subtitles_embedded == 1
     assert result.subtitle_note == ""
+    messages = [message for _, message in database.logs]
+    assert "embedded subtitles: S01E01 (chs)" in messages
 
 
 # ---- specials (season 0) ---------------------------------------------------
