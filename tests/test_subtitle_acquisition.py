@@ -25,7 +25,10 @@ from reeloom.models import (
 from reeloom.server.subtitles import (
     SubtitleAcquisition,
     _episodes_missing_subtitles,
+    is_special_name,
+    match_episode,
     parse_episode_number,
+    parse_special_number,
 )
 from tests.conftest import make_files
 from tests.fakes import FakeDatabase, ScriptedModel, StubClients, call
@@ -57,6 +60,67 @@ def test_resolution_is_never_read_as_an_episode_number() -> None:
     assert parse_episode_number("[Group] Show [1080p].ass") is None
 
 
+@pytest.mark.parametrize(
+    ("filename", "special"),
+    [
+        ("[DMG][Show][04][avc_aac].sc.ass", False),
+        ("[Group] Show - 04 [1080p][CHS].ass", False),
+        ("[Pussub][Show][BDRip][miniOVA Vol.4].ass", True),
+        ("[TUcaptions][Show][OVA 04][BDrip 1920x1080][BIG5].ass", True),
+        ("[YYDM-11FANS][SHOW][SP04][BDRIP][720P].pussub-sc.ass", True),
+        ("[Group] Show [SPs][02].ass", True),
+        ("[Group] Show 特典02.ass", True),
+        ("Show S00E04.chs.ass", True),
+        # "ova"/"sp" inside ordinary words must not count.
+        ("[Group] Casanova - 04.ass", False),
+        ("[Group] Show - 04.spa.ass", False),
+        ("[SP-Raws] Show - 04.ass", False),
+        ("[Group] Show - 04 [JPSC].ass", False),
+    ],
+)
+def test_special_mark_detection(filename: str, special: bool) -> None:
+    assert is_special_name(filename) is special
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("[Pussub][Show][BDRip][miniOVA Vol.4].ass", 4),
+        ("[TUcaptions][Show][OVA 04][BDrip 1920x1080][BIG5].ass", 4),
+        ("[YYDM-11FANS][SHOW][SP04][BDRIP][720P][X264-10bit_AAC].sc.ass", 4),
+        ("[Group] Show 特典02.ass", 2),
+        ("[Group] Show OVA - 04 [1080p].ass", 4),
+        ("Show S00E04.chs.ass", 4),
+        # Marked as a special but numbered elsewhere.
+        ("[Group] Show [OVA][04].ass", 4),
+        ("[Group] Show OVA.ass", None),
+    ],
+)
+def test_special_number_parsing(filename: str, expected: int | None) -> None:
+    assert parse_special_number(filename) == expected
+
+
+SPECIAL_SPAN = EpisodeSpan(0, 4, 4)
+REGULAR_SPAN = EpisodeSpan(1, 4, 4)
+
+
+def test_a_special_want_refuses_plain_episode_numbers() -> None:
+    """Regression: TV episode 04 subtitles were published as S00E04."""
+
+    wanted = {(True, 4): SPECIAL_SPAN}
+    assert match_episode("[DMG][Show][04][avc_aac].sc.ass", wanted) is None
+    assert (
+        match_episode("[TUcaptions][Show][OVA 04][BIG5].ass", wanted)
+        == SPECIAL_SPAN
+    )
+
+
+def test_a_regular_want_refuses_special_marked_files() -> None:
+    wanted = {(False, 4): REGULAR_SPAN}
+    assert match_episode("[YYDM][Show][SP04].sc.ass", wanted) is None
+    assert match_episode("[Group] Show - 04 [CHS].ass", wanted) == REGULAR_SPAN
+
+
 def video_move(episode: int) -> Move:
     return Move(
         kind=MoveKind.MEDIA,
@@ -65,6 +129,17 @@ def video_move(episode: int) -> Move:
         dest_root=Root.LIBRARY,
         dest_path=f"{LIBRARY_FOLDER}/S01/Show S01E{episode:02d}.mkv",
         candidate_id=f"V{episode}",
+    )
+
+
+def special_move(episode: int) -> Move:
+    return Move(
+        kind=MoveKind.MEDIA,
+        source_root=Root.INBOUND,
+        source_path=f"Drop/SPs/sp{episode}.mkv",
+        dest_root=Root.LIBRARY,
+        dest_path=f"{LIBRARY_FOLDER}/S00/Show S00E{episode:02d}.mkv",
+        candidate_id=f"S{episode}",
     )
 
 
@@ -78,8 +153,8 @@ def test_only_episodes_actually_lacking_a_subtitle_are_wanted(
 
     wanted = _episodes_missing_subtitles(plan, library)
 
-    assert set(wanted) == {2}
-    assert wanted[2] == EpisodeSpan(1, 2, 2)
+    assert set(wanted) == {(False, 2)}
+    assert wanted[(False, 2)] == EpisodeSpan(1, 2, 2)
 
 
 def test_a_video_that_never_landed_is_not_wanted(
@@ -381,6 +456,122 @@ async def test_nothing_happens_when_every_episode_already_has_subtitles(
 
     assert result.subtitles_acquired == 0
     assert result.subtitle_note == ""
+
+
+# ---- specials (season 0) ---------------------------------------------------
+
+
+@pytest.mark.binaries("7z")
+async def test_specials_and_episodes_with_the_same_number_are_routed_apart(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    """Regression (run e7a7bdc0): a TV episode 04 subtitle was published as
+    S00E04 because matching ignored the season entirely."""
+
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E04.mkv")
+    make_files(library / LIBRARY_FOLDER / "S00", "Show S00E04.mkv")
+    archive = make_archive(
+        tmp_path,
+        "collection",
+        {
+            "[Group] Show - 04 [CHS].ass": SIMPLIFIED_TEXT + " TV",
+            "[Group] Show [OVA 04][CHS].ass": SIMPLIFIED_TEXT + " OVA",
+        },
+    )
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient",
+        lambda **kwargs: FakeAcgrip(archive),
+    )
+
+    database = FakeDatabase([config])
+    run = Run(
+        id="run-1",
+        config_id=config.id,
+        folder_name="Drop",
+        state=RunState.ACQUIRING_SUBS,
+        plan=Plan(identity=IDENTITY, moves=(video_move(4), special_move(4))),
+    )
+    database.runs[run.id] = run
+    model = ScriptedModel(
+        call("search_subtitles", keyword="Show"),
+        call("select_release", attachment_id=99, reason="covers TV and OVA"),
+    )
+    service = SubtitleAcquisition(
+        database, StubClients(model, None), tmp_path / "work"
+    )
+
+    result = await service.acquire(run, config, RunResult(moved=2))
+
+    assert result.subtitles_acquired == 2
+    assert result.subtitle_note == ""
+    tv = library / LIBRARY_FOLDER / "S01" / "Show S01E04.chs.ass"
+    special = library / LIBRARY_FOLDER / "S00" / "Show S00E04.chs.ass"
+    assert tv.read_text("utf-8").endswith("TV")
+    assert special.read_text("utf-8").endswith("OVA")
+    # The model was told which wants are specials.
+    first_user = next(
+        message["content"]
+        for message in model.seen[-1]
+        if message["role"] == "user"
+    )
+    assert "Episodes needing subtitles: [4]" in first_user
+    assert "Specials (OVA/SP, season 0) needing subtitles: [4]" in first_user
+    # The negotiation left an audit trail in the run log.
+    messages = [message for _, message in database.logs]
+    assert "subtitles wanted: S00E04, S01E04" in messages
+    assert any(message.startswith('subtitle search "Show"') for message in messages)
+    assert any(message.startswith("subtitle pick: attachment 99") for message in messages)
+    assert (
+        'subtitle published: Show S00E04.chs.ass (from "[Group] Show [OVA 04][CHS].ass")'
+        in messages
+    )
+
+
+@pytest.mark.binaries("7z")
+async def test_a_tv_only_release_cannot_satisfy_a_special(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    _, library = roots
+    season = library / LIBRARY_FOLDER / "S00"
+    make_files(season, "Show S00E04.mkv")
+    archive = make_archive(
+        tmp_path, "tv-only", {"[Group] Show - 04 [CHS].ass": SIMPLIFIED_TEXT}
+    )
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient",
+        lambda **kwargs: FakeAcgrip(archive),
+    )
+
+    database = FakeDatabase([config])
+    run = Run(
+        id="run-1",
+        config_id=config.id,
+        folder_name="Drop",
+        state=RunState.ACQUIRING_SUBS,
+        plan=Plan(identity=IDENTITY, moves=(special_move(4),)),
+    )
+    database.runs[run.id] = run
+    model = ScriptedModel(
+        call("search_subtitles", keyword="Show"),
+        call("select_release", attachment_id=99),
+        call("give_up", reason="only TV episode subtitles exist"),
+    )
+    service = SubtitleAcquisition(
+        database, StubClients(model, None), tmp_path / "work"
+    )
+
+    result = await service.acquire(run, config, RunResult(moved=1))
+
+    assert result.subtitles_acquired == 0
+    assert result.subtitle_note == "未找到合适的字幕发布"
+    assert not (season / "Show S00E04.chs.ass").exists()
+    feedback = [
+        message["content"]
+        for message in model.seen[-1]
+        if message["role"] == "user"
+    ]
+    assert any("no_episodes_matched" in text for text in feedback)
 
 
 # ---- variant preference --------------------------------------------------
