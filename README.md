@@ -87,6 +87,11 @@ edited in the UI and stored in PostgreSQL.
 | `REELOOM_WORK_DIR` | no | `/var/lib/reeloom` |
 | `REELOOM_LISTEN_HOST` / `REELOOM_LISTEN_PORT` | no | `0.0.0.0` / `8080` |
 | `REELOOM_SCAN_INTERVAL_SECONDS` | no | `30` |
+| `REELOOM_PUBLIC_URL` | no | — |
+
+`REELOOM_PUBLIC_URL` is the URL a browser uses to reach the web UI (e.g.
+`https://reeloom.example.com`). When set, the title in a Telegram notification
+links to that run's page; when unset, it links to the work's TMDB page.
 
 The listen pair used to be `REELOOM_HOST` / `REELOOM_PORT`; those names are no
 longer read. Kubernetes and Docker inject `<SERVICE>_PORT` and friends into

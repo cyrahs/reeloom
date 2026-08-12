@@ -34,7 +34,7 @@ _HEADLINE = {
 }
 
 
-def render(run: Run, config: WatchConfig) -> str:
+def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
     """Telegram HTML. Every interpolated value is untrusted and escaped."""
 
     lines = [
@@ -42,7 +42,8 @@ def render(run: Run, config: WatchConfig) -> str:
         f"{_HEADLINE.get(run.state, run.state.value)} · {_text(config.name)}",
     ]
     if run.plan:
-        lines.append(_title(run.plan.identity))
+        identity = run.plan.identity
+        lines.append(_title(identity, _title_url(run.id, identity, public_url)))
 
     if run.result:
         result = run.result
@@ -77,11 +78,18 @@ def render(run: Run, config: WatchConfig) -> str:
     return "\n".join(lines)
 
 
-def _title(identity: MediaIdentity) -> str:
-    """Bold title linking to the work's TMDB page; ``tmdb_id`` is an int."""
+def _title_url(run_id: str, identity: MediaIdentity, public_url: str) -> str:
+    """The run's page when the deployment knows its own URL, else TMDB.
+    Every part is trusted: ``run_id`` is a UUID, ``tmdb_id`` an int, and
+    ``public_url`` comes from the operator's environment."""
 
+    if public_url:
+        return f"{public_url}/#/runs/{run_id}"
     kind = "movie" if identity.media_type is MediaType.MOVIE else "tv"
-    url = f"{_TMDB_WEB}/{kind}/{identity.tmdb_id}"
+    return f"{_TMDB_WEB}/{kind}/{identity.tmdb_id}"
+
+
+def _title(identity: MediaIdentity, url: str) -> str:
     return f'<b><a href="{url}">{_text(identity.title)} ({identity.year})</a></b>'
 
 
@@ -101,9 +109,11 @@ class TelegramNotifier:
         self,
         clients,
         *,
+        public_url: str = "",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._clients = clients
+        self._public_url = public_url
         self._transport = transport
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
@@ -118,7 +128,7 @@ class TelegramNotifier:
         except TelegramError as error:
             _LOGGER.warning("telegram not usable: %s", error.code)
             return
-        text = render(run, config)
+        text = render(run, config, self._public_url)
         poster = await self._poster(run)
         try:
             sent = False
