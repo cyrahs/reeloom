@@ -108,28 +108,43 @@ REGULAR_SPAN = EpisodeSpan(1, 4, 4)
 def test_a_special_want_refuses_plain_episode_numbers() -> None:
     """Regression: TV episode 04 subtitles were published as S00E04."""
 
-    wanted = {(True, 4): SPECIAL_SPAN}
-    assert match_episode("[DMG][Show][04][avc_aac].sc.ass", wanted) is None
+    wanted = {(0, 4): SPECIAL_SPAN}
+    assert match_episode("[DMG][Show][04][avc_aac].sc.ass", wanted, 0) is None
     assert (
-        match_episode("[TUcaptions][Show][OVA 04][BIG5].ass", wanted)
+        match_episode("[TUcaptions][Show][OVA 04][BIG5].ass", wanted, 0)
         == SPECIAL_SPAN
     )
 
 
 def test_a_regular_want_refuses_special_marked_files() -> None:
-    wanted = {(False, 4): REGULAR_SPAN}
-    assert match_episode("[YYDM][Show][SP04].sc.ass", wanted) is None
-    assert match_episode("[Group] Show - 04 [CHS].ass", wanted) == REGULAR_SPAN
+    wanted = {(1, 4): REGULAR_SPAN}
+    assert match_episode("[YYDM][Show][SP04].sc.ass", wanted, 1) is None
+    assert match_episode("[Group] Show - 04 [CHS].ass", wanted, 1) == REGULAR_SPAN
 
 
-def video_move(episode: int) -> Move:
+def test_a_bare_number_matches_the_season_being_negotiated() -> None:
+    """Regression (run 2dbd725f): matching ignored the season, so two
+    seasons in one run collided on their episode numbers."""
+
+    wanted = {(1, 4): REGULAR_SPAN, (2, 4): EpisodeSpan(2, 4, 4)}
+    assert match_episode("[Group] Show - 04 [CHS].ass", wanted, 2) == EpisodeSpan(
+        2, 4, 4
+    )
+    assert match_episode("[Group] Show - 04 [CHS].ass", wanted, 1) == REGULAR_SPAN
+    assert match_episode("[Group] Show - 04 [CHS].ass", wanted, 3) is None
+
+
+def video_move(episode: int, season: int = 1) -> Move:
     return Move(
         kind=MoveKind.MEDIA,
         source_root=Root.INBOUND,
-        source_path=f"Drop/ep{episode}.mkv",
+        source_path=f"Drop/s{season}ep{episode}.mkv",
         dest_root=Root.LIBRARY,
-        dest_path=f"{LIBRARY_FOLDER}/S01/Show S01E{episode:02d}.mkv",
-        candidate_id=f"V{episode}",
+        dest_path=(
+            f"{LIBRARY_FOLDER}/S{season:02d}/"
+            f"Show S{season:02d}E{episode:02d}.mkv"
+        ),
+        candidate_id=f"V{season}x{episode}",
     )
 
 
@@ -155,8 +170,8 @@ async def test_only_episodes_actually_lacking_a_subtitle_are_wanted(
 
     wanted = await _episodes_missing_subtitles(plan, library, prober)
 
-    assert set(wanted) == {(False, 2)}
-    assert wanted[(False, 2)] == EpisodeSpan(1, 2, 2)
+    assert set(wanted) == {(1, 2)}
+    assert wanted[(1, 2)] == EpisodeSpan(1, 2, 2)
     # The sidecar settles episode 1 without spending a probe on it.
     assert prober.seen == [str(season / "Show S01E02.mkv")]
 
@@ -167,6 +182,26 @@ async def test_a_video_that_never_landed_is_not_wanted(
     _, library = roots
     plan = Plan(identity=IDENTITY, moves=(video_move(1),))
     assert await _episodes_missing_subtitles(plan, library, FakeProber()) == {}
+
+
+async def test_two_seasons_wanting_the_same_episode_number_stay_distinct(
+    roots: tuple[Path, Path],
+) -> None:
+    """Regression (run 2dbd725f): keyed by bare episode number, the S01
+    wants silently overwrote the S02 wants."""
+
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    make_files(library / LIBRARY_FOLDER / "S02", "Show S02E01.mkv")
+    plan = Plan(
+        identity=IDENTITY,
+        moves=(video_move(1, season=2), video_move(1, season=1)),
+    )
+
+    wanted = await _episodes_missing_subtitles(plan, library, FakeProber())
+
+    assert set(wanted) == {(1, 1), (2, 1)}
+    assert wanted[(2, 1)] == EpisodeSpan(2, 1, 1)
 
 
 def probe_with(*streams: SubtitleStream) -> Probe:
@@ -198,7 +233,7 @@ async def test_an_embedded_chinese_track_counts_as_having_subtitles(
 
     wanted = await _episodes_missing_subtitles(plan, library, prober)
 
-    assert set(wanted) == {(False, 2)}
+    assert set(wanted) == {(1, 2)}
 
 
 async def test_foreign_forced_or_untagged_tracks_do_not_count(
@@ -233,7 +268,7 @@ async def test_foreign_forced_or_untagged_tracks_do_not_count(
 
     wanted = await _episodes_missing_subtitles(plan, library, prober)
 
-    assert set(wanted) == {(False, 1), (False, 2), (False, 3)}
+    assert set(wanted) == {(1, 1), (1, 2), (1, 3)}
 
 
 async def test_a_failed_probe_still_wants_subtitles(
@@ -247,7 +282,7 @@ async def test_a_failed_probe_still_wants_subtitles(
         raise ProbeError("probe_failed", file=path.name)
 
     assert set(await _episodes_missing_subtitles(plan, library, prober)) == {
-        (False, 1)
+        (1, 1)
     }
 
 
@@ -635,7 +670,10 @@ async def test_specials_and_episodes_with_the_same_number_are_routed_apart(
         if message["role"] == "user"
     )
     assert "Episodes needing subtitles: [4]" in first_user
-    assert "Specials (OVA/SP, season 0) needing subtitles: [4]" in first_user
+    assert (
+        "Specials (OVA/SP, season 0) also missing subtitles, used when this"
+        " release happens to carry them: [4]" in first_user
+    )
     # The negotiation left an audit trail in the run log.
     messages = [message for _, message in database.logs]
     assert "subtitles wanted: S00E04, S01E04" in messages
@@ -691,6 +729,141 @@ async def test_a_tv_only_release_cannot_satisfy_a_special(
         if message["role"] == "user"
     ]
     assert any("no_episodes_matched" in text for text in feedback)
+
+
+# ---- several seasons in one run ------------------------------------------
+
+
+@pytest.mark.binaries("7z")
+async def test_each_season_negotiates_its_own_release(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    """Regression (run 2dbd725f): a run carrying two seasons ran a single
+    negotiation, and one forum package can never cover both."""
+
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    make_files(library / LIBRARY_FOLDER / "S02", "Show S02E01.mkv")
+    fake = FakeAcgrip(
+        {
+            99: make_archive(
+                tmp_path, "s1", {"[Group] Show - 01 [CHS].ass": SIMPLIFIED_TEXT}
+            ),
+            100: make_archive(
+                tmp_path,
+                "s2",
+                {"[Group] Show 2nd - 01 [CHS].ass": SIMPLIFIED_TEXT + " S2"},
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient", lambda **kwargs: fake
+    )
+
+    database = FakeDatabase([config])
+    run = Run(
+        id="run-1",
+        config_id=config.id,
+        folder_name="Drop",
+        state=RunState.ACQUIRING_SUBS,
+        plan=Plan(
+            identity=IDENTITY,
+            moves=(video_move(1, season=1), video_move(1, season=2)),
+        ),
+    )
+    database.runs[run.id] = run
+    model = ScriptedModel(
+        call("search_subtitles", keyword="Show"),
+        call("select_release", attachment_id=99, reason="season 1 batch"),
+        call("search_subtitles", keyword="Show 2nd Season"),
+        call("select_release", attachment_id=100, reason="season 2 batch"),
+    )
+    service = SubtitleAcquisition(
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
+    )
+
+    result = await service.acquire(run, config, RunResult(moved=2))
+
+    assert result.subtitles_acquired == 2
+    assert result.subtitle_note == ""
+    assert fake.downloaded == [99, 100]
+    assert (library / LIBRARY_FOLDER / "S01" / "Show S01E01.chs.ass").is_file()
+    season_two = library / LIBRARY_FOLDER / "S02" / "Show S02E01.chs.ass"
+    assert season_two.read_text("utf-8").endswith("S2")
+    # Each season opened its own negotiation with its own season header.
+    round_one = next(
+        message["content"]
+        for message in model.seen[0]
+        if message["role"] == "user"
+    )
+    round_two = next(
+        message["content"]
+        for message in model.seen[2]
+        if message["role"] == "user"
+    )
+    assert "Season: 1" in round_one
+    assert "Season: 2" in round_two
+
+
+@pytest.mark.binaries("7z")
+async def test_missing_specials_cannot_sink_the_regular_season(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    """Regression (run 2dbd725f): no SP release existed, and the single
+    negotiation gave up entirely instead of keeping the season batch it had
+    already found."""
+
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    make_files(library / LIBRARY_FOLDER / "S00", "Show S00E04.mkv")
+    fake = FakeAcgrip(
+        make_archive(
+            tmp_path, "tv", {"[Group] Show - 01 [CHS].ass": SIMPLIFIED_TEXT}
+        )
+    )
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient", lambda **kwargs: fake
+    )
+
+    database = FakeDatabase([config])
+    run = Run(
+        id="run-1",
+        config_id=config.id,
+        folder_name="Drop",
+        state=RunState.ACQUIRING_SUBS,
+        plan=Plan(identity=IDENTITY, moves=(video_move(1), special_move(4))),
+    )
+    database.runs[run.id] = run
+    model = ScriptedModel(
+        call("search_subtitles", keyword="Show"),
+        call("select_release", attachment_id=99, reason="season batch"),
+        call("search_subtitles", keyword="Show SP"),
+        call("give_up", reason="no specials release exists"),
+    )
+    service = SubtitleAcquisition(
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
+    )
+
+    result = await service.acquire(run, config, RunResult(moved=2))
+
+    assert result.subtitles_acquired == 1
+    assert result.subtitle_note == "1 集仍缺字幕"
+    assert (library / LIBRARY_FOLDER / "S01" / "Show S01E01.chs.ass").is_file()
+    # The trailing pass asked for the specials alone.
+    specials_round = model.seen[2]
+    system = next(
+        message["content"]
+        for message in specials_round
+        if message["role"] == "system"
+    )
+    first_user = next(
+        message["content"]
+        for message in specials_round
+        if message["role"] == "user"
+    )
+    assert "Only specials" in system
+    assert "Specials (OVA/SP, season 0) needing subtitles: [4]" in first_user
+    assert "Season:" not in first_user
 
 
 # ---- variant preference --------------------------------------------------
