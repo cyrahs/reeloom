@@ -149,6 +149,103 @@ describe("run detail page", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the result line to counts", async () => {
+    mockDetail(
+      detail({
+        result: {
+          moved: 1,
+          duplicates: ["dup02.mkv"],
+          missing: [],
+          archived: 2,
+          subtitles_moved: 0,
+          subtitles_acquired: 0,
+          subtitle_note: "",
+          replaced: ["old.mkv"],
+          discarded: ["dup01.mkv"],
+        },
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(
+      await screen.findByText(
+        "移动 1 · 归档 2 · 字幕 0 · 下载字幕 0 · 洗版 1 · 重复 2",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/dup01\.mkv/)).not.toBeInTheDocument();
+  });
+
+  it("groups trash moves by destination directory", async () => {
+    mockDetail(
+      detail({
+        snapshot: [
+          {
+            candidate_id: "V1",
+            relative_path: "ep01.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+          {
+            candidate_id: "V2",
+            relative_path: "ep02.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+        ],
+        plan: {
+          identity: { title: "Show", year: 2024, tmdb_id: 123 },
+          moves: [
+            {
+              kind: "trash_duplicate",
+              source_root: "inbound",
+              source_path: "[Group] Show/ep01.mkv",
+              dest_root: "inbound",
+              dest_path: ".reeloom-trash/run-1/inbound/[Group] Show/ep01.mkv",
+              candidate_id: "V1",
+            },
+            {
+              kind: "trash_duplicate",
+              source_root: "inbound",
+              source_path: "[Group] Show/ep02.mkv",
+              dest_root: "inbound",
+              dest_path: ".reeloom-trash/run-1/inbound/[Group] Show/ep02.mkv",
+              candidate_id: "V2",
+            },
+            {
+              kind: "trash_replaced",
+              source_root: "library",
+              source_path: "Show (2024) {tmdb-123}/S01/Show S01E03.mkv",
+              dest_root: "inbound",
+              dest_path:
+                ".reeloom-trash/run-1/library/Show (2024) {tmdb-123}/S01/Show S01E03.mkv",
+              candidate_id: null,
+            },
+          ],
+          unmapped: [],
+          notes: "",
+        },
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(
+      await screen.findByText(/重复（2 个）移入/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(".reeloom-trash/run-1/inbound/")).toBeInTheDocument();
+    expect(screen.getByText(/洗版替换（1 个）移入/)).toBeInTheDocument();
+    expect(screen.getByText(".reeloom-trash/run-1/library/")).toBeInTheDocument();
+    // The per-file rows list only the sources, never the trash destinations.
+    expect(screen.getByText("[Group] Show/ep01.mkv")).toBeInTheDocument();
+    expect(
+      screen.queryByText(".reeloom-trash/run-1/inbound/[Group] Show/ep01.mkv"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("trash_duplicate")).not.toBeInTheDocument();
+  });
+
   it("collapses a fully archived subfolder to its name", async () => {
     mockDetail(
       detail({
@@ -205,6 +302,84 @@ describe("run detail page", () => {
     expect(line).not.toHaveTextContent("cover.jpg");
     // Extras holds a mapped file, so it is not reported as archived.
     expect(line).not.toHaveTextContent("Extras");
+  });
+
+  it("collapses a fully unmapped run to the intake folder itself", async () => {
+    mockDetail(
+      detail({
+        snapshot: [
+          {
+            candidate_id: "V1",
+            relative_path: "nc01.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+          {
+            candidate_id: "O1",
+            relative_path: "Scans/cover.jpg",
+            kind: "other",
+            size_bytes: 1,
+            variant: null,
+          },
+        ],
+        plan: {
+          identity: { title: "Show", year: 2024, tmdb_id: 123 },
+          moves: [],
+          unmapped: ["V1", "O1"],
+          notes: "",
+        },
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    const line = await screen.findByText(/未映射（将归档）/);
+    expect(line).toHaveTextContent("[Group] Show/");
+    expect(line).not.toHaveTextContent("nc01.mkv");
+    expect(line).not.toHaveTextContent("Scans");
+  });
+
+  it("collapses a nested fully unmapped subfolder", async () => {
+    mockDetail(
+      detail({
+        snapshot: [
+          {
+            candidate_id: "V1",
+            relative_path: "Discs/ep01.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+          {
+            candidate_id: "V2",
+            relative_path: "Discs/SPs/nc01.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+          {
+            candidate_id: "V3",
+            relative_path: "Discs/SPs/nc02.mkv",
+            kind: "video",
+            size_bytes: 10,
+            variant: null,
+          },
+        ],
+        plan: {
+          identity: { title: "Show", year: 2024, tmdb_id: 123 },
+          moves: [],
+          unmapped: ["V2", "V3"],
+          notes: "",
+        },
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    const line = await screen.findByText(/未映射（将归档）/);
+    expect(line).toHaveTextContent("Discs/SPs/");
+    expect(line).not.toHaveTextContent("nc01.mkv");
   });
 
   it("lists leftover files of a partially archived subfolder", async () => {

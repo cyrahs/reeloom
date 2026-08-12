@@ -53,13 +53,12 @@ def render(run: Run, config: WatchConfig) -> str:
             summary.append(f"字幕 {result.subtitles_moved}")
         if result.subtitles_acquired:
             summary.append(f"下载字幕 {result.subtitles_acquired}")
-        lines.append(" · ".join(summary))
         if result.replaced:
-            lines.append(f"洗版替换（旧版已入回收区）：{_join(result.replaced)}")
-        if result.discarded:
-            lines.append(f"重复（已入回收区）：{_join(result.discarded)}")
-        if result.duplicates:
-            lines.append(f"重复（已入 fail）：{_join(result.duplicates)}")
+            summary.append(f"洗版 {len(result.replaced)}")
+        duplicate_count = len(result.discarded) + len(result.duplicates)
+        if duplicate_count:
+            summary.append(f"重复 {duplicate_count}")
+        lines.append(" · ".join(summary))
         if result.missing:
             lines.append(f"缺失：{_join(result.missing)}")
         if result.subtitle_note:
