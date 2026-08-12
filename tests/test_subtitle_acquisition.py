@@ -468,6 +468,47 @@ async def test_partial_coverage_reports_missing_episodes(
 
 
 @pytest.mark.binaries("7z")
+async def test_a_retry_adds_to_the_earlier_subtitle_count(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    _, library = roots
+    season = library / LIBRARY_FOLDER / "S01"
+    make_files(season, "Show S01E01.mkv")
+    archive = make_archive(
+        tmp_path, "retry", {"[Group] Show - 01 [CHS].ass": SIMPLIFIED_TEXT}
+    )
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient",
+        lambda **kwargs: FakeAcgrip(archive),
+    )
+
+    database = FakeDatabase([config])
+    run = make_run(database, config, 1)
+    service = SubtitleAcquisition(
+        database,
+        StubClients(
+            ScriptedModel(
+                call("search_subtitles", keyword="Show"),
+                call("select_release", attachment_id=99),
+            ),
+            None,
+        ),
+        tmp_path / "work",
+    )
+
+    # A second pass only wants the episodes still lacking subtitles, so the
+    # count from the earlier pass carries forward instead of being replaced.
+    result = await service.acquire(
+        run,
+        config,
+        RunResult(moved=3, subtitles_acquired=2, subtitle_note="1 集仍缺字幕"),
+    )
+
+    assert result.subtitles_acquired == 3
+    assert result.subtitle_note == ""
+
+
+@pytest.mark.binaries("7z")
 async def test_a_non_preferred_release_is_retried_with_feedback(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:

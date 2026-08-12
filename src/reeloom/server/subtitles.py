@@ -302,7 +302,13 @@ class SubtitleAcquisition:
             )
         missing = len(wanted) - len(covered)
         note = "" if missing <= 0 else f"{missing} 集仍缺字幕"
-        return replace(result, subtitles_acquired=published, subtitle_note=note)
+        # ``wanted`` holds only episodes still lacking a subtitle, so a retry
+        # publishes a disjoint set and the counts add up across passes.
+        return replace(
+            result,
+            subtitles_acquired=result.subtitles_acquired + published,
+            subtitle_note=note,
+        )
 
     async def _negotiate(
         self,

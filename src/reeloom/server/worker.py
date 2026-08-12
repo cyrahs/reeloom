@@ -397,12 +397,18 @@ class Worker:
         if run.plan is None:
             raise ReeloomError("missing_plan")
         result = await self._executor.execute(run, config)
-        await self._db.set_result(run.id, result)
         await self._db.log(
             run.id,
             f"moved {result.moved} file(s)",
             data=result.to_json(),
         )
+        if run.result is not None and run.executed_moves:
+            # A retry of an executed run replays the ledger, and the pass
+            # counts only what it newly did — folding it into the recorded
+            # summary keeps the earlier counts instead of wiping them. Revert
+            # clears the ledger, so a revised run starts a fresh summary.
+            result = run.result.merge_replay(result)
+        await self._db.set_result(run.id, result)
         if self._should_acquire(config):
             await self._db.set_state(run.id, RunState.ACQUIRING_SUBS)
         else:
