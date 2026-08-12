@@ -48,7 +48,7 @@ from reeloom.scanner import (
     SUBTITLE_EXTENSIONS,
     safe_relative,
 )
-from reeloom.trash import TRASH_DIR
+from reeloom.trash import TRASH_DIR, prune_trash
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,6 +101,9 @@ class FilesystemExecutor:
                 missing.append(name)
 
         archived = await self._sweep(run, roots)
+        # A trash move whose source vanished still created its parent chain;
+        # drop any empty skeletons so the trash area holds only real files.
+        await asyncio.to_thread(prune_trash, roots.inbound)
         return RunResult(
             moved=moved,
             duplicates=tuple(duplicates),
@@ -125,6 +128,7 @@ class FilesystemExecutor:
                 continue
             await asyncio.to_thread(self._apply, executed.move.reversed(), roots, run)
         await asyncio.to_thread(self._prune_buckets, run, roots)
+        await asyncio.to_thread(prune_trash, roots.inbound)
 
     async def apply_move(
         self, move: Move, config: WatchConfig, run: Run
