@@ -976,12 +976,16 @@ ul {
   margin-bottom: 0.5rem;
 }
 
-.replace-group summary {
+.replace-group summary,
+.replace-summary {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  cursor: pointer;
   font-size: 0.9rem;
+}
+
+.replace-group summary {
+  cursor: pointer;
 }
 
 .replace-group .tag.replace {
