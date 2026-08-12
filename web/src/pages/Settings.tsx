@@ -391,19 +391,34 @@ function EditConfig({
 }
 
 function NewConfig({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_CONFIG);
   const [error, setError] = useState("");
+
+  function close() {
+    setOpen(false);
+    setForm(EMPTY_CONFIG);
+    setError("");
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError("");
     try {
       await api.createConfig(form);
-      setForm(EMPTY_CONFIG);
+      close();
       onCreated();
     } catch (thrown) {
       setError((thrown as Error).message);
     }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)}>
+        添加监控
+      </button>
+    );
   }
 
   return (
@@ -416,6 +431,9 @@ function NewConfig({ onCreated }: { onCreated: () => void }) {
       <div className="form-actions">
         <button type="submit" className="primary">
           添加监控
+        </button>
+        <button type="button" onClick={close}>
+          取消
         </button>
       </div>
       {error && <p className="error">{error}</p>}
