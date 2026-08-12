@@ -54,6 +54,10 @@ def render(run: Run, config: WatchConfig) -> str:
         if result.subtitles_acquired:
             summary.append(f"下载字幕 {result.subtitles_acquired}")
         lines.append(" · ".join(summary))
+        if result.replaced:
+            lines.append(f"洗版替换（旧版已入回收区）：{_join(result.replaced)}")
+        if result.discarded:
+            lines.append(f"重复（已入回收区）：{_join(result.discarded)}")
         if result.duplicates:
             lines.append(f"重复（已入 fail）：{_join(result.duplicates)}")
         if result.missing:
@@ -62,9 +66,14 @@ def render(run: Run, config: WatchConfig) -> str:
             lines.append(f"字幕：{_text(result.subtitle_note)}")
 
     if run.error:
-        code = _text(str(run.error.get("code", "error")))
-        detail = _text(str(run.error.get("reason") or run.error.get("detail") or ""))
-        lines.append(f"原因：{code}{f' — {detail}' if detail else ''}")
+        code = str(run.error.get("code", "error"))
+        if code == "replace_confirmation":
+            lines.append("等待洗版确认：请在网页端选择替换、丢弃或共存")
+        else:
+            detail = _text(
+                str(run.error.get("reason") or run.error.get("detail") or "")
+            )
+            lines.append(f"原因：{_text(code)}{f' — {detail}' if detail else ''}")
 
     return "\n".join(lines)
 

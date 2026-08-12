@@ -429,3 +429,272 @@ async def test_subtitle_failure_never_blocks_a_finished_run(
     assert run.state is RunState.DONE
     assert run.result is not None
     assert "acgrip down" in run.result.subtitle_note
+
+
+# ---- version replacement routing ----------------------------------------
+
+
+class StubComparer:
+    def __init__(self, plan: Plan | None = None, error: Exception | None = None):
+        self.plan = plan
+        self.error = error
+        self.calls = 0
+
+    async def compare(self, run: Run, config: WatchConfig) -> Plan | None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.plan
+
+
+def replace_config(config: WatchConfig) -> WatchConfig:
+    return replace(config, replace_enabled=True)
+
+
+async def test_replace_enabled_run_compares_before_executing(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    comparer = StubComparer()
+    database, worker = build(replace_config(config), comparer=comparer)
+
+    await drain(worker)
+
+    run = next(iter(database.runs.values()))
+    assert run.state is RunState.DONE
+    assert comparer.calls == 1
+
+
+async def test_compare_is_skipped_when_replacement_is_off(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    comparer = StubComparer()
+    database, worker = build(config, comparer=comparer)
+
+    await drain(worker)
+
+    run = next(iter(database.runs.values()))
+    assert run.state is RunState.DONE
+    assert comparer.calls == 0
+
+
+async def test_comparer_augmentation_replaces_the_stored_plan(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    augmented = Plan(identity=IDENTITY, moves=(), notes="augmented")
+    comparer = StubComparer(plan=augmented)
+    database, worker = build(replace_config(config), comparer=comparer)
+
+    await drain(worker)
+
+    run = next(iter(database.runs.values()))
+    assert run.plan is not None and run.plan.notes == "augmented"
+    assert run.state is RunState.DONE
+
+
+async def test_comparer_parks_the_run_for_confirmation(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    notifier = RecordingNotifier()
+    comparer = StubComparer(
+        error=NeedsAttention("replace_confirmation", groups=[])
+    )
+    database, worker = build(
+        replace_config(config), comparer=comparer, notifier=notifier
+    )
+
+    await drain(worker)
+
+    run = next(iter(database.runs.values()))
+    assert run.state is RunState.NEEDS_ATTENTION
+    assert run.error is not None and run.error["code"] == "replace_confirmation"
+    assert notifier.sent
+
+
+async def test_toggled_off_mid_run_falls_through_to_executing(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    comparer = StubComparer()
+    database, worker = build(config, comparer=comparer)
+    run = Run(
+        id="run-1",
+        config_id=config.id,
+        folder_name="Show",
+        state=RunState.COMPARING,
+        plan=Plan(identity=IDENTITY, moves=()),
+    )
+    database.runs[run.id] = run
+
+    await drain(worker)
+
+    assert database.runs[run.id].state is RunState.DONE
+    assert comparer.calls == 0
+
+
+async def test_revert_routes_back_through_comparing(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    comparer = StubComparer()
+    executor = StubExecutor()
+    database, worker = build(
+        replace_config(config), comparer=comparer, executor=executor
+    )
+    executed = ExecutedMove(
+        Move(
+            kind=MoveKind.MEDIA,
+            source_root=Root.INBOUND,
+            source_path="Show/ep01.mkv",
+            dest_root=Root.LIBRARY,
+            dest_path="Show (2024) {tmdb-1}/S01/Show S01E01.mkv",
+        ),
+        MoveOutcome.MOVED,
+    )
+    run = Run(
+        id="run-1",
+        config_id=config.id,
+        folder_name="Show",
+        state=RunState.REVERTING,
+        plan=Plan(identity=IDENTITY, moves=()),
+        executed_moves=(executed,),
+    )
+    database.runs[run.id] = run
+
+    await drain(worker)
+
+    assert executor.reverted == ["run-1"]
+    assert comparer.calls == 1
+    assert database.runs[run.id].state is RunState.DONE
+
+
+# ---- trash purging -------------------------------------------------------
+
+
+import os
+import time as time_module
+import uuid as uuid_module
+
+from reeloom.trash import TRASH_DIR
+
+
+def drop_trash(root: Path, run_id: str, *, age_days: float = 10.0) -> Path:
+    path = root / TRASH_DIR / run_id / "old.mkv"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"x" * 8)
+    stamp = time_module.time() - age_days * 86400
+    os.utime(path.parent, (stamp, stamp))
+    return path
+
+
+def settled_run(config: WatchConfig, run_id: str, state: RunState) -> Run:
+    return Run(
+        id=run_id,
+        config_id=config.id,
+        folder_name="Show",
+        state=state,
+    )
+
+
+async def test_purge_removes_expired_trash_of_settled_runs(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    _, library = roots
+    database, worker = build(config)
+    run_id = str(uuid_module.uuid4())
+    database.runs[run_id] = settled_run(config, run_id, RunState.DONE)
+    path = drop_trash(library, run_id)
+
+    await worker._purge_pass()
+
+    assert not path.exists()
+    assert not (library / TRASH_DIR).exists()
+
+
+async def test_purge_keeps_recent_and_active_trash(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, library = roots
+    database, worker = build(config)
+    fresh_id = str(uuid_module.uuid4())
+    active_id = str(uuid_module.uuid4())
+    database.runs[fresh_id] = settled_run(config, fresh_id, RunState.DONE)
+    database.runs[active_id] = settled_run(
+        config, active_id, RunState.REVERTING
+    )
+    fresh = drop_trash(library, fresh_id, age_days=1.0)
+    active = drop_trash(inbound, active_id, age_days=30.0)
+
+    await worker._purge_pass()
+
+    assert fresh.exists()  # inside the retention window
+    assert active.exists()  # its run is still active
+
+
+async def test_purge_covers_orphans_and_leaves_foreign_dirs(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    _, library = roots
+    database, worker = build(config)
+    orphan = drop_trash(library, str(uuid_module.uuid4()))  # run deleted
+    foreign = drop_trash(library, "not-a-run-id")
+
+    await worker._purge_pass()
+
+    assert not orphan.exists()
+    assert foreign.exists()  # never delete what reeloom did not write
+
+
+async def test_purge_reaches_extra_dirs(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path
+) -> None:
+    extra = tmp_path / "anirss"
+    extra.mkdir()
+    rconfig = replace(
+        config, replace_enabled=True, replace_extra_dirs=(str(extra),)
+    )
+    database, worker = build(rconfig)
+    run_id = str(uuid_module.uuid4())
+    database.runs[run_id] = settled_run(rconfig, run_id, RunState.DONE)
+    path = drop_trash(extra, run_id)
+
+    await worker._purge_pass()
+
+    assert not path.exists()
+
+
+async def test_retention_zero_purges_when_the_run_settles(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, library = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    database, worker = build(config)
+    database.settings["trash_retention_days"] = 0
+
+    await worker.scan()
+    run_id = next(iter(database.runs))
+    trash = drop_trash(library, run_id, age_days=0.0)
+    await drain(worker)
+
+    assert database.runs[run_id].state is RunState.DONE
+    assert not trash.exists()
+
+
+async def test_purge_passes_are_rate_limited(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    _, library = roots
+    database, worker = build(config)
+    run_id = str(uuid_module.uuid4())
+    database.runs[run_id] = settled_run(config, run_id, RunState.DONE)
+
+    await worker._maybe_purge()
+    path = drop_trash(library, run_id)
+    await worker._maybe_purge()  # inside the hourly window: no pass runs
+
+    assert path.exists()

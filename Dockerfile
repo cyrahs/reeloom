@@ -9,11 +9,14 @@ RUN npm run build
 FROM python:3.13-slim-trixie
 
 # 7-Zip unpacks subtitle releases (.7z/.zip/.rar), pinned by checksum.
+# ffmpeg provides ffprobe, which version replacement uses to sample video
+# quality; without it the comparison degrades to file sizes only.
 ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        ffmpeg \
         xz-utils \
     && case "${TARGETARCH}" in \
         amd64) \

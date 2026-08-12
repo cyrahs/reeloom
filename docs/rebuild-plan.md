@@ -43,7 +43,7 @@ V1 是 67k 行 Python + 6k 行前端，实现的核心功能只有一件事：
 | 数据库 | PostgreSQL（仓库层大幅精简，纯状态表，无 event sourcing） |
 | 执行模式 | **默认自动**：计划生成后立即执行，无审批窗口 |
 | 文件入口 | CloudDrive 离线下载，文件分批出现 → 保留 120s 静置窗口（可配置） |
-| 目标已存在 | 丢弃新文件（移入 fail 桶，通知中列出，不阻塞、不等人工） |
+| 目标已存在 | 默认：丢弃新文件（移入 fail 桶，通知中列出，不阻塞、不等人工）。watch config 开启洗版后改走 §12 的比较判定 |
 | 字幕获取 | 全自动：搜索 → 选 release → 下载解压 → 发布，搜不到不阻塞 |
 | 人工介入 | 识别/映射失败时 run 进入 needs_attention，通过 UI 问答/修订/放弃 |
 | 事后修订 | 已完成的 run 可基于移动前的文件结构与 Agent 交流得到新计划，reapply 先把已归档/移动的文件复原再应用新计划 |
@@ -279,3 +279,37 @@ done → （修订会话得到新计划）→ reverting → executing → … �
    重命名操作补上；新旧双文件夹并存时用 `{tmdb-id}` 文件夹、旧的保留
    并提示，不自动合并。
 4. **鉴权**：单一 Admin Bearer token + localStorage，无其余会话机制。
+
+## 12. 洗版（版本替换）
+
+后加的功能（2026-08），动机：动漫先由 anirss 抓 TV 版（存于自己的下载目录），
+后续 BD 版丢进 inbound 归档时要么撞上"目标已存在→入 fail"，要么因 TV 版
+在库外而静默产生双版本。开启 `watch_config.replace_enabled` 后：
+
+- 状态机在 identifying 与 executing 之间插入 **comparing**。凡洗版 run
+  进入 executing 必经 comparing（revise/revert/用户裁决后都重算），
+  决策永远基于当前文件系统，不存在陈旧决策。
+- 比较对象 = 库内目标文件夹 + `replace_extra_dirs` 里匹配到的文件夹
+  （先归一化标题匹配，歧义时模型只看编号的文件夹名清单选序号）。
+  只有能解析出 SxxEyy（或 anirss 布局的集数+季目录）的文件才可能被动，
+  解析不出的永远不动。
+- 判定按（作品, 季）汇总：r = 新版总体积 / 已存在最优实例总体积
+  （仅重叠集数）。逐集同大小同扩展名 → 重复，自动丢弃新文件；
+  r≥`replace_auto_ratio`（默认 1.2）→ 自动洗版；1<r<阈值 → ffprobe
+  抽样（首/中/尾 ≤3 集）画质更好则自动、否则转人工；r≤1 → 非升级，
+  自动丢弃新文件；ffprobe 显示新版分辨率更低 → 一律转人工。
+  ffprobe 缺失时退化为纯体积判定。无对应旧版的集（如新一季）照常入库。
+- 人工确认走既有 needs_attention 通路（error code
+  `replace_confirmation`），UI 提供 替换/丢弃新下载/两版共存 三选一，
+  裁决存 `run.extra.replace.resolution`；重算后事实有漂移则弃用裁决
+  重新询问。
+- 执行产物是 **plan 而非决策**：comparing 把 TRASH_REPLACED /
+  TRASH_DUPLICATE move 编译进 plan（先腾旧、再入新，从不覆盖），
+  崩溃重放、revert、结果统计全部复用既有 executor 机制。
+  `run.extra.replace` 只存决策 JSON 供展示与确认。
+- 淘汰文件 rename 进同根 `.reeloom-trash/<run-id>/`（Emby 与 scanner
+  均不可见，同文件系统必然成功），worker 每小时清理一次：run 终态且
+  超过全局 `trash_retention_days`（默认 3，0=run 结束即删）才由
+  `trash.purge_run_trash` 真正删除——这是全代码库唯一的硬删除点。
+  保留期内 revert 可整体复原；purge 后 revert 对缺失源记 missing 跳过，
+  与 §11.1 的降级规则一致。

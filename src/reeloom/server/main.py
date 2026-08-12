@@ -35,12 +35,19 @@ def build_notifier(clients: Clients):
     return TelegramNotifier(clients)
 
 
+def build_comparer(database: Database, clients: Clients):
+    from reeloom.server.compare import ReplaceComparer
+
+    return ReplaceComparer(database, clients)
+
+
 def build(settings: Settings, database: Database):
     clients = Clients(database)
     worker = Worker(
         database,
         identifier=AgentIdentifier(clients, database),
         executor=FilesystemExecutor(database),
+        comparer=build_comparer(database, clients),
         subtitles=build_subtitles(database, clients, settings),
         notifier=build_notifier(clients),
         scan_interval_seconds=settings.scan_interval_seconds,

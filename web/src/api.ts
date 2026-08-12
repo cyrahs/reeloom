@@ -3,6 +3,7 @@ const TOKEN_KEY = "reeloom.token";
 export type RunState =
   | "pending"
   | "identifying"
+  | "comparing"
   | "executing"
   | "acquiring_subs"
   | "reverting"
@@ -20,6 +21,8 @@ export interface RunResult {
   subtitles_moved: number;
   subtitles_acquired: number;
   subtitle_note: string;
+  replaced: string[];
+  discarded: string[];
 }
 
 export interface RunSummary {
@@ -63,7 +66,51 @@ export interface Move {
   dest_root: string;
   dest_path: string;
   candidate_id: string | null;
+  extra_base?: string | null;
 }
+
+export interface EpisodeSpan {
+  season: number;
+  episode_start: number;
+  episode_end: number;
+}
+
+export interface ReplaceExistingFile {
+  root: string;
+  extra_base: string | null;
+  relative_path: string;
+  size_bytes: number;
+  span: EpisodeSpan | null;
+}
+
+export interface ReplaceComparison {
+  span: EpisodeSpan | null;
+  candidate_id: string;
+  incoming_bytes: number;
+  existing: ReplaceExistingFile[];
+  existing_bytes: number;
+}
+
+export type ReplaceVerdict = "import" | "replace" | "discard" | "manual";
+
+export interface ReplaceGroup {
+  season: number | null;
+  verdict: ReplaceVerdict;
+  ratio: number | null;
+  quality: "better" | "same" | "worse" | "unknown";
+  overlap: ReplaceComparison[];
+  new_episodes: number[];
+  reason: string;
+}
+
+export interface ReplaceDecision {
+  groups: ReplaceGroup[];
+  existing_subtitles: string[];
+  needs_confirmation: boolean;
+  resolution: string | null;
+}
+
+export type ReplaceAction = "replace" | "discard_incoming" | "keep_both";
 
 export interface RunDetail extends RunSummary {
   snapshot: {
@@ -80,6 +127,7 @@ export interface RunDetail extends RunSummary {
     notes: string;
   } | null;
   executed_moves: { move: Move; outcome: string }[];
+  replace_decision: ReplaceDecision | null;
   logs: { ts: string; level: string; message: string }[];
   interactions: { role: string; content: string; ts: string }[];
 }
@@ -95,6 +143,9 @@ export interface WatchConfig {
   acquire_subtitles: boolean;
   subtitle_variant: "chs" | "cht";
   notify: boolean;
+  replace_enabled: boolean;
+  replace_extra_dirs: string[];
+  replace_auto_ratio: number;
 }
 
 export interface DirListing {
@@ -109,6 +160,7 @@ export interface Settings {
   /** "" means provider default: the parameter is never sent. */
   llm_reasoning_effort: string;
   telegram_chat_id: string;
+  trash_retention_days: number;
   tmdb_api_key_set: boolean;
   llm_api_key_set: boolean;
   telegram_bot_token_set: boolean;
@@ -175,6 +227,8 @@ export const api = {
   revise: (id: string, message: string) =>
     post<{ state: string }>(`/runs/${id}/revise`, { message }),
   retry: (id: string) => post<{ state: string }>(`/runs/${id}/retry`),
+  resolveReplace: (id: string, action: ReplaceAction) =>
+    post<{ state: string }>(`/runs/${id}/replace`, { action }),
   discard: (id: string) => post<{ state: string }>(`/runs/${id}/discard`),
   deleteRun: (id: string) =>
     request<{ deleted: boolean }>(`/runs/${id}`, { method: "DELETE" }),
@@ -204,6 +258,7 @@ export const api = {
 export const STATE_LABEL: Record<RunState, string> = {
   pending: "等待处理",
   identifying: "识别中",
+  comparing: "对比版本",
   executing: "整理中",
   acquiring_subs: "获取字幕",
   reverting: "复原中",
@@ -217,6 +272,7 @@ export const STATE_LABEL: Record<RunState, string> = {
 export const ACTIVE_STATES: RunState[] = [
   "pending",
   "identifying",
+  "comparing",
   "executing",
   "acquiring_subs",
   "reverting",

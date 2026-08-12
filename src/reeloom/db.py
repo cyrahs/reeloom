@@ -49,6 +49,7 @@ create table if not exists settings (
     llm_reasoning_effort text not null default '',
     telegram_bot_token text not null default '',
     telegram_chat_id text not null default '',
+    trash_retention_days integer not null default 3,
     updated_at timestamptz not null default now()
 );
 
@@ -63,6 +64,9 @@ create table if not exists watch_config (
     acquire_subtitles boolean not null default false,
     subtitle_variant text not null default 'chs',
     notify boolean not null default true,
+    replace_enabled boolean not null default false,
+    replace_extra_dirs jsonb not null default '[]'::jsonb,
+    replace_auto_ratio double precision not null default 1.2,
     created_at timestamptz not null default now()
 );
 
@@ -114,6 +118,18 @@ alter table watch_config
 
 alter table settings
     add column if not exists llm_reasoning_effort text not null default '';
+
+alter table watch_config
+    add column if not exists replace_enabled boolean not null default false;
+
+alter table watch_config
+    add column if not exists replace_extra_dirs jsonb not null default '[]'::jsonb;
+
+alter table watch_config
+    add column if not exists replace_auto_ratio double precision not null default 1.2;
+
+alter table settings
+    add column if not exists trash_retention_days integer not null default 3;
 """
 
 
@@ -176,6 +192,7 @@ class Database:
             "llm_reasoning_effort",
             "telegram_bot_token",
             "telegram_chat_id",
+            "trash_retention_days",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
@@ -214,8 +231,11 @@ class Database:
                 insert into watch_config (
                     id, name, inbound_root, library_root, media_type,
                     enabled, stability_seconds, acquire_subtitles,
-                    subtitle_variant, notify
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    subtitle_variant, notify, replace_enabled,
+                    replace_extra_dirs, replace_auto_ratio
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s
+                )
                 """,
                 (
                     config.id,
@@ -228,6 +248,9 @@ class Database:
                     config.acquire_subtitles,
                     config.subtitle_variant.value,
                     config.notify,
+                    config.replace_enabled,
+                    json.dumps(list(config.replace_extra_dirs)),
+                    config.replace_auto_ratio,
                 ),
             )
         return config
@@ -243,11 +266,22 @@ class Database:
             "acquire_subtitles",
             "subtitle_variant",
             "notify",
+            "replace_enabled",
+            "replace_extra_dirs",
+            "replace_auto_ratio",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
             return
-        assignments = ", ".join(f"{key} = %({key})s" for key in updates)
+        if "replace_extra_dirs" in updates:
+            updates["replace_extra_dirs"] = json.dumps(
+                list(updates["replace_extra_dirs"])
+            )
+        assignments = ", ".join(
+            f"{key} = %({key})s::jsonb" if key == "replace_extra_dirs"
+            else f"{key} = %({key})s"
+            for key in updates
+        )
         async with self._connection() as connection:
             await connection.execute(
                 f"update watch_config set {assignments} where id = %(id)s",
@@ -396,6 +430,14 @@ class Database:
                 (json.dumps(plan.to_json()) if plan else None, run_id),
             )
 
+    async def set_extra(self, run_id: str, extra: dict[str, Any]) -> None:
+        async with self._connection() as connection:
+            await connection.execute(
+                "update run set extra = %s::jsonb, updated_at = now()"
+                " where id = %s",
+                (json.dumps(extra), run_id),
+            )
+
     async def set_result(self, run_id: str, result: RunResult) -> None:
         async with self._connection() as connection:
             await connection.execute(
@@ -502,6 +544,9 @@ def _watch_config(row: dict[str, Any]) -> WatchConfig:
         acquire_subtitles=row["acquire_subtitles"],
         subtitle_variant=SubtitleVariant(row["subtitle_variant"]),
         notify=row["notify"],
+        replace_enabled=row["replace_enabled"],
+        replace_extra_dirs=tuple(row["replace_extra_dirs"] or ()),
+        replace_auto_ratio=row["replace_auto_ratio"],
     )
 
 

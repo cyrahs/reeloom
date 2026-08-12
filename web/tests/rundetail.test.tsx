@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { RunDetail } from "../src/api";
+import type { ReplaceDecision, RunDetail } from "../src/api";
 import { RunDetailPage } from "../src/pages/RunDetail";
 
 function detail(overrides: Partial<RunDetail> = {}): RunDetail {
@@ -23,6 +23,8 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
       subtitles_moved: 0,
       subtitles_acquired: 0,
       subtitle_note: "",
+      replaced: [],
+      discarded: [],
     },
     error: null,
     attempts: 0,
@@ -51,6 +53,7 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
       notes: "",
     },
     executed_moves: [],
+    replace_decision: null,
     logs: [],
     interactions: [],
     ...overrides,
@@ -334,6 +337,98 @@ describe("run detail page", () => {
     expect(screen.getByText("p01.jpg")).not.toBeVisible();
     // Top-level files stay visible.
     expect(screen.getByText("ep01.mkv")).toBeVisible();
+  });
+
+  it("shows the replacement decision and resolves it", async () => {
+    const decision: ReplaceDecision = {
+      groups: [
+        {
+          season: 1,
+          verdict: "manual",
+          ratio: 1.08,
+          quality: "unknown",
+          overlap: [
+            {
+              span: { season: 1, episode_start: 1, episode_end: 1 },
+              candidate_id: "V1",
+              incoming_bytes: 110,
+              existing: [
+                {
+                  root: "library",
+                  extra_base: null,
+                  relative_path:
+                    "Show (2024) {tmdb-123}/S01/Show S01E01.mkv",
+                  size_bytes: 100,
+                  span: { season: 1, episode_start: 1, episode_end: 1 },
+                },
+              ],
+              existing_bytes: 100,
+            },
+          ],
+          new_episodes: [2],
+          reason: "ambiguous_upgrade",
+        },
+      ],
+      existing_subtitles: [],
+      needs_confirmation: true,
+      resolution: null,
+    };
+    const posts: string[] = [];
+    const body = detail({
+      state: "needs_attention",
+      error: { code: "replace_confirmation" },
+      replace_decision: decision,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "POST") {
+          posts.push(url);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ state: "comparing" }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(await screen.findByText("需人工确认")).toBeInTheDocument();
+    expect(screen.getByText(/体积比 1.08/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("确认替换旧版"));
+    await waitFor(() =>
+      expect(posts).toContain("/api/runs/run-1/replace"),
+    );
+  });
+
+  it("hides the resolve buttons once the run moved on", async () => {
+    const decision: ReplaceDecision = {
+      groups: [
+        {
+          season: 1,
+          verdict: "replace",
+          ratio: 1.6,
+          quality: "unknown",
+          overlap: [],
+          new_episodes: [],
+          reason: "clear_upgrade",
+        },
+      ],
+      existing_subtitles: [],
+      needs_confirmation: false,
+      resolution: "replace",
+    };
+    mockDetail(detail({ replace_decision: decision }));
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(await screen.findByText("洗版替换")).toBeInTheDocument();
+    expect(screen.queryByText("确认替换旧版")).not.toBeInTheDocument();
   });
 
   it("puts the chat section between the result and the files", async () => {

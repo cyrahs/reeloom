@@ -13,6 +13,9 @@ const EMPTY_CONFIG = {
   subtitle_variant: "chs" as "chs" | "cht",
   notify: true,
   enabled: true,
+  replace_enabled: false,
+  replace_extra_dirs: [] as string[],
+  replace_auto_ratio: 1.2,
 };
 
 interface ConfigForm {
@@ -21,6 +24,9 @@ interface ConfigForm {
   library_root: string;
   media_type: WatchConfig["media_type"];
   stability_seconds: number;
+  replace_enabled: boolean;
+  replace_extra_dirs: string[];
+  replace_auto_ratio: number;
 }
 
 function ConfigRow({
@@ -90,6 +96,17 @@ function ConfigRow({
             onChange={(event) => patch({ notify: event.target.checked })}
           />
           通知
+        </label>
+        <label title="发现库内或额外目录已有旧版本时自动替换/去重">
+          <input
+            type="checkbox"
+            checked={config.replace_enabled}
+            disabled={busy}
+            onChange={(event) =>
+              patch({ replace_enabled: event.target.checked })
+            }
+          />
+          洗版
         </label>
         <span className="config-actions">
           <button
@@ -172,6 +189,48 @@ function PathField({
   );
 }
 
+function ExtraDirsField({
+  dirs,
+  onChange,
+}: {
+  dirs: string[];
+  onChange: (dirs: string[]) => void;
+}) {
+  return (
+    <div className="field extra-dirs">
+      额外检测目录
+      {dirs.map((dir, index) => (
+        <span className="path-row" key={index}>
+          <PathField
+            label={`目录 ${index + 1}`}
+            value={dir}
+            onChange={(value) =>
+              onChange(dirs.map((item, at) => (at === index ? value : item)))
+            }
+          />
+          <button
+            type="button"
+            className="link"
+            onClick={() => onChange(dirs.filter((_, at) => at !== index))}
+          >
+            移除
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...dirs, ""])}
+        disabled={dirs.length >= 8}
+      >
+        添加目录
+      </button>
+      <span className="muted">
+        除媒体库外，还会在这些目录里检测旧版本（如 anirss 下载目录）。
+      </span>
+    </div>
+  );
+}
+
 function ConfigFields({
   form,
   onChange,
@@ -225,6 +284,40 @@ function ConfigFields({
           }
         />
       </label>
+      <label className="field checkbox-field">
+        <input
+          type="checkbox"
+          checked={form.replace_enabled}
+          onChange={(event) =>
+            onChange({ replace_enabled: event.target.checked })
+          }
+        />
+        洗版：发现已有旧版本时自动替换/去重
+      </label>
+      {form.replace_enabled && (
+        <>
+          <label className="field">
+            自动替换体积比
+            <input
+              type="number"
+              min={1}
+              max={10}
+              step={0.05}
+              value={form.replace_auto_ratio}
+              onChange={(event) =>
+                onChange({ replace_auto_ratio: Number(event.target.value) })
+              }
+            />
+            <span className="muted">
+              新版总体积达到旧版的该倍数时自动洗版，低于则转人工确认。
+            </span>
+          </label>
+          <ExtraDirsField
+            dirs={form.replace_extra_dirs}
+            onChange={(replace_extra_dirs) => onChange({ replace_extra_dirs })}
+          />
+        </>
+      )}
     </>
   );
 }
@@ -244,6 +337,9 @@ function EditConfig({
     library_root: config.library_root,
     media_type: config.media_type,
     stability_seconds: config.stability_seconds,
+    replace_enabled: config.replace_enabled,
+    replace_extra_dirs: config.replace_extra_dirs,
+    replace_auto_ratio: config.replace_auto_ratio,
   });
   const [error, setError] = useState("");
 
@@ -337,6 +433,7 @@ function Credentials({
     llm_model: settings.llm_model,
     llm_reasoning_effort: settings.llm_reasoning_effort,
     telegram_chat_id: settings.telegram_chat_id,
+    trash_retention_days: String(settings.trash_retention_days),
   });
   const [saved, setSaved] = useState(false);
 
@@ -383,6 +480,7 @@ function Credentials({
           llm_model: form.llm_model,
           llm_reasoning_effort: form.llm_reasoning_effort,
           telegram_chat_id: form.telegram_chat_id,
+          trash_retention_days: form.trash_retention_days,
         });
         setSaved(true);
         onSaved();
@@ -418,6 +516,22 @@ function Credentials({
             <option value="medium">medium</option>
             <option value="high">high</option>
           </select>
+        </label>
+      </div>
+      <div className="cred-group">
+        <h3>回收区</h3>
+        <label className="field">
+          保留天数
+          <input
+            type="number"
+            min={0}
+            max={365}
+            {...bind("trash_retention_days")}
+          />
+          <span className="muted">
+            被洗版替换/判定重复的文件先移入各根目录下的隐藏回收区
+            .reeloom-trash，到期后自动删除；0 表示任务完成即删。
+          </span>
         </label>
       </div>
       <div className="cred-group">

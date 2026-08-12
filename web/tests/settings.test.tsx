@@ -15,6 +15,9 @@ const CONFIG: WatchConfig = {
   acquire_subtitles: false,
   subtitle_variant: "chs",
   notify: true,
+  replace_enabled: false,
+  replace_extra_dirs: [],
+  replace_auto_ratio: 1.2,
 };
 
 const SETTINGS = {
@@ -22,6 +25,7 @@ const SETTINGS = {
   llm_model: "",
   llm_reasoning_effort: "",
   telegram_chat_id: "",
+  trash_retention_days: 3,
   tmdb_api_key_set: false,
   llm_api_key_set: false,
   telegram_bot_token_set: false,
@@ -100,6 +104,41 @@ describe("settings page", () => {
     expect(patches).toHaveLength(0);
   });
 
+  it("configures replacement through the edit form", async () => {
+    const { patches } = mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByText("编辑"));
+    const form = screen.getByDisplayValue("动画收件箱").closest("form")!;
+
+    fireEvent.click(
+      within(form).getByLabelText("洗版：发现已有旧版本时自动替换/去重"),
+    );
+    fireEvent.click(within(form).getByText("添加目录"));
+    fireEvent.change(within(form).getByLabelText("目录 1"), {
+      target: { value: "/data/anirss" },
+    });
+    fireEvent.click(within(form).getByText("保存"));
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({
+      replace_enabled: true,
+      replace_extra_dirs: ["/data/anirss"],
+      replace_auto_ratio: 1.2,
+    });
+  });
+
+  it("toggles replacement from the config row", async () => {
+    const { patches } = mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByLabelText("洗版"));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ replace_enabled: true });
+  });
+
   it("always sends the reasoning effort, even the default", async () => {
     const { puts } = mockSettingsApi();
 
@@ -112,11 +151,31 @@ describe("settings page", () => {
     // empty text fields stay omitted (they mean "keep unchanged").
     fireEvent.click(within(form).getByText("保存"));
     await waitFor(() => expect(puts).toHaveLength(1));
-    expect(puts[0]).toEqual({ llm_reasoning_effort: "" });
+    expect(puts[0]).toEqual({
+      llm_reasoning_effort: "",
+      trash_retention_days: "3",
+    });
 
     fireEvent.change(select, { target: { value: "high" } });
     fireEvent.click(within(form).getByText("保存"));
     await waitFor(() => expect(puts).toHaveLength(2));
-    expect(puts[1]).toEqual({ llm_reasoning_effort: "high" });
+    expect(puts[1]).toEqual({
+      llm_reasoning_effort: "high",
+      trash_retention_days: "3",
+    });
+  });
+
+  it("edits the trash retention", async () => {
+    const { puts } = mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    const input = await screen.findByLabelText(/保留天数/);
+    const form = input.closest("form")!;
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.click(within(form).getByText("保存"));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toMatchObject({ trash_retention_days: "0" });
   });
 });

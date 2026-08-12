@@ -316,3 +316,180 @@ async def test_the_run_survives_a_restart_midway_through_execution(
     assert (season / "Show S01E01.mkv").is_file()
     assert (season / "Show S01E02.mkv").is_file()
     assert harness.database.runs[run_id].state is RunState.DONE
+
+
+# ---- version replacement journeys ---------------------------------------
+
+
+from reeloom.server.compare import ReplaceComparer  # noqa: E402
+from reeloom.trash import TRASH_DIR  # noqa: E402
+from tests.fakes import FakeProber  # noqa: E402
+
+CANONICAL = "Show (2024) {tmdb-123}"
+
+
+def replacement_worker(database, model) -> Worker:
+    clients = StubClients(model, FakeTmdb())
+    return Worker(
+        database,
+        identifier=AgentIdentifier(clients, database),
+        executor=FilesystemExecutor(database),
+        comparer=ReplaceComparer(database, clients, prober=FakeProber()),
+        tracker=StabilityTracker(clock=lambda: 5000.0),
+    )
+
+
+async def drain_worker(worker: Worker, limit: int = 20) -> None:
+    for _ in range(limit):
+        if not await worker.tick():
+            return
+
+
+async def test_a_bd_batch_washes_out_the_tv_version(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path
+) -> None:
+    inbound, library = roots
+    extra = tmp_path / "anirss"
+    # The TV version lives in the library and in the anirss download dir.
+    make_files(
+        library / CANONICAL / "S01", "Show S01E01.mkv", "Show S01E02.mkv", size=16
+    )
+    make_files(
+        extra / "Show" / "Season 1", "Show - 01.mp4", "Show - 02.mp4", size=16
+    )
+    rconfig = replace(
+        config, replace_enabled=True, replace_extra_dirs=(str(extra),)
+    )
+    database = FakeDatabase([rconfig])
+    model = ScriptedModel(
+        call("search_tmdb", query="Show"),
+        call("get_series", tmdb_id=123),
+        call("get_season", tmdb_id=123, season=1),
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1), ("V2", 2))),
+    )
+    worker = replacement_worker(database, model)
+    make_files(
+        inbound / "[BD] Show S01",
+        "[BD] Show - 01.mkv",
+        "[BD] Show - 02.mkv",
+        size=999,
+    )
+
+    await drain_worker(worker)
+
+    run_id = next(iter(database.runs))
+    run = database.runs[run_id]
+    assert run.state is RunState.DONE
+    season = library / CANONICAL / "S01"
+    # The BD version is what the library holds now.
+    assert (season / "Show S01E01.mkv").stat().st_size == 999
+    assert (season / "Show S01E02.mkv").stat().st_size == 999
+    # Both old instances went to their roots' trash areas, nothing deleted.
+    assert (
+        library / TRASH_DIR / run_id / CANONICAL / "S01" / "Show S01E01.mkv"
+    ).stat().st_size == 16
+    assert (
+        extra / TRASH_DIR / run_id / "Show" / "Season 1" / "Show - 01.mp4"
+    ).is_file()
+    assert not (extra / "Show" / "Season 1" / "Show - 01.mp4").exists()
+    assert run.result.moved == 2
+    assert len(run.result.replaced) == 4
+    assert run.extra["replace"]["groups"][0]["verdict"] == "replace"
+
+
+async def test_covered_episodes_are_discarded_while_new_ones_import(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, library = roots
+    make_files(library / CANONICAL / "S01", "Show S01E01.mkv", size=16)
+    rconfig = replace(config, replace_enabled=True)
+    database = FakeDatabase([rconfig])
+    model = ScriptedModel(
+        call("search_tmdb", query="Show"),
+        call("get_series", tmdb_id=123),
+        call("get_season", tmdb_id=123, season=1),
+        call(
+            "submit_plan",
+            tmdb_id=123,
+            entries=episodes(("V1", 1)) + episodes(("V2", 1), season=2),
+        ),
+    )
+    worker = replacement_worker(database, model)
+    # S1 is already fully present (identical file); S2 is genuinely new.
+    make_files(
+        inbound / "[Group] Show S1-S2",
+        "[Group] Show - 01.mkv",
+        "[Group] Show S2 - 01.mkv",
+        size=16,
+    )
+
+    await drain_worker(worker)
+
+    run_id = next(iter(database.runs))
+    run = database.runs[run_id]
+    assert run.state is RunState.DONE
+    # S2 imported; the S1 duplicate went to the inbound trash, and the
+    # library copy of S1 was never touched.
+    assert (library / CANONICAL / "S02" / "Show S02E01.mkv").is_file()
+    assert (library / CANONICAL / "S01" / "Show S01E01.mkv").is_file()
+    assert (
+        inbound
+        / TRASH_DIR
+        / run_id
+        / "[Group] Show S1-S2"
+        / "[Group] Show - 01.mkv"
+    ).is_file()
+    assert run.result.moved == 1
+    assert run.result.discarded == ("[Group] Show - 01.mkv",)
+    verdicts = {
+        group["season"]: group["verdict"]
+        for group in run.extra["replace"]["groups"]
+    }
+    assert verdicts == {1: "discard", 2: "import"}
+
+
+async def test_a_gray_zone_upgrade_waits_for_the_user_and_obeys_them(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, library = roots
+    make_files(library / CANONICAL / "S01", "Show S01E01.mkv", size=100)
+    rconfig = replace(config, replace_enabled=True)
+    database = FakeDatabase([rconfig])
+    model = ScriptedModel(
+        call("search_tmdb", query="Show"),
+        call("get_series", tmdb_id=123),
+        call("get_season", tmdb_id=123, season=1),
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1))),
+    )
+    worker = replacement_worker(database, model)
+    make_files(inbound / "[Better] Show S01", "[Better] Show - 01.mkv", size=110)
+    app = create_app(database=database, admin_token=TOKEN, worker=worker)
+
+    await drain_worker(worker)
+
+    run_id = next(iter(database.runs))
+    run = database.runs[run_id]
+    assert run.state is RunState.NEEDS_ATTENTION
+    assert run.error["code"] == "replace_confirmation"
+    # Nothing moved while waiting.
+    assert (inbound / "[Better] Show S01" / "[Better] Show - 01.mkv").is_file()
+    assert (library / CANONICAL / "S01" / "Show S01E01.mkv").stat().st_size == 100
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/runs/{run_id}/replace",
+            headers=AUTH,
+            json={"action": "replace"},
+        )
+        assert response.json()["state"] == "comparing"
+
+    await drain_worker(worker)
+
+    run = database.runs[run_id]
+    assert run.state is RunState.DONE
+    assert (library / CANONICAL / "S01" / "Show S01E01.mkv").stat().st_size == 110
+    assert (
+        library / TRASH_DIR / run_id / CANONICAL / "S01" / "Show S01E01.mkv"
+    ).stat().st_size == 100

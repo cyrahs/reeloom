@@ -35,7 +35,7 @@ from reeloom.models import (
     WatchConfig,
 )
 from reeloom.models import Move
-from reeloom.naming import episode_path
+from reeloom.naming import episode_path, span_from_name
 from reeloom.scanner import ACQUIRED_DIR, ARCHIVE_BUCKET, SUBTITLE_EXTENSIONS
 from reeloom.subtitles import detect_variant_for_file
 
@@ -528,7 +528,7 @@ def _episodes_missing_subtitles(
             continue
         if _has_subtitle(destination):
             continue
-        span = _span_from_name(destination.name)
+        span = span_from_name(destination.name)
         if span is not None:
             wanted[span.episode_start] = span
     return wanted
@@ -541,18 +541,3 @@ def _has_subtitle(video: Path) -> bool:
             if (video.parent / f"{stem}.{variant.value}{extension}").exists():
                 return True
     return False
-
-
-_SPAN_IN_NAME = re.compile(r"S(\d{2,3})E(\d{2,4})(?:-E(\d{2,4}))?")
-
-
-def _span_from_name(name: str) -> EpisodeSpan | None:
-    match = _SPAN_IN_NAME.search(name)
-    if match is None:
-        return None
-    start = int(match.group(2))
-    return EpisodeSpan(
-        season=int(match.group(1)),
-        episode_start=start,
-        episode_end=int(match.group(3)) if match.group(3) else start,
-    )

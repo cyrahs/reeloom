@@ -118,3 +118,13 @@ def test_untagged_folder_is_renamed_once_to_pick_up_the_id() -> None:
     target, rename_from = resolve_library_folder(SERIES, ExistingFolder("赛马娘"))
     assert target == "赛马娘 (2024) {tmdb-123}"
     assert rename_from == "赛马娘"
+
+
+def test_span_from_name() -> None:
+    from reeloom.naming import span_from_name
+
+    assert span_from_name("Show S01E05.mkv") == EpisodeSpan(1, 5, 5)
+    assert span_from_name("Show S01E01-E12.mkv") == EpisodeSpan(1, 1, 12)
+    assert span_from_name("Show 第5集.mkv") is None
+    # An inverted span in an arbitrary filename is unparseable, not an error.
+    assert span_from_name("Weird S01E05-E03.mkv") is None

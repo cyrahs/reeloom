@@ -35,6 +35,11 @@ class ConfigInput(BaseModel):
     acquire_subtitles: bool = False
     subtitle_variant: Literal["chs", "cht"] = "chs"
     notify: bool = True
+    replace_enabled: bool = False
+    replace_extra_dirs: list[Annotated[str, Field(min_length=1, max_length=1024)]] = (
+        Field(default_factory=list, max_length=8)
+    )
+    replace_auto_ratio: float = Field(default=1.2, ge=1.0, le=10.0)
 
 
 class ConfigPatch(BaseModel):
@@ -47,6 +52,11 @@ class ConfigPatch(BaseModel):
     acquire_subtitles: bool | None = None
     subtitle_variant: Literal["chs", "cht"] | None = None
     notify: bool | None = None
+    replace_enabled: bool | None = None
+    replace_extra_dirs: (
+        list[Annotated[str, Field(min_length=1, max_length=1024)]] | None
+    ) = Field(default=None, max_length=8)
+    replace_auto_ratio: float | None = Field(default=None, ge=1.0, le=10.0)
 
 
 class SettingsInput(BaseModel):
@@ -58,10 +68,15 @@ class SettingsInput(BaseModel):
     llm_reasoning_effort: Literal["", "minimal", "low", "medium", "high"] | None = None
     telegram_bot_token: str | None = Field(default=None, max_length=200)
     telegram_chat_id: str | None = Field(default=None, max_length=64)
+    trash_retention_days: int | None = Field(default=None, ge=0, le=365)
 
 
 class MessageInput(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
+
+
+class ReplaceResolveInput(BaseModel):
+    action: Literal["replace", "discard_incoming", "keep_both"]
 
 
 def create_app(
@@ -128,6 +143,7 @@ def create_app(
             "snapshot": [item.to_json() for item in run.snapshot],
             "plan": run.plan.to_json() if run.plan else None,
             "executed_moves": [item.to_json() for item in run.executed_moves],
+            "replace_decision": run.extra.get("replace"),
             "logs": await database.list_logs(run_id),
             "interactions": await database.list_interactions(run_id),
         }
@@ -171,6 +187,34 @@ def create_app(
         nudge()
         return {"state": RunState.IDENTIFYING.value}
 
+    @api.post("/runs/{run_id}/replace")
+    async def resolve_replace(run_id: str, payload: ReplaceResolveInput):
+        """Answer a parked replacement confirmation.
+
+        The choice is stored next to the decision and the run re-enters
+        COMPARING, which recomputes against the current filesystem and only
+        honors the choice if the facts the user saw still hold.
+        """
+
+        run = await load(run_id)
+        if run.state.is_active:
+            raise HTTPException(status_code=409, detail="run_is_busy")
+        if run.state is not RunState.NEEDS_ATTENTION or (
+            (run.error or {}).get("code") != "replace_confirmation"
+        ):
+            raise HTTPException(
+                status_code=409, detail="not_awaiting_replace_confirmation"
+            )
+        stored = dict(run.extra.get("replace") or {})
+        stored["resolution"] = payload.action
+        await database.set_extra(run_id, {**run.extra, "replace": stored})
+        await database.log(
+            run_id, f"replacement resolved: {payload.action}"
+        )
+        await database.set_state(run_id, RunState.COMPARING)
+        nudge()
+        return {"state": RunState.COMPARING.value}
+
     @api.post("/runs/{run_id}/retry")
     async def retry(run_id: str):
         run = await load(run_id)
@@ -212,6 +256,9 @@ def create_app(
     @api.post("/configs", status_code=201)
     async def create_config(payload: ConfigInput):
         _check_roots(payload.inbound_root, payload.library_root)
+        _check_extra_dirs(
+            payload.replace_extra_dirs, payload.inbound_root, payload.library_root
+        )
         config = WatchConfigModel(
             id=str(uuid.uuid4()),
             name=payload.name,
@@ -223,6 +270,9 @@ def create_app(
             acquire_subtitles=payload.acquire_subtitles,
             subtitle_variant=SubtitleVariant(payload.subtitle_variant),
             notify=payload.notify,
+            replace_enabled=payload.replace_enabled,
+            replace_extra_dirs=tuple(payload.replace_extra_dirs),
+            replace_auto_ratio=payload.replace_auto_ratio,
         )
         await database.create_config(config)
         nudge()
@@ -230,13 +280,24 @@ def create_app(
 
     @api.patch("/configs/{config_id}")
     async def update_config(config_id: str, payload: ConfigPatch):
-        if await database.get_config(config_id) is None:
+        stored = await database.get_config(config_id)
+        if stored is None:
             raise HTTPException(status_code=404, detail="config_not_found")
         values = payload.model_dump(exclude_none=True)
         if "media_type" in values:
             values["media_type"] = values["media_type"].value
         if "inbound_root" in values or "library_root" in values:
             _check_roots(values.get("inbound_root"), values.get("library_root"))
+        # Validate extra dirs against the roots the config will actually have.
+        effective_dirs = values.get(
+            "replace_extra_dirs", list(stored.replace_extra_dirs)
+        )
+        if effective_dirs:
+            _check_extra_dirs(
+                effective_dirs,
+                values.get("inbound_root", stored.inbound_root),
+                values.get("library_root", stored.library_root),
+            )
         await database.update_config(config_id, values)
         nudge()
         return _config_json(await database.get_config(config_id))
@@ -283,6 +344,7 @@ def create_app(
             "llm_model": stored.get("llm_model", ""),
             "llm_reasoning_effort": stored.get("llm_reasoning_effort", ""),
             "telegram_chat_id": stored.get("telegram_chat_id", ""),
+            "trash_retention_days": stored.get("trash_retention_days", 3),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),
             "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
@@ -330,6 +392,27 @@ def _check_roots(inbound: str | None, library: str | None) -> None:
             raise HTTPException(status_code=422, detail="roots_must_be_absolute")
 
 
+def _check_extra_dirs(dirs: list[str], inbound: str, library: str) -> None:
+    """Extra replacement-detection dirs must be absolute and disjoint from the
+    watch roots — a nested dir would let one run trash files it also moves."""
+
+    roots = [Path(inbound), Path(library)]
+    seen: set[str] = set()
+    for value in dirs:
+        path = Path(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise HTTPException(status_code=422, detail="extra_dirs_must_be_absolute")
+        key = str(path)
+        if key in seen:
+            raise HTTPException(status_code=422, detail="extra_dir_duplicate")
+        seen.add(key)
+        for root in roots:
+            if path == root or root in path.parents or path in root.parents:
+                raise HTTPException(
+                    status_code=422, detail="extra_dir_overlaps_root"
+                )
+
+
 def _config_json(config: WatchConfigModel | None) -> dict[str, Any]:
     if config is None:
         raise HTTPException(status_code=404, detail="config_not_found")
@@ -344,6 +427,9 @@ def _config_json(config: WatchConfigModel | None) -> dict[str, Any]:
         "acquire_subtitles": config.acquire_subtitles,
         "subtitle_variant": config.subtitle_variant.value,
         "notify": config.notify,
+        "replace_enabled": config.replace_enabled,
+        "replace_extra_dirs": list(config.replace_extra_dirs),
+        "replace_auto_ratio": config.replace_auto_ratio,
     }
 
 
