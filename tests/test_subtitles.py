@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from reeloom.models import SubtitleVariant
-from reeloom.subtitles import detect_variant, variant_from_name
+from reeloom.subtitles import (
+    detect_variant,
+    variant_from_name,
+    variant_from_stream_tags,
+)
 
 
 @pytest.mark.parametrize(
@@ -36,6 +40,31 @@ from reeloom.subtitles import detect_variant, variant_from_name
 )
 def test_filename_tokens_classify_when_unambiguous(name, expected) -> None:
     assert variant_from_name(name) is expected
+
+
+@pytest.mark.parametrize(
+    ("language", "title", "expected"),
+    [
+        ("chi", None, SubtitleVariant.CHI),
+        ("zho", None, SubtitleVariant.CHI),
+        ("zh", None, SubtitleVariant.CHI),
+        ("zh-Hans", None, SubtitleVariant.CHS),
+        ("zh_Hant", None, SubtitleVariant.CHT),
+        ("ZH-TW", None, SubtitleVariant.CHI),
+        ("chs", None, SubtitleVariant.CHS),
+        ("cht", None, SubtitleVariant.CHT),
+        (None, "简体中文", SubtitleVariant.CHS),
+        ("und", "繁體", SubtitleVariant.CHT),
+        ("eng", "简日双语", SubtitleVariant.CHS),
+        ("chi", "Signs & Songs", SubtitleVariant.CHI),
+        ("eng", None, None),
+        ("jpn", "Full Subtitles", None),
+        ("und", None, None),
+        (None, None, None),
+    ],
+)
+def test_stream_tags_classify_embedded_tracks(language, title, expected) -> None:
+    assert variant_from_stream_tags(language, title) is expected
 
 
 def test_text_decides_when_the_filename_says_nothing() -> None:
