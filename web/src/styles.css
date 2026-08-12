@@ -798,14 +798,37 @@ ul {
 .credentials .form-actions,
 .credentials .error,
 .edit-config .form-actions,
-.edit-config .error {
+.edit-config .error,
+.new-config > p.muted,
+.edit-config > p.muted {
   grid-column: 1 / -1;
+}
+
+.new-config > p.muted,
+.edit-config > p.muted {
+  margin: 0;
 }
 
 .edit-config {
   margin-top: 0.85rem;
   padding-top: 0.85rem;
   border-top: 1px solid var(--line);
+}
+
+.field-pair {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.75rem 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+}
+
+.llm-test {
+  align-content: start;
+  justify-items: start;
+}
+
+.llm-test .error {
+  margin: 0;
 }
 
 .new-config h3 {

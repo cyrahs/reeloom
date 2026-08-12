@@ -31,14 +31,22 @@ const SETTINGS = {
   telegram_bot_token_set: false,
 };
 
-function mockSettingsApi() {
+function mockSettingsApi(config: WatchConfig = CONFIG) {
   const patches: Record<string, unknown>[] = [];
   const puts: Record<string, unknown>[] = [];
+  const llmTest = {
+    calls: 0,
+    response: { ok: true, reply: "ok" } as Record<string, unknown>,
+  };
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
+      if (url.endsWith("/settings/test-llm") && method === "POST") {
+        llmTest.calls += 1;
+        return { ok: true, status: 200, json: async () => llmTest.response };
+      }
       if (url.endsWith("/settings") && method === "PUT") {
         puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return { ok: true, status: 200, json: async () => ({ updated: true }) };
@@ -47,17 +55,17 @@ function mockSettingsApi() {
         return { ok: true, status: 200, json: async () => SETTINGS };
       }
       if (url.endsWith("/configs") && method === "GET") {
-        return { ok: true, status: 200, json: async () => ({ configs: [CONFIG] }) };
+        return { ok: true, status: 200, json: async () => ({ configs: [config] }) };
       }
-      if (url.endsWith(`/configs/${CONFIG.id}`) && method === "PATCH") {
+      if (url.endsWith(`/configs/${config.id}`) && method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         patches.push(body);
-        return { ok: true, status: 200, json: async () => ({ ...CONFIG, ...body }) };
+        return { ok: true, status: 200, json: async () => ({ ...config, ...body }) };
       }
       throw new Error(`unexpected ${method} ${url}`);
     }),
   );
-  return { patches, puts };
+  return { patches, puts, llmTest };
 }
 
 describe("settings page", () => {
@@ -112,9 +120,7 @@ describe("settings page", () => {
     fireEvent.click(await screen.findByText("编辑"));
     const form = screen.getByDisplayValue("动画收件箱").closest("form")!;
 
-    fireEvent.click(
-      within(form).getByLabelText("洗版：发现已有旧版本时自动替换/去重"),
-    );
+    fireEvent.click(within(form).getByLabelText("洗版"));
     fireEvent.click(within(form).getByText("添加目录"));
     fireEvent.change(within(form).getByLabelText("目录 1"), {
       target: { value: "/data/anirss" },
@@ -129,14 +135,83 @@ describe("settings page", () => {
     });
   });
 
-  it("toggles replacement from the config row", async () => {
+  it("shows a summary card with a Chinese type tag and enabled state", async () => {
+    mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    const card = (await screen.findByText("动画收件箱")).closest("li")!;
+    expect(within(card).getByText("动画")).toBeInTheDocument();
+    expect(within(card).getByText("已启用")).toBeInTheDocument();
+    // Enabled features show up as read-only tags; disabled ones stay hidden.
+    expect(within(card).getByText("通知")).toBeInTheDocument();
+    expect(within(card).queryByText("字幕")).not.toBeInTheDocument();
+    expect(within(card).queryByText("洗版")).not.toBeInTheDocument();
+    // The per-option controls live in the edit form, not on the card.
+    expect(within(card).queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("shows tags for subtitle acquisition and replacement when enabled", async () => {
+    mockSettingsApi({
+      ...CONFIG,
+      acquire_subtitles: true,
+      subtitle_variant: "cht",
+      replace_enabled: true,
+      notify: false,
+    });
+
+    render(<SettingsPage />);
+
+    const card = (await screen.findByText("动画收件箱")).closest("li")!;
+    expect(within(card).getByText("字幕")).toBeInTheDocument();
+    expect(within(card).getByText("洗版")).toBeInTheDocument();
+    expect(within(card).queryByText("通知")).not.toBeInTheDocument();
+  });
+
+  it("edits subtitle and notify options through the edit form", async () => {
     const { patches } = mockSettingsApi();
 
     render(<SettingsPage />);
 
-    fireEvent.click(await screen.findByLabelText("洗版"));
+    fireEvent.click(await screen.findByText("编辑"));
+    const form = screen.getByDisplayValue("动画收件箱").closest("form")!;
+
+    fireEvent.click(within(form).getByLabelText("自动找字幕"));
+    fireEvent.change(within(form).getByLabelText("字幕偏好"), {
+      target: { value: "cht" },
+    });
+    fireEvent.click(within(form).getByLabelText("通知"));
+    fireEvent.click(within(form).getByLabelText("启用监控"));
+    fireEvent.click(within(form).getByText("保存"));
+
     await waitFor(() => expect(patches).toHaveLength(1));
-    expect(patches[0]).toEqual({ replace_enabled: true });
+    expect(patches[0]).toMatchObject({
+      acquire_subtitles: true,
+      subtitle_variant: "cht",
+      notify: false,
+      enabled: false,
+    });
+  });
+
+  it("hides the subtitle options for movie and tv types", async () => {
+    mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByText("编辑"));
+    const form = screen.getByDisplayValue("动画收件箱").closest("form")!;
+
+    expect(within(form).getByLabelText("自动找字幕")).toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText("媒体类型"), {
+      target: { value: "movie" },
+    });
+    expect(within(form).queryByLabelText("自动找字幕")).not.toBeInTheDocument();
+    expect(within(form).queryByLabelText("字幕偏好")).not.toBeInTheDocument();
+
+    fireEvent.change(within(form).getByLabelText("媒体类型"), {
+      target: { value: "anime" },
+    });
+    expect(within(form).getByLabelText("自动找字幕")).toBeInTheDocument();
   });
 
   it("always sends the reasoning effort, even the default", async () => {
@@ -163,6 +238,28 @@ describe("settings page", () => {
       llm_reasoning_effort: "high",
       trash_retention_days: "3",
     });
+  });
+
+  it("tests the model connection from the credentials form", async () => {
+    const { llmTest, puts } = mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByText("测试模型"));
+    await waitFor(() => expect(llmTest.calls).toBe(1));
+    expect(await screen.findByText("模型连通")).toBeInTheDocument();
+    // The test button never submits the surrounding form.
+    expect(puts).toHaveLength(0);
+  });
+
+  it("shows the error when the model test fails", async () => {
+    const { llmTest } = mockSettingsApi();
+    llmTest.response = { ok: false, error: "model_unreachable" };
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByText("测试模型"));
+    expect(await screen.findByText("model_unreachable")).toBeInTheDocument();
   });
 
   it("edits the trash retention", async () => {

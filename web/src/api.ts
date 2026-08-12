@@ -233,6 +233,10 @@ export const api = {
   deleteRun: (id: string) =>
     request<{ deleted: boolean }>(`/runs/${id}`, { method: "DELETE" }),
 
+  testLlm: () =>
+    post<{ ok: boolean; reply?: string; error?: string }>(
+      "/settings/test-llm",
+    ),
   listConfigs: () => request<{ configs: WatchConfig[] }>("/configs"),
   createConfig: (body: Partial<WatchConfig>) =>
     post<WatchConfig>("/configs", body),

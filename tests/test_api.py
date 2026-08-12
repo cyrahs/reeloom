@@ -7,6 +7,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from reeloom.adapters.llm import ModelError
 from reeloom.models import (
     ExecutedMove,
     FileKind,
@@ -51,11 +52,17 @@ class StubAnswerer:
     def __init__(self) -> None:
         self.questions: list[str] = []
         self.histories: list[list[dict]] = []
+        self.ping_error: Exception | None = None
 
     async def answer(self, run, config, question, history=None):
         self.questions.append(question)
         self.histories.append(list(history or []))
         return "It is season 1."
+
+    async def ping(self):
+        if self.ping_error is not None:
+            raise self.ping_error
+        return "ok"
 
 
 class StubWorker:
@@ -119,6 +126,7 @@ async def test_every_api_route_needs_the_admin_token(client) -> None:
         ("get", "/api/intake"),
         ("get", "/api/configs"),
         ("get", "/api/settings"),
+        ("post", "/api/settings/test-llm"),
         ("get", "/api/fs/dirs"),
         ("post", "/api/configs"),
     ]:
@@ -565,11 +573,12 @@ async def test_secrets_are_never_echoed_back(client, database) -> None:
 
 
 async def test_reasoning_effort_roundtrips_including_reset(client) -> None:
-    await client.put(
-        "/api/settings", headers=AUTH, json={"llm_reasoning_effort": "high"}
-    )
-    body = (await client.get("/api/settings", headers=AUTH)).json()
-    assert body["llm_reasoning_effort"] == "high"
+    for effort in ("high", "xhigh", "max"):
+        await client.put(
+            "/api/settings", headers=AUTH, json={"llm_reasoning_effort": effort}
+        )
+        body = (await client.get("/api/settings", headers=AUTH)).json()
+        assert body["llm_reasoning_effort"] == effort
 
     # An empty string is a real value: back to the provider default.
     await client.put(
@@ -600,3 +609,20 @@ async def test_reasoning_effort_rejects_unknown_values(client) -> None:
         "/api/settings", headers=AUTH, json={"llm_reasoning_effort": "ultra"}
     )
     assert response.status_code == 422
+
+
+async def test_llm_test_reports_success(client) -> None:
+    response = await client.post("/api/settings/test-llm", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "reply": "ok"}
+
+
+async def test_llm_test_reports_failure_without_an_error_status(
+    client, answerer
+) -> None:
+    answerer.ping_error = ModelError("model_error", status=401)
+    response = await client.post("/api/settings/test-llm", headers=AUTH)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "model_error" in body["error"]
