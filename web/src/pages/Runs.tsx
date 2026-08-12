@@ -22,8 +22,13 @@ function summary(run: RunSummary): string {
   }
   if (!run.result) return `${run.file_count} 个文件`;
   const parts = [`移动 ${run.result.moved}`];
-  if (run.result.duplicates.length)
-    parts.push(`重复 ${run.result.duplicates.length}`);
+  if (run.result.replaced.length)
+    parts.push(`洗版 ${run.result.replaced.length}`);
+  // Discarded incoming files are duplicates of what the library already
+  // has, so they count as 重复 alongside hash duplicates (same as detail).
+  const duplicates =
+    run.result.discarded.length + run.result.duplicates.length;
+  if (duplicates) parts.push(`重复 ${duplicates}`);
   if (run.result.missing.length) parts.push(`缺失 ${run.result.missing.length}`);
   if (run.result.archived) parts.push(`归档 ${run.result.archived}`);
   if (run.result.subtitles_moved)
@@ -170,10 +175,12 @@ export function RunsPage() {
           <li key={run.id}>
             <a href={`#/runs/${run.id}`}>
               <span className="run-main">
-                <span className="folder">{run.folder_name}</span>
-                <span className="title">
-                  {run.title ? `${run.title} (${run.year})` : "—"}
+                <span className="folder">
+                  {run.title ? `${run.title} (${run.year})` : run.folder_name}
                 </span>
+                {run.title && (
+                  <span className="title">{run.folder_name}</span>
+                )}
               </span>
               <span className="run-side">
                 <span className={`badge ${stateClass(run)}`}>
