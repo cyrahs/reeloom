@@ -427,7 +427,9 @@ class Worker:
             await self._db.log(
                 run.id, f"subtitle acquisition failed: {error}", level="warning"
             )
-            result = replace(result, subtitle_note=f"failed: {error}")
+            # The note lands in the Telegram notification; keep it short and
+            # leave the full error to the log lines above.
+            result = replace(result, subtitle_note=f"failed: {str(error)[:120]}")
         await self._db.set_result(run.id, result)
         await self._settle(run, config)
 

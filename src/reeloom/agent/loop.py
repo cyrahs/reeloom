@@ -3,6 +3,11 @@
 A plain sequential loop: ask the model, run the one tool it asked for, feed
 the observation back. It ends only when a terminal tool raises ``Finished`` —
 assistant prose can never settle a run, it can only escalate to a human.
+
+However the loop exits, the conversation is left with every tool call
+answered: callers (the subtitle negotiation) append feedback and re-enter,
+and OpenAI rejects any request whose history has a tool call without a tool
+result.
 """
 
 from __future__ import annotations
@@ -10,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from reeloom.adapters.llm import Conversation, Model, ModelError
+from reeloom.adapters.llm import Conversation, Model, ModelError, ToolCall
 from reeloom.models import ReeloomError
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,7 +72,7 @@ async def run_loop(
             continue
 
         text_streak = 0
-        for call in reply.tool_calls:
+        for index, call in enumerate(reply.tool_calls):
             try:
                 arguments = call.parsed()
             except ModelError as error:
@@ -76,8 +81,12 @@ async def run_loop(
             try:
                 observation = await toolbox.call(call.name, arguments)
             except Finished as done:
+                _settle(conversation, reply.tool_calls, index, {"ok": True})
                 return done.result
-            except Escalate:
+            except Escalate as error:
+                _settle(
+                    conversation, reply.tool_calls, index, {"error": error.code}
+                )
                 raise
             except ReeloomError as error:
                 _LOGGER.debug("tool %s rejected: %s", call.name, error.code)
@@ -88,3 +97,17 @@ async def run_loop(
             conversation.tool_result(call, observation)
 
     raise Escalate("max_turns_exhausted", turns=max_turns)
+
+
+def _settle(
+    conversation: Conversation,
+    calls: tuple[ToolCall, ...],
+    index: int,
+    outcome: Any,
+) -> None:
+    """Answer the terminal call, and any calls after it, before the loop
+    exits mid-reply."""
+
+    conversation.tool_result(calls[index], outcome)
+    for call in calls[index + 1 :]:
+        conversation.tool_result(call, {"error": "not_executed"})

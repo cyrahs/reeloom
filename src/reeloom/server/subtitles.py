@@ -20,7 +20,7 @@ from typing import Any
 
 from reeloom.adapters.acgrip import AcgripClient, AcgripError, Attachment, Thread
 from reeloom.adapters.archive import ArchiveError, extract_subtitles, is_archive
-from reeloom.adapters.llm import Conversation
+from reeloom.adapters.llm import Conversation, ModelError
 from reeloom.agent.loop import Escalate, Finished, run_loop
 from reeloom.executor import FilesystemExecutor
 from reeloom.models import (
@@ -282,7 +282,10 @@ class SubtitleAcquisition:
             published, covered = await self._publish(
                 run, config, chosen.classified
             )
-        except (AcgripError, ArchiveError, SubtitleError) as error:
+        except (AcgripError, ArchiveError, ModelError, SubtitleError) as error:
+            # Full context (e.g. a provider's error body) goes to the server
+            # log; the run log and the notification carry only the code.
+            _LOGGER.warning("run=%s subtitle acquisition failed: %s", run.id, error)
             await self._db.log(
                 run.id, f"subtitle acquisition: {error.code}", level="warning"
             )
