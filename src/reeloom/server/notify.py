@@ -24,7 +24,7 @@ from reeloom.models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_BRAND = "Reeloom"
+_BRAND = "REELOOM"
 _TMDB_WEB = "https://www.themoviedb.org"
 _HEADLINE = {
     RunState.DONE: "✅ 整理完成",
@@ -38,8 +38,8 @@ def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
     """Telegram HTML. Every interpolated value is untrusted and escaped."""
 
     lines = [
-        _BRAND,
-        f"{_HEADLINE.get(run.state, run.state.value)} · {_text(config.name)}",
+        f"{_BRAND} · {_text(config.name)}",
+        _HEADLINE.get(run.state, run.state.value),
     ]
     if run.plan:
         identity = run.plan.identity

@@ -109,8 +109,7 @@ def test_success_message_lists_the_outcome(config: WatchConfig) -> None:
 
     text = render(run, config)
 
-    assert text.splitlines()[0] == "Reeloom"
-    assert "整理完成" in text
+    assert text.splitlines()[:2] == ["REELOOM · anime", "✅ 整理完成"]
     assert "移动 12" in text and "归档 3" in text
     assert "字幕 24" in text and "下载字幕 12" in text
     assert "内封 2" in text
