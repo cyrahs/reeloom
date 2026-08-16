@@ -125,14 +125,30 @@ class IdentificationTools:
                             "additionalProperties": False,
                         },
                     },
-                    "notes": {"type": "string", "maxLength": 500},
+                    "notes": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "description": (
+                            "Shown to the user; write in Simplified Chinese"
+                            " (简体中文)."
+                        ),
+                    },
                 },
                 ["tmdb_id", "entries"],
             ),
             _tool(
                 "report_problem",
                 "Escalate to a human when the folder cannot be identified.",
-                {"reason": {"type": "string", "maxLength": 500}},
+                {
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "description": (
+                            "Shown to the user; write in Simplified Chinese"
+                            " (简体中文)."
+                        ),
+                    }
+                },
                 ["reason"],
             ),
         ]

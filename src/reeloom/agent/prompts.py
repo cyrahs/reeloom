@@ -34,6 +34,9 @@ Rules:
   are archived, not deleted, so omission is always the safe choice.
 - If the folder holds more than one distinct title, or you cannot identify it, \
   call report_problem instead of guessing.
+- The notes of submit_plan and the reason of report_problem are shown \
+  directly to the user: write them in Simplified Chinese (简体中文). \
+  Everything else — search queries, tool arguments — stays as it is.
 """
 
 _SERIES_TASK = """\
