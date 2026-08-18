@@ -53,13 +53,15 @@ async def test_send_posts_to_the_fixed_origin() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(
+            200, json={"ok": True, "result": {"message_id": 7}}
+        )
 
     client = TelegramClient(
         bot_token=TOKEN, chat_id=CHAT, transport=httpx.MockTransport(handler)
     )
 
-    assert await client.send("hello") is True
+    assert await client.send("hello") == 7
     assert seen[0].url.host == "api.telegram.org"
     assert seen[0].url.path.endswith("/sendMessage")
     assert parse_qs(seen[0].content.decode())["parse_mode"] == ["HTML"]
@@ -79,7 +81,7 @@ async def test_a_failed_send_is_reported_not_raised() -> None:
         chat_id=CHAT,
         transport=httpx.MockTransport(lambda request: httpx.Response(429)),
     )
-    assert await client.send("hello") is False
+    assert await client.send("hello") is None
     await client.aclose()
 
 
@@ -90,7 +92,7 @@ async def test_a_network_error_is_reported_not_raised() -> None:
     client = TelegramClient(
         bot_token=TOKEN, chat_id=CHAT, transport=httpx.MockTransport(explode)
     )
-    assert await client.send("hello") is False
+    assert await client.send("hello") is None
     await client.aclose()
 
 
@@ -182,12 +184,16 @@ def test_long_lists_are_summarized(config: WatchConfig) -> None:
 
 
 class StubClients:
-    def __init__(self, credentials, tmdb=None) -> None:
+    def __init__(self, credentials, tmdb=None, pin_alerts=True) -> None:
         self.credentials = credentials
         self._tmdb = tmdb
+        self.pin_alerts = pin_alerts
 
     async def telegram(self):
         return self.credentials
+
+    async def telegram_pin_alerts(self):
+        return self.pin_alerts
 
     async def tmdb(self):
         if self._tmdb is None:
@@ -328,3 +334,117 @@ def test_replacement_lines_and_confirmation_hint(config: WatchConfig) -> None:
     text = render(parked, config)
     assert "等待洗版确认" in text
     assert "replace_confirmation" not in text
+
+
+# ---- pinning ------------------------------------------------------------
+
+
+def recording_transport(seen: list[httpx.Request]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200, json={"ok": True, "result": {"message_id": 7}}
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def methods(seen: list[httpx.Request]) -> list[str]:
+    return [request.url.path.rsplit("/", 1)[1] for request in seen]
+
+
+@pytest.mark.parametrize(
+    "state", [RunState.NEEDS_ATTENTION, RunState.FAILED]
+)
+async def test_attention_and_failure_notifications_are_pinned(
+    config: WatchConfig, state: RunState
+) -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=recording_transport(seen)
+    )
+    await notifier.run_settled(make_run(state=state), config)
+
+    assert methods(seen) == ["sendMessage", "pinChatMessage"]
+    fields = parse_qs(seen[1].content.decode())
+    assert fields["message_id"] == ["7"]
+    # The message itself already notified; the pin must stay silent.
+    assert fields["disable_notification"] == ["true"]
+
+
+async def test_a_settled_run_is_not_pinned(config: WatchConfig) -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=recording_transport(seen)
+    )
+    await notifier.run_settled(make_run(state=RunState.DONE), config)
+
+    assert methods(seen) == ["sendMessage"]
+
+
+async def test_pinning_can_be_disabled(config: WatchConfig) -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT), pin_alerts=False),
+        transport=recording_transport(seen),
+    )
+    await notifier.run_settled(make_run(state=RunState.FAILED), config)
+
+    assert methods(seen) == ["sendMessage"]
+
+
+async def test_a_reply_without_a_message_id_skips_the_pin(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=httpx.MockTransport(handler)
+    )
+    await notifier.run_settled(make_run(state=RunState.FAILED), config)
+
+    # Delivered but unpinnable must not fall back to a duplicate send.
+    assert methods(seen) == ["sendMessage"]
+
+
+# ---- test notifications --------------------------------------------------
+
+
+async def test_send_test_sends_a_plain_and_a_pinned_attention_message() -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=recording_transport(seen)
+    )
+
+    assert await notifier.send_test() is None
+    assert methods(seen) == ["sendMessage", "sendMessage", "pinChatMessage"]
+    assert "普通测试通知" in parse_qs(seen[0].content.decode())["text"][0]
+    assert "需要处理" in parse_qs(seen[1].content.decode())["text"][0]
+
+
+async def test_send_test_honors_the_pin_switch() -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT), pin_alerts=False),
+        transport=recording_transport(seen),
+    )
+
+    assert await notifier.send_test() is None
+    assert methods(seen) == ["sendMessage", "sendMessage"]
+
+
+async def test_send_test_reports_missing_configuration() -> None:
+    notifier = TelegramNotifier(StubClients(None))
+    assert await notifier.send_test() == "telegram_not_configured"
+
+
+async def test_send_test_reports_a_failed_send() -> None:
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)),
+        transport=httpx.MockTransport(lambda request: httpx.Response(429)),
+    )
+    assert await notifier.send_test() == "send_failed"

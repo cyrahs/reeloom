@@ -127,6 +127,7 @@ async def test_every_api_route_needs_the_admin_token(client) -> None:
         ("get", "/api/configs"),
         ("get", "/api/settings"),
         ("post", "/api/settings/test-llm"),
+        ("post", "/api/settings/test-telegram"),
         ("get", "/api/fs/dirs"),
         ("post", "/api/configs"),
     ]:
@@ -602,6 +603,55 @@ async def test_trash_retention_roundtrips(client) -> None:
         "/api/settings", headers=AUTH, json={"trash_retention_days": 999}
     )
     assert refused.status_code == 422
+
+
+async def test_pin_alerts_default_on_and_roundtrip(client) -> None:
+    response = await client.get("/api/settings", headers=AUTH)
+    assert response.json()["telegram_pin_alerts"] is True
+
+    await client.put(
+        "/api/settings", headers=AUTH, json={"telegram_pin_alerts": False}
+    )
+    response = await client.get("/api/settings", headers=AUTH)
+    assert response.json()["telegram_pin_alerts"] is False
+
+
+async def test_telegram_test_without_a_notifier(client) -> None:
+    response = await client.post("/api/settings/test-telegram", headers=AUTH)
+    assert response.json() == {"ok": False, "error": "telegram_not_configured"}
+
+
+async def test_telegram_test_reports_the_notifier_outcome(
+    database, answerer, worker
+) -> None:
+    class StubNotifier:
+        def __init__(self) -> None:
+            self.error: str | None = None
+            self.calls = 0
+
+        async def send_test(self) -> str | None:
+            self.calls += 1
+            return self.error
+
+    notifier = StubNotifier()
+    app = create_app(
+        database=database,
+        admin_token=TOKEN,
+        worker=worker,
+        answerer=answerer,
+        notifier=notifier,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        response = await client.post("/api/settings/test-telegram", headers=AUTH)
+        assert response.json() == {"ok": True}
+
+        notifier.error = "send_failed"
+        response = await client.post("/api/settings/test-telegram", headers=AUTH)
+        assert response.json() == {"ok": False, "error": "send_failed"}
+    assert notifier.calls == 2
 
 
 async def test_reasoning_effort_rejects_unknown_values(client) -> None:

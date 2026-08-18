@@ -49,6 +49,7 @@ create table if not exists settings (
     llm_reasoning_effort text not null default '',
     telegram_bot_token text not null default '',
     telegram_chat_id text not null default '',
+    telegram_pin_alerts boolean not null default true,
     trash_retention_days integer not null default 3,
     updated_at timestamptz not null default now()
 );
@@ -130,6 +131,9 @@ alter table watch_config
 
 alter table settings
     add column if not exists trash_retention_days integer not null default 3;
+
+alter table settings
+    add column if not exists telegram_pin_alerts boolean not null default true;
 """
 
 
@@ -192,6 +196,7 @@ class Database:
             "llm_reasoning_effort",
             "telegram_bot_token",
             "telegram_chat_id",
+            "telegram_pin_alerts",
             "trash_retention_days",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
