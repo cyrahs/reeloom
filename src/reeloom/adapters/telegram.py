@@ -68,8 +68,9 @@ class TelegramClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def send(self, text: str) -> bool:
-        """Send one HTML message. Returns False instead of raising on failure."""
+    async def send(self, text: str) -> int | None:
+        """Send one HTML message. Returns the message id (0 when the reply
+        carries none), or None instead of raising on failure."""
 
         return await self._post(
             "sendMessage",
@@ -81,8 +82,9 @@ class TelegramClient:
             },
         )
 
-    async def send_photo(self, photo_url: str, caption: str) -> bool:
-        """Send one photo with an HTML caption. Returns False on failure."""
+    async def send_photo(self, photo_url: str, caption: str) -> int | None:
+        """Send one photo with an HTML caption. Returns the message id (0 when
+        the reply carries none), or None on failure."""
 
         return await self._post(
             "sendPhoto",
@@ -94,17 +96,36 @@ class TelegramClient:
             },
         )
 
-    async def _post(self, method: str, data: dict[str, str]) -> bool:
+    async def pin(self, message_id: int) -> bool:
+        """Pin one already-sent message. Returns False on failure.
+        The message itself just notified, so the pin stays silent."""
+
+        result = await self._post(
+            "pinChatMessage",
+            {
+                "chat_id": self._chat_id,
+                "message_id": str(message_id),
+                "disable_notification": "true",
+            },
+        )
+        return result is not None
+
+    async def _post(self, method: str, data: dict[str, str]) -> int | None:
         try:
             response = await self._client.post(
                 f"/bot{self.__token}/{method}", data=data
             )
         except httpx.HTTPError as error:
             _LOGGER.warning("telegram send failed: %s", type(error).__name__)
-            return False
+            return None
         if response.status_code != 200:
             _LOGGER.warning(
                 "telegram rejected the message: status=%s", response.status_code
             )
-            return False
-        return True
+            return None
+        try:
+            return int(response.json()["result"]["message_id"])
+        except (KeyError, TypeError, ValueError):
+            # Delivered, but the reply has no message id (e.g. pin results):
+            # callers must not mistake that for a failed send.
+            return 0

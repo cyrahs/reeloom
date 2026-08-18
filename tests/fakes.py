@@ -174,6 +174,7 @@ class FakeDatabase:
             "llm_reasoning_effort",
             "telegram_bot_token",
             "telegram_chat_id",
+            "telegram_pin_alerts",
             "trash_retention_days",
         }
         self.settings.update(

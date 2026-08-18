@@ -161,6 +161,7 @@ export interface Settings {
   /** "" means provider default: the parameter is never sent. */
   llm_reasoning_effort: string;
   telegram_chat_id: string;
+  telegram_pin_alerts: boolean;
   trash_retention_days: number;
   tmdb_api_key_set: boolean;
   llm_api_key_set: boolean;
@@ -238,6 +239,8 @@ export const api = {
     post<{ ok: boolean; reply?: string; error?: string }>(
       "/settings/test-llm",
     ),
+  testTelegram: () =>
+    post<{ ok: boolean; error?: string }>("/settings/test-telegram"),
   listConfigs: () => request<{ configs: WatchConfig[] }>("/configs"),
   createConfig: (body: Partial<WatchConfig>) =>
     post<WatchConfig>("/configs", body),
@@ -253,7 +256,7 @@ export const api = {
     request<DirListing>(`/fs/dirs?path=${encodeURIComponent(path)}`),
 
   getSettings: () => request<Settings>("/settings"),
-  putSettings: (body: Record<string, string>) =>
+  putSettings: (body: Record<string, string | boolean>) =>
     request<{ updated: boolean }>("/settings", {
       method: "PUT",
       body: JSON.stringify(body),
