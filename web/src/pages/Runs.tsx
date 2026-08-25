@@ -7,6 +7,7 @@ import {
   type IntakeFolder,
   type RunSummary,
 } from "../api";
+import { Link } from "../router";
 import { usePoll } from "../usePoll";
 
 function stateClass(run: RunSummary): string {
@@ -175,7 +176,7 @@ export function RunsPage() {
       <ul className="runs">
         {runs.map((run) => (
           <li key={run.id}>
-            <a href={`#/runs/${run.id}`}>
+            <Link to={`/runs/${run.id}`}>
               <span className="run-main">
                 <span className="folder">
                   {run.title ? `${run.title} (${run.year})` : run.folder_name}
@@ -190,7 +191,7 @@ export function RunsPage() {
                 </span>
                 <span className="summary">{summary(run)}</span>
               </span>
-            </a>
+            </Link>
           </li>
         ))}
       </ul>
