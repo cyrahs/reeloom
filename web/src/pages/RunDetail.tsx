@@ -11,6 +11,7 @@ import {
   type RunDetail,
 } from "../api";
 import { Markdown } from "../Markdown";
+import { Link, navigate } from "../router";
 import { usePoll } from "../usePoll";
 
 function archivedSummary(run: RunDetail): string[] {
@@ -464,7 +465,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
   return (
     <>
       <p className="crumb">
-        <a href="#/">← 任务</a>
+        <Link to="/">← 任务</Link>
       </p>
       <div className="run-head">
         <h1>{run.folder_name}</h1>
@@ -568,7 +569,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
             onClick={() =>
               act(async () => {
                 await api.deleteRun(runId);
-                window.location.hash = "#/";
+                navigate("/");
               })
             }
           >

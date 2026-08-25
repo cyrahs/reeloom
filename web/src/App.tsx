@@ -4,15 +4,11 @@ import { api, clearToken, getToken, setToken } from "./api";
 import { RunDetailPage } from "./pages/RunDetail";
 import { RunsPage } from "./pages/Runs";
 import { SettingsPage } from "./pages/Settings";
+import { Link, useRoute } from "./router";
 
-function useHashRoute(): string {
-  const [hash, setHash] = useState(() => window.location.hash.slice(1) || "/");
-  useEffect(() => {
-    const update = () => setHash(window.location.hash.slice(1) || "/");
-    window.addEventListener("hashchange", update);
-    return () => window.removeEventListener("hashchange", update);
-  }, []);
-  return hash;
+// Old bookmarks and previously shared links use "#/…" hash routes.
+if (window.location.hash.startsWith("#/")) {
+  window.history.replaceState(null, "", window.location.hash.slice(1));
 }
 
 function ReelMark({ size = 20 }: { size?: number }) {
@@ -70,7 +66,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
 export function App() {
   const [authorized, setAuthorized] = useState<boolean | null>(null);
-  const route = useHashRoute();
+  const route = useRoute();
 
   useEffect(() => {
     if (!getToken()) {
@@ -92,20 +88,20 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="topbar-inner">
-          <a href="#/" className="brand">
+          <Link to="/" className="brand">
             <ReelMark />
             Reeloom
-          </a>
+          </Link>
           <nav>
-            <a href="#/" className={route === "/" ? "active" : ""}>
+            <Link to="/" className={route === "/" ? "active" : ""}>
               任务
-            </a>
-            <a
-              href="#/settings"
+            </Link>
+            <Link
+              to="/settings"
               className={route === "/settings" ? "active" : ""}
             >
               设置
-            </a>
+            </Link>
           </nav>
           <button
             className="link"
