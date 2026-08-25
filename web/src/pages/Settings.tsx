@@ -455,9 +455,15 @@ function Credentials({
     telegram_chat_id: settings.telegram_chat_id,
     trash_retention_days: String(settings.trash_retention_days),
   });
+  const [pinAlerts, setPinAlerts] = useState(settings.telegram_pin_alerts);
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    detail: string;
+  } | null>(null);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [telegramResult, setTelegramResult] = useState<{
     ok: boolean;
     detail: string;
   } | null>(null);
@@ -476,6 +482,23 @@ function Credentials({
       setTestResult({ ok: false, detail: (thrown as Error).message });
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function testTelegram() {
+    setTestingTelegram(true);
+    setTelegramResult(null);
+    try {
+      const body = await api.testTelegram();
+      setTelegramResult(
+        body.ok
+          ? { ok: true, detail: "已发送两条测试通知" }
+          : { ok: false, detail: body.error ?? "未知错误" },
+      );
+    } catch (thrown) {
+      setTelegramResult({ ok: false, detail: (thrown as Error).message });
+    } finally {
+      setTestingTelegram(false);
     }
   }
 
@@ -509,13 +532,14 @@ function Credentials({
       className="credentials card"
       onSubmit={async (event) => {
         event.preventDefault();
-        const body = Object.fromEntries(
+        const body: Record<string, string | boolean> = Object.fromEntries(
           Object.entries(form).filter(([, value]) => value !== ""),
         );
         // Unlike the text fields, "" is a real choice here (provider
         // default), so it must reach the server instead of meaning
         // "keep unchanged".
         body.llm_reasoning_effort = form.llm_reasoning_effort ?? "";
+        body.telegram_pin_alerts = pinAlerts;
         await api.putSettings(body);
         setForm({
           llm_base_url: form.llm_base_url,
@@ -600,6 +624,34 @@ function Credentials({
           Chat ID
           <input {...bind("telegram_chat_id")} />
         </label>
+        <label className="field checkbox-field">
+          <input
+            type="checkbox"
+            checked={pinAlerts}
+            onChange={(event) => {
+              setSaved(false);
+              setPinAlerts(event.target.checked);
+            }}
+          />
+          置顶报错与待处理通知
+        </label>
+        <div className="field llm-test">
+          <button
+            type="button"
+            disabled={testingTelegram}
+            onClick={testTelegram}
+          >
+            {testingTelegram ? "发送中…" : "测试通知"}
+          </button>
+          {telegramResult && (
+            <span className={telegramResult.ok ? "muted" : "error"}>
+              {telegramResult.detail}
+            </span>
+          )}
+          <span className="muted">
+            发送一条普通和一条需要处理的测试通知，使用已保存的凭据。
+          </span>
+        </div>
       </div>
       <div className="form-actions">
         <button type="submit" className="primary">

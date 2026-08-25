@@ -70,6 +70,7 @@ class SettingsInput(BaseModel):
     ) = None
     telegram_bot_token: str | None = Field(default=None, max_length=200)
     telegram_chat_id: str | None = Field(default=None, max_length=64)
+    telegram_pin_alerts: bool | None = None
     trash_retention_days: int | None = Field(default=None, ge=0, le=365)
 
 
@@ -87,6 +88,7 @@ def create_app(
     admin_token: str,
     worker=None,
     answerer=None,
+    notifier=None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Reeloom", version="2.0.0", docs_url=None, redoc_url=None)
@@ -346,6 +348,7 @@ def create_app(
             "llm_model": stored.get("llm_model", ""),
             "llm_reasoning_effort": stored.get("llm_reasoning_effort", ""),
             "telegram_chat_id": stored.get("telegram_chat_id", ""),
+            "telegram_pin_alerts": bool(stored.get("telegram_pin_alerts", True)),
             "trash_retention_days": stored.get("trash_retention_days", 3),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),
@@ -371,6 +374,16 @@ def create_app(
         except ReeloomError as error:
             return {"ok": False, "error": str(error)[:500]}
         return {"ok": True, "reply": reply}
+
+    @api.post("/settings/test-telegram")
+    async def test_telegram():
+        """Send two test notifications — one plain, one needs-attention —
+        so the admin can check the saved Telegram credentials and pinning."""
+
+        if notifier is None:
+            return {"ok": False, "error": "telegram_not_configured"}
+        error = await notifier.send_test()
+        return {"ok": True} if error is None else {"ok": False, "error": error}
 
     @app.get("/api/health")
     async def health():

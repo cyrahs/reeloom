@@ -43,13 +43,14 @@ def build_comparer(database: Database, clients: Clients):
 
 def build(settings: Settings, database: Database):
     clients = Clients(database)
+    notifier = build_notifier(clients, settings)
     worker = Worker(
         database,
         identifier=AgentIdentifier(clients, database),
         executor=FilesystemExecutor(database),
         comparer=build_comparer(database, clients),
         subtitles=build_subtitles(database, clients, settings),
-        notifier=build_notifier(clients, settings),
+        notifier=notifier,
         scan_interval_seconds=settings.scan_interval_seconds,
     )
     app = create_app(
@@ -57,6 +58,7 @@ def build(settings: Settings, database: Database):
         admin_token=settings.admin_token,
         worker=worker,
         answerer=Answerer(clients),
+        notifier=notifier,
         static_dir=STATIC_DIR,
     )
     return app, worker, clients

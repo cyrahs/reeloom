@@ -32,6 +32,9 @@ _HEADLINE = {
     RunState.FAILED: "❌ 整理失败",
     RunState.DISCARDED: "🗑 已放弃",
 }
+# States that need a human: their notification is pinned so it stays visible
+# until someone deals with it.
+_PIN_STATES = frozenset({RunState.NEEDS_ATTENTION, RunState.FAILED})
 
 
 def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
@@ -119,27 +122,66 @@ class TelegramNotifier:
         self._transport = transport
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
-        credentials = await self._clients.telegram()
-        if credentials is None:
-            return
-        token, chat_id = credentials
-        try:
-            client = TelegramClient(
-                bot_token=token, chat_id=chat_id, transport=self._transport
-            )
-        except TelegramError as error:
-            _LOGGER.warning("telegram not usable: %s", error.code)
+        client = await self._client()
+        if client is None:
             return
         text = render(run, config, self._public_url)
         poster = await self._poster(run)
         try:
-            sent = False
+            message_id = None
             if poster is not None:
-                sent = await client.send_photo(poster, text)
-            if not sent and not await client.send(text):
+                message_id = await client.send_photo(poster, text)
+            if message_id is None:
+                message_id = await client.send(text)
+            if message_id is None:
                 _LOGGER.info("notification dropped for run=%s", run.id)
+            elif message_id and await self._should_pin(run):
+                await client.pin(message_id)
         finally:
             await client.aclose()
+
+    async def send_test(self) -> str | None:
+        """Send one plain and one needs-attention test message; the second is
+        pinned when pinning is enabled. Returns an error code, or None."""
+
+        client = await self._client()
+        if client is None:
+            return "telegram_not_configured"
+        try:
+            plain = f"{_BRAND} · 测试通知\n{_HEADLINE[RunState.DONE]}\n这是一条普通测试通知"
+            if await client.send(plain) is None:
+                return "send_failed"
+            attention = (
+                f"{_BRAND} · 测试通知\n{_HEADLINE[RunState.NEEDS_ATTENTION]}\n"
+                "这是一条需要处理的测试通知"
+            )
+            message_id = await client.send(attention)
+            if message_id is None:
+                return "send_failed"
+            if message_id and await self._pin_enabled():
+                await client.pin(message_id)
+            return None
+        finally:
+            await client.aclose()
+
+    async def _client(self) -> TelegramClient | None:
+        credentials = await self._clients.telegram()
+        if credentials is None:
+            return None
+        token, chat_id = credentials
+        try:
+            return TelegramClient(
+                bot_token=token, chat_id=chat_id, transport=self._transport
+            )
+        except TelegramError as error:
+            _LOGGER.warning("telegram not usable: %s", error.code)
+            return None
+
+    async def _should_pin(self, run: Run) -> bool:
+        return run.state in _PIN_STATES and await self._pin_enabled()
+
+    async def _pin_enabled(self) -> bool:
+        return await self._clients.telegram_pin_alerts()
 
     async def _poster(self, run: Run) -> str | None:
         """Poster URL for the identified work; None means send text only."""

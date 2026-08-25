@@ -83,6 +83,10 @@ class Clients:
         chat_id = settings.get("telegram_chat_id", "")
         return (token, chat_id) if token and chat_id else None
 
+    async def telegram_pin_alerts(self) -> bool:
+        settings = await self._db.get_settings()
+        return bool(settings.get("telegram_pin_alerts", True))
+
     async def aclose(self) -> None:
         await self._close_model()
         await self._close_tmdb()
