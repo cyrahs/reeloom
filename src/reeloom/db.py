@@ -572,4 +572,6 @@ def _run(row: dict[str, Any]) -> Run:
         error=row["error"],
         attempts=row["attempts"],
         extra=row["extra"] or {},
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

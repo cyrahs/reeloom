@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from reeloom.adapters.llm import Conversation, ModelReply, ToolCall
@@ -56,12 +57,15 @@ class FakeDatabase:
                 and not run.state.is_terminal
             ):
                 return None
+        now = datetime.now(timezone.utc)
         run = Run(
             id=str(uuid.uuid4()),
             config_id=config_id,
             folder_name=folder_name,
             state=RunState.PENDING,
             snapshot=tuple(snapshot),
+            created_at=now,
+            updated_at=now,
         )
         self.runs[run.id] = run
         return run
@@ -112,6 +116,7 @@ class FakeDatabase:
             state=state,
             error=error,
             attempts=run.attempts + (1 if bump_attempts else 0),
+            updated_at=datetime.now(timezone.utc),
         )
 
     async def set_plan(self, run_id: str, plan: Plan | None) -> None:

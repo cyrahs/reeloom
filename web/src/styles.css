@@ -275,6 +275,20 @@ textarea {
   flex-wrap: wrap;
 }
 
+/* Visible consequences for a choice, instead of hover-only titles. */
+.action-hints {
+  margin-top: 0.5rem;
+  display: grid;
+  gap: 0.15rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.action-hints strong {
+  font-weight: 550;
+  color: var(--text);
+}
+
 /* ---- Shared bits ---- */
 
 .muted {
@@ -312,6 +326,29 @@ textarea {
   padding: 0.6rem 0.9rem;
   border-radius: var(--radius-sm);
   margin-bottom: 1rem;
+}
+
+/* The attention banner doubles as a "jump to it" control. */
+button.banner-action {
+  width: 100%;
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+  transition: border-color 120ms;
+}
+
+button.banner-action:hover:not(:disabled) {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.banner-hint {
+  margin-left: auto;
+  font-size: 0.82rem;
+  font-weight: 400;
+  opacity: 0.75;
 }
 
 .card {
@@ -455,6 +492,12 @@ ul {
   text-align: right;
 }
 
+.runs .time {
+  color: var(--muted);
+  font-size: 0.76rem;
+  opacity: 0.85;
+}
+
 /* ---- Run detail ---- */
 
 .crumb {
@@ -481,6 +524,13 @@ ul {
 
 .run-head h1 {
   margin: 0;
+  word-break: break-all;
+}
+
+.run-meta {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.88rem;
   word-break: break-all;
 }
 
@@ -661,6 +711,12 @@ ul {
   color: var(--muted);
   font-weight: 600;
   margin-bottom: 0.1rem;
+}
+
+.chat-ts {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  opacity: 0.8;
 }
 
 /* Rendered markdown inside a bubble. */
@@ -986,10 +1042,31 @@ ul {
 
 .replace-group summary {
   cursor: pointer;
+  list-style: none;
+}
+
+.replace-group summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Same disclosure triangle as the file tree, so the per-episode
+   comparison is visibly expandable. */
+.replace-group summary::before {
+  content: "";
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  clip-path: polygon(25% 0, 90% 50%, 25% 100%);
+  background: var(--muted);
+  transition: transform 120ms;
+}
+
+.replace-group[open] > summary::before {
+  transform: rotate(90deg);
 }
 
 .replace-group .tag.replace {
-  background: color-mix(in srgb, var(--ok, #16a34a) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .replace-group .tag.manual {

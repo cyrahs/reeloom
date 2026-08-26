@@ -4,9 +4,11 @@ import {
   ACTIVE_STATES,
   STATE_LABEL,
   api,
+  errorLabel,
   type IntakeFolder,
   type RunSummary,
 } from "../api";
+import { formatWhen } from "../time";
 import { usePoll } from "../usePoll";
 
 function stateClass(run: RunSummary): string {
@@ -16,10 +18,7 @@ function stateClass(run: RunSummary): string {
 }
 
 function summary(run: RunSummary): string {
-  if (run.error) {
-    const code = (run.error as { code?: string }).code ?? "error";
-    return code;
-  }
+  if (run.error) return errorLabel(run.error);
   if (!run.result) return `${run.file_count} 个文件`;
   const parts = [`移动 ${run.result.moved}`];
   if (run.result.replaced.length)
@@ -120,6 +119,21 @@ export function RunsPage() {
     return { ...report, fetchedAt: Date.now() };
   }, 4000);
 
+  // Config names change rarely; one fetch is enough to label the rows.
+  const [configNames, setConfigNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    api
+      .listConfigs()
+      .then((body) =>
+        setConfigNames(
+          Object.fromEntries(
+            (body.configs ?? []).map((config) => [config.id, config.name]),
+          ),
+        ),
+      )
+      .catch(() => {});
+  }, []);
+
   const folders = intake.data?.folders ?? [];
   const hasCountdown = folders.some((folder) => folder.status === "settling");
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -130,7 +144,9 @@ export function RunsPage() {
   }, [hasCountdown]);
 
   if (loading && !data) return <p className="loading">载入中…</p>;
-  if (error) return <p className="error">{error}</p>;
+  // With stale data on hand a failed poll degrades to a notice instead of
+  // blanking the list: a blip must not flash the whole page away.
+  if (error && !data) return <p className="error">{error}</p>;
 
   // remaining_seconds was measured at scanned_at on the server clock; shift
   // it to now (also server clock), then anchor the deadline to the local
@@ -151,8 +167,22 @@ export function RunsPage() {
   return (
     <>
       <h1>任务</h1>
+      {error && (
+        <p className="banner">连接中断：{error} · 正在自动重试</p>
+      )}
       {attention.length > 0 && (
-        <p className="banner">{attention.length} 个任务需要处理</p>
+        <button
+          type="button"
+          className="banner banner-action"
+          onClick={() =>
+            document
+              .getElementById(`run-${attention[0].id}`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" })
+          }
+        >
+          <span>{attention.length} 个任务需要处理</span>
+          <span className="banner-hint">点击定位 ↓</span>
+        </button>
       )}
       {folders.length > 0 && (
         <section className="intake">
@@ -173,26 +203,32 @@ export function RunsPage() {
         <p className="empty">还没有任务。</p>
       )}
       <ul className="runs">
-        {runs.map((run) => (
-          <li key={run.id}>
-            <a href={`#/runs/${run.id}`}>
-              <span className="run-main">
-                <span className="folder">
-                  {run.title ? `${run.title} (${run.year})` : run.folder_name}
+        {runs.map((run) => {
+          const meta = [configNames[run.config_id], run.title && run.folder_name]
+            .filter(Boolean)
+            .join(" · ");
+          return (
+            <li key={run.id} id={`run-${run.id}`}>
+              <a href={`#/runs/${run.id}`}>
+                <span className="run-main">
+                  <span className="folder">
+                    {run.title ? `${run.title} (${run.year})` : run.folder_name}
+                  </span>
+                  {meta && <span className="title">{meta}</span>}
                 </span>
-                {run.title && (
-                  <span className="title">{run.folder_name}</span>
-                )}
-              </span>
-              <span className="run-side">
-                <span className={`badge ${stateClass(run)}`}>
-                  {STATE_LABEL[run.state]}
+                <span className="run-side">
+                  <span className={`badge ${stateClass(run)}`}>
+                    {STATE_LABEL[run.state]}
+                  </span>
+                  <span className="summary">{summary(run)}</span>
+                  {run.updated_at && (
+                    <span className="time">{formatWhen(run.updated_at)}</span>
+                  )}
                 </span>
-                <span className="summary">{summary(run)}</span>
-              </span>
-            </a>
-          </li>
-        ))}
+              </a>
+            </li>
+          );
+        })}
       </ul>
     </>
   );

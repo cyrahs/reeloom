@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 
-import { api, clearToken, getToken, setToken } from "./api";
+import {
+  ApiError,
+  UNAUTHORIZED_EVENT,
+  api,
+  clearToken,
+  getToken,
+  setToken,
+} from "./api";
 import { RunDetailPage } from "./pages/RunDetail";
 import { RunsPage } from "./pages/Runs";
 import { SettingsPage } from "./pages/Settings";
@@ -39,9 +46,13 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     try {
       await api.listRuns();
       onSignedIn();
-    } catch {
+    } catch (thrown) {
       clearToken();
-      setError("令牌无效");
+      // Only a 401 means the token is wrong; a dead backend or proxy must
+      // not be reported as a credential problem.
+      const rejected =
+        thrown instanceof ApiError && thrown.status === 401;
+      setError(rejected ? "令牌无效" : (thrown as Error).message);
     }
   }
 
@@ -81,6 +92,14 @@ export function App() {
       .listRuns()
       .then(() => setAuthorized(true))
       .catch(() => setAuthorized(false));
+  }, []);
+
+  // A token revoked mid-session (server restart with a new one) drops the
+  // UI back to sign-in instead of leaving every page stuck on an error.
+  useEffect(() => {
+    const onUnauthorized = () => setAuthorized(false);
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
   }, []);
 
   if (authorized === null) return <div className="loading">载入中…</div>;

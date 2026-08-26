@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { IntakeFolder, RunSummary } from "../src/api";
 import { RunsPage } from "../src/pages/Runs";
@@ -29,6 +29,8 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
     },
     error: null,
     attempts: 0,
+    created_at: new Date(Date.now() - 7_200_000).toISOString(),
+    updated_at: new Date(Date.now() - 3_600_000).toISOString(),
     ...overrides,
   };
 }
@@ -48,22 +50,94 @@ function intakeFolder(overrides: Partial<IntakeFolder> = {}): IntakeFolder {
   };
 }
 
-function mockRuns(runs: RunSummary[], folders: IntakeFolder[] = []) {
+function mockRuns(
+  runs: RunSummary[],
+  folders: IntakeFolder[] = [],
+  configs: { id: string; name: string }[] = [],
+) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: unknown) => ({
       ok: true,
       status: 200,
-      json: async () =>
-        String(input).includes("/intake")
-          ? { now: Date.now() / 1000, folders }
-          : { runs },
+      json: async () => {
+        const url = String(input);
+        if (url.includes("/intake")) return { now: Date.now() / 1000, folders };
+        if (url.includes("/configs")) return { configs };
+        return { runs };
+      },
     })),
   );
 }
 
 describe("runs page", () => {
   beforeEach(() => vi.unstubAllGlobals());
+  afterEach(() => vi.useRealTimers());
+
+  it("labels run errors in words, not raw codes", async () => {
+    mockRuns([
+      run({
+        state: "failed",
+        result: null,
+        error: { code: "tmdb_not_found" },
+      }),
+    ]);
+
+    render(<RunsPage />);
+
+    expect(await screen.findByText("TMDB 未找到匹配条目")).toBeInTheDocument();
+    expect(screen.queryByText("tmdb_not_found")).not.toBeInTheDocument();
+  });
+
+  it("shows which watch a run belongs to", async () => {
+    mockRuns([run()], [], [{ id: "config-1", name: "动画" }]);
+
+    render(<RunsPage />);
+
+    expect(await screen.findByText("动画 · [Group] Show")).toBeInTheDocument();
+  });
+
+  it("shows when a run was last updated", async () => {
+    mockRuns([run()]);
+
+    render(<RunsPage />);
+
+    expect(await screen.findByText("1 小时前")).toBeInTheDocument();
+  });
+
+  it("keeps the list and shows a notice when a refresh fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let fail = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        if (fail) throw new TypeError("Failed to fetch");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            const url = String(input);
+            if (url.includes("/intake"))
+              return { now: Date.now() / 1000, folders: [] };
+            if (url.includes("/configs")) return { configs: [] };
+            return { runs: [run()] };
+          },
+        };
+      }),
+    );
+
+    render(<RunsPage />);
+    await screen.findByText("[Group] Show");
+
+    fail = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4100);
+    });
+
+    // The stale list stays on screen; only a notice is added.
+    expect(screen.getByText("[Group] Show")).toBeInTheDocument();
+    expect(screen.getByText(/连接中断/)).toBeInTheDocument();
+  });
 
   it("shows a finished run with its outcome", async () => {
     mockRuns([run()]);

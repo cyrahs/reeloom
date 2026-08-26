@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   ACTIVE_STATES,
   STATE_LABEL,
   api,
+  errorLabel,
   type EpisodeSpan,
   type Move,
   type ReplaceAction,
@@ -11,6 +12,7 @@ import {
   type RunDetail,
 } from "../api";
 import { Markdown } from "../Markdown";
+import { formatDateTime, formatLogTs, formatWhen } from "../time";
 import { usePoll } from "../usePoll";
 
 function archivedSummary(run: RunDetail): string[] {
@@ -404,30 +406,37 @@ function ReplacePanel({
         <p className="muted">已选择：{decision.resolution}</p>
       )}
       {awaiting && (
-        <div className="actions">
-          <button
-            className="primary"
-            disabled={busy}
-            title="旧版本移入回收区，保留期后删除；新版本入库"
-            onClick={() => onResolve("replace")}
-          >
-            确认替换旧版
-          </button>
-          <button
-            disabled={busy}
-            title="保留现有版本，新下载的重叠文件移入回收区"
-            onClick={() => onResolve("discard_incoming")}
-          >
-            丢弃新下载
-          </button>
-          <button
-            disabled={busy}
-            title="不做洗版：与库内冲突的文件会进入 fail 目录"
-            onClick={() => onResolve("keep_both")}
-          >
-            两版共存
-          </button>
-        </div>
+        <>
+          <div className="actions">
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => onResolve("replace")}
+            >
+              确认替换旧版
+            </button>
+            <button disabled={busy} onClick={() => onResolve("discard_incoming")}>
+              丢弃新下载
+            </button>
+            <button disabled={busy} onClick={() => onResolve("keep_both")}>
+              两版共存
+            </button>
+          </div>
+          <ul className="action-hints">
+            <li>
+              <strong>确认替换旧版</strong>
+              ：旧版本移入回收区（保留期满后删除），新版本入库。
+            </li>
+            <li>
+              <strong>丢弃新下载</strong>
+              ：保留现有版本，新下载的重叠文件移入回收区。
+            </li>
+            <li>
+              <strong>两版共存</strong>
+              ：不做洗版，与库内冲突的文件进入 fail 目录。
+            </li>
+          </ul>
+        </>
       )}
     </section>
   );
@@ -440,11 +449,12 @@ export function RunDetailPage({ runId }: { runId: string }) {
     [runId],
   );
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
+  const busy = busyAction !== null;
 
-  async function act(action: () => Promise<unknown>) {
-    setBusy(true);
+  async function act(key: string, action: () => Promise<unknown>) {
+    setBusyAction(key);
     setActionError("");
     try {
       await action();
@@ -452,22 +462,42 @@ export function RunDetailPage({ runId }: { runId: string }) {
     } catch (thrown) {
       setActionError((thrown as Error).message);
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
-  if (error) return <p className="error">{error}</p>;
+  function ask() {
+    act("ask", async () => {
+      await api.ask(runId, message);
+      setMessage("");
+    });
+  }
+
+  if (error && !run) return <p className="error">{error}</p>;
   if (!run) return <p className="loading">载入中…</p>;
 
   const active = ACTIVE_STATES.includes(run.state);
+  // The panel below the buttons already explains a parked replacement, so
+  // its error entry would only repeat the same sentence here.
+  const showError = run.error && run.error.code !== "replace_confirmation";
+  const errorDetail =
+    run.error &&
+    (typeof run.error.detail === "string"
+      ? run.error.detail
+      : typeof run.error.reason === "string"
+        ? run.error.reason
+        : "");
 
   return (
     <>
       <p className="crumb">
         <a href="#/">← 任务</a>
       </p>
+      {error && (
+        <p className="banner">连接中断：{error} · 正在自动重试</p>
+      )}
       <div className="run-head">
-        <h1>{run.folder_name}</h1>
+        <h1>{run.title ? `${run.title} (${run.year})` : run.folder_name}</h1>
         <span
           className={`badge ${
             run.state === "needs_attention" || run.state === "failed"
@@ -479,21 +509,37 @@ export function RunDetailPage({ runId }: { runId: string }) {
         >
           {STATE_LABEL[run.state]}
         </span>
+        {run.attempts > 1 && (
+          <span className="tag">第 {run.attempts} 次尝试</span>
+        )}
       </div>
-      {run.error && (
+      {(run.title || run.created_at) && (
+        <p className="run-meta">
+          {run.title && <code>{run.folder_name}</code>}
+          {run.created_at && (
+            <span className="muted">
+              {run.title ? " · " : ""}创建于 {formatDateTime(run.created_at)}
+              {run.updated_at ? ` · 更新于 ${formatWhen(run.updated_at)}` : ""}
+            </span>
+          )}
+        </p>
+      )}
+      {showError && run.error && (
         <p className="error">
-          {typeof run.error.code === "string" ? run.error.code : "错误"}
-          {typeof run.error.detail === "string" && ` · ${run.error.detail}`}
+          {errorLabel(run.error)}
+          {errorDetail ? ` · ${errorDetail}` : ""}
         </p>
       )}
 
       <ReplacePanel
         run={run}
         busy={busy}
-        onResolve={(action) => act(() => api.resolveReplace(runId, action))}
+        onResolve={(action) =>
+          act("replace", () => api.resolveReplace(runId, action))
+        }
       />
-      <Moves run={run} />
       <Result run={run} />
+      <Moves run={run} />
 
       <section>
         <h2>交流</h2>
@@ -507,7 +553,12 @@ export function RunDetailPage({ runId }: { runId: string }) {
               key={index}
               className={`chat ${item.role === "agent" ? "agent" : "user"}`}
             >
-              <strong>{item.role === "agent" ? "Agent" : "你"}</strong>
+              <strong>
+                {item.role === "agent" ? "Agent" : "你"}
+                {item.ts && (
+                  <span className="chat-ts">{formatDateTime(item.ts)}</span>
+                )}
+              </strong>
               {item.role === "revision" && <span className="tag">修订</span>}
               <Markdown text={item.content} />
             </div>
@@ -515,33 +566,36 @@ export function RunDetailPage({ runId }: { runId: string }) {
         </div>
         <textarea
           value={message}
-          placeholder="提问，或说明该怎么改"
+          placeholder="提问，或说明该怎么改（⌘/Ctrl+Enter 提问）"
           onChange={(event) => setMessage(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              (event.metaKey || event.ctrlKey) &&
+              !busy &&
+              message.trim()
+            ) {
+              event.preventDefault();
+              ask();
+            }
+          }}
         />
         <div className="actions">
-          <button
-            disabled={busy || !message.trim()}
-            onClick={() =>
-              act(async () => {
-                await api.ask(runId, message);
-                setMessage("");
-              })
-            }
-          >
-            提问
+          <button disabled={busy || !message.trim()} onClick={ask}>
+            {busyAction === "ask" ? "回答中…" : "提问"}
           </button>
           <button
             className="primary"
             disabled={busy || active || !message.trim()}
             title={active ? "任务进行中" : "复原已移动的文件并按新计划重做"}
             onClick={() =>
-              act(async () => {
+              act("revise", async () => {
                 await api.revise(runId, message);
                 setMessage("");
               })
             }
           >
-            按此修订并重做
+            {busyAction === "revise" ? "提交中…" : "按此修订并重做"}
           </button>
         </div>
       </section>
@@ -551,26 +605,42 @@ export function RunDetailPage({ runId }: { runId: string }) {
       <section className="danger">
         <h2>其他操作</h2>
         <div className="actions">
-          <button disabled={busy || active} onClick={() => act(() => api.retry(runId))}>
+          <button
+            disabled={busy || active}
+            onClick={() => act("retry", () => api.retry(runId))}
+          >
             重试
           </button>
           <button
             className="danger"
             disabled={busy || active}
-            title="复原已入库的文件，把原始文件夹整体移入 fail；自动下载的字幕会被删除"
-            onClick={() => act(() => api.discard(runId))}
+            onClick={() => {
+              if (
+                !confirm(
+                  "放弃此任务？已入库的文件会复原，原始文件夹整体移入 fail 目录；自动下载的字幕会被删除。",
+                )
+              )
+                return;
+              act("discard", () => api.discard(runId));
+            }}
           >
             放弃
           </button>
           <button
             className="danger"
             disabled={busy || active}
-            onClick={() =>
-              act(async () => {
+            onClick={() => {
+              if (
+                !confirm(
+                  "删除此任务记录？只删除记录与交流历史，不会移动或删除任何文件。",
+                )
+              )
+                return;
+              act("delete", async () => {
                 await api.deleteRun(runId);
                 window.location.hash = "#/";
-              })
-            }
+              });
+            }}
           >
             删除记录
           </button>
@@ -580,19 +650,38 @@ export function RunDetailPage({ runId }: { runId: string }) {
 
       <section>
         <h2>日志</h2>
-        <ul className="logs">
-          {run.logs.map((item, index) => (
-            <li key={index} className={item.level}>
-              <span className="ts">
-                {new Date(item.ts).toLocaleTimeString("zh-CN", {
-                  hour12: false,
-                })}
-              </span>
-              {item.message}
-            </li>
-          ))}
-        </ul>
+        <Logs logs={run.logs} />
       </section>
     </>
+  );
+}
+
+function Logs({ logs }: { logs: RunDetail["logs"] }) {
+  const boxRef = useRef<HTMLUListElement>(null);
+  // Follow new entries like a terminal, but stop the moment the reader
+  // scrolls up, and resume when they return to the bottom.
+  const stickRef = useRef(true);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (box && stickRef.current) box.scrollTop = box.scrollHeight;
+  }, [logs.length]);
+  return (
+    <ul
+      className="logs"
+      ref={boxRef}
+      onScroll={() => {
+        const box = boxRef.current;
+        if (box)
+          stickRef.current =
+            box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+      }}
+    >
+      {logs.map((item, index) => (
+        <li key={index} className={item.level}>
+          <span className="ts">{item.ts ? formatLogTs(item.ts) : ""}</span>
+          {item.message}
+        </li>
+      ))}
+    </ul>
   );
 }

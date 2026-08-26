@@ -476,4 +476,6 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "result": run.result.to_json() if run.result else None,
         "error": run.error,
         "attempts": run.attempts,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
     }
