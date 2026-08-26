@@ -748,6 +748,71 @@ describe("run detail page", () => {
     expect(screen.queryByText(/replace_confirmation/)).not.toBeInTheDocument();
   });
 
+  it("clears the input and echoes the question while waiting", async () => {
+    const body = detail();
+    let releaseAsk!: () => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          await new Promise<void>((resolve) => {
+            releaseAsk = resolve;
+          });
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ answer: "好的" }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+    const input = await screen.findByPlaceholderText(/提问/);
+    fireEvent.change(input, { target: { value: "第几季？" } });
+    fireEvent.click(screen.getByText("提问"));
+
+    // The box empties immediately; the question shows as a chat bubble
+    // instead of lingering in the input for the whole model round-trip.
+    expect((input as HTMLTextAreaElement).value).toBe("");
+    expect(await screen.findByText("第几季？")).toBeInTheDocument();
+    expect(screen.getByText("回答中…")).toBeInTheDocument();
+
+    releaseAsk();
+    await waitFor(() =>
+      expect(screen.queryByText("回答中…")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("hands the question back when sending fails", async () => {
+    const body = detail();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return {
+            ok: false,
+            status: 503,
+            statusText: "unavailable",
+            json: async () => ({ detail: "model_not_configured" }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+    const input = await screen.findByPlaceholderText(/提问/);
+    fireEvent.change(input, { target: { value: "第几季？" } });
+    fireEvent.click(screen.getByText("提问"));
+
+    await screen.findByText("model_not_configured");
+    expect((input as HTMLTextAreaElement).value).toBe("第几季？");
+    // The failed echo bubble is gone; the text lives in the input again.
+    expect(document.querySelector(".chat.pending")).toBeNull();
+  });
+
   it("asks before discarding and before deleting the record", async () => {
     const posts: string[] = [];
     const body = detail();
