@@ -20,7 +20,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from reeloom.models import (
+    DownloadState,
     ExecutedMove,
+    MagnetDownload,
     MediaType,
     Plan,
     Run,
@@ -51,6 +53,10 @@ create table if not exists settings (
     telegram_chat_id text not null default '',
     telegram_pin_alerts boolean not null default true,
     trash_retention_days integer not null default 3,
+    clouddrive_address text not null default '',
+    clouddrive_api_token text not null default '',
+    clouddrive_secure boolean not null default true,
+    download_stall_hours integer not null default 24,
     updated_at timestamptz not null default now()
 );
 
@@ -114,6 +120,31 @@ create table if not exists interaction (
 
 create index if not exists interaction_run_key on interaction (run_id, id);
 
+create table if not exists magnet_download (
+    id uuid primary key,
+    magnet text not null,
+    info_hash text not null,
+    download_dir text not null,
+    name text,
+    state text not null,
+    -- double, not real: percendDone is a double; float4 rounding would make
+    -- every poll look like fresh progress and defeat stall detection.
+    progress double precision,
+    size_bytes bigint,
+    error text,
+    final_path text,
+    submitted_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create unique index if not exists magnet_download_live_hash_key
+    on magnet_download (info_hash)
+    where state not in ('completed', 'lost', 'removed');
+
+create index if not exists magnet_download_state_key
+    on magnet_download (state, updated_at);
+
 alter table watch_config
     add column if not exists subtitle_variant text not null default 'chs';
 
@@ -134,6 +165,18 @@ alter table settings
 
 alter table settings
     add column if not exists telegram_pin_alerts boolean not null default true;
+
+alter table settings
+    add column if not exists clouddrive_address text not null default '';
+
+alter table settings
+    add column if not exists clouddrive_api_token text not null default '';
+
+alter table settings
+    add column if not exists clouddrive_secure boolean not null default true;
+
+alter table settings
+    add column if not exists download_stall_hours integer not null default 24;
 """
 
 
@@ -198,6 +241,10 @@ class Database:
             "telegram_chat_id",
             "telegram_pin_alerts",
             "trash_retention_days",
+            "clouddrive_address",
+            "clouddrive_api_token",
+            "clouddrive_secure",
+            "download_stall_hours",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
@@ -491,6 +538,158 @@ class Database:
         async with self._connection() as connection:
             await connection.execute("delete from run where id = %s", (run_id,))
 
+    # ---- magnet downloads ---------------------------------------------
+
+    async def create_magnet_download(
+        self, *, magnet: str, info_hash: str, download_dir: str
+    ) -> MagnetDownload | None:
+        """Open a download row, or return None if a live one holds the hash."""
+
+        download_id = str(uuid.uuid4())
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                insert into magnet_download
+                    (id, magnet, info_hash, download_dir, state, submitted_at)
+                values (%s, %s, %s, %s, 'submitted', now())
+                on conflict do nothing
+                returning *
+                """,
+                (download_id, magnet, info_hash, download_dir),
+            )
+            row = await cursor.fetchone()
+        return _magnet_download(row) if row else None
+
+    async def get_magnet_download(self, download_id: str) -> MagnetDownload | None:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from magnet_download where id = %s", (download_id,)
+            )
+            row = await cursor.fetchone()
+        return _magnet_download(row) if row else None
+
+    async def list_magnet_downloads(self, limit: int = 100) -> list[MagnetDownload]:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from magnet_download order by updated_at desc limit %s",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [_magnet_download(row) for row in rows]
+
+    async def live_magnet_downloads(self) -> list[MagnetDownload]:
+        # Derived from the enum, like next_active_run's state list.
+        live = [state.value for state in DownloadState if state.is_live]
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from magnet_download where state = any(%s)"
+                " order by created_at",
+                (live,),
+            )
+            rows = await cursor.fetchall()
+        return [_magnet_download(row) for row in rows]
+
+    async def record_download_progress(
+        self,
+        download_id: str,
+        *,
+        state: DownloadState,
+        progress: float | None,
+        size_bytes: int | None,
+        name: str | None,
+        expected: Sequence[DownloadState],
+    ) -> bool:
+        """Write progress only when state or progress actually changed.
+
+        The distinct-guard makes ``updated_at`` mean "last time this download
+        moved", which is the whole stall detector; name/size piggyback on
+        real writes only.
+        """
+
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                update magnet_download
+                set state = %(state)s,
+                    progress = %(progress)s,
+                    size_bytes = coalesce(%(size_bytes)s, size_bytes),
+                    name = coalesce(%(name)s, name),
+                    updated_at = now()
+                where id = %(id)s
+                  and state = any(%(expected)s)
+                  and (state is distinct from %(state)s
+                       or progress is distinct from %(progress)s)
+                """,
+                {
+                    "id": download_id,
+                    "state": state.value,
+                    "progress": progress,
+                    "size_bytes": size_bytes,
+                    "name": name,
+                    "expected": [item.value for item in expected],
+                },
+            )
+            return cursor.rowcount > 0
+
+    async def transition_download(
+        self,
+        download_id: str,
+        *,
+        expected: Sequence[DownloadState],
+        target: DownloadState,
+        error: str | None = None,
+        final_path: str | None = None,
+        mark_submitted: bool = False,
+    ) -> bool:
+        """Compare-and-set state change; False when another path got there first."""
+
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                update magnet_download
+                set state = %(target)s,
+                    error = %(error)s,
+                    final_path = coalesce(%(final_path)s, final_path),
+                    submitted_at = case when %(mark_submitted)s then now()
+                                        else submitted_at end,
+                    progress = case when %(mark_submitted)s then null
+                                    else progress end,
+                    updated_at = now()
+                where id = %(id)s and state = any(%(expected)s)
+                """,
+                {
+                    "id": download_id,
+                    "target": target.value,
+                    "error": error,
+                    "final_path": final_path,
+                    "mark_submitted": mark_submitted,
+                    "expected": [item.value for item in expected],
+                },
+            )
+            return cursor.rowcount > 0
+
+    async def delete_magnet_download(self, download_id: str) -> None:
+        async with self._connection() as connection:
+            await connection.execute(
+                "delete from magnet_download where id = %s", (download_id,)
+            )
+
+    async def magnet_download_dirs(self, limit: int = 10) -> list[str]:
+        """Recently used download directories, most recent first."""
+
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                select download_dir from magnet_download
+                group by download_dir
+                order by max(created_at) desc
+                limit %s
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [row["download_dir"] for row in rows]
+
     # ---- logs and interactions ----------------------------------------
 
     async def log(
@@ -552,6 +751,24 @@ def _watch_config(row: dict[str, Any]) -> WatchConfig:
         replace_enabled=row["replace_enabled"],
         replace_extra_dirs=tuple(row["replace_extra_dirs"] or ()),
         replace_auto_ratio=row["replace_auto_ratio"],
+    )
+
+
+def _magnet_download(row: dict[str, Any]) -> MagnetDownload:
+    return MagnetDownload(
+        id=str(row["id"]),
+        magnet=row["magnet"],
+        info_hash=row["info_hash"],
+        download_dir=row["download_dir"],
+        state=DownloadState(row["state"]),
+        name=row["name"],
+        progress=row["progress"],
+        size_bytes=row["size_bytes"],
+        error=row["error"],
+        final_path=row["final_path"],
+        submitted_at=row["submitted_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 

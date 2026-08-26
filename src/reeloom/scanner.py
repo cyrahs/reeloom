@@ -22,7 +22,10 @@ _LOGGER = logging.getLogger(__name__)
 
 ARCHIVE_BUCKET = "archive"
 FAIL_BUCKET = "fail"
-RESERVED_NAMES = frozenset({ARCHIVE_BUCKET, FAIL_BUCKET})
+IN_PROGRESS_BUCKET = "in_progress"
+"""CloudDrive2 offline downloads land here until reeloom moves the finished
+item out; an incomplete download must never become a run."""
+RESERVED_NAMES = frozenset({ARCHIVE_BUCKET, FAIL_BUCKET, IN_PROGRESS_BUCKET})
 
 ACQUIRED_DIR = ".acquired"
 """Staging folder under ``archive/<folder>/`` for subtitles reeloom downloads."""

@@ -31,6 +31,19 @@ watch root                          media library
    a Chinese subtitle get one from ACG.RIP.
 5. **Notify.** One Telegram message per finished job.
 
+### Magnet downloads (optional)
+
+With a CloudDrive2 address and API token configured, the 下载 page submits
+magnets as CloudDrive offline tasks and tracks them by info hash. Tasks
+download into `<dir>/in_progress` — a reserved name the scanner never picks
+up — and a finished item is moved cloud-side into `<dir>` itself. Point the
+download dir at a watch root's underlying cloud folder and the mounted side
+sees the folder appear, settles, and archives it through the normal flow: an
+incomplete download can never be archived. Failed, stalled (no progress past
+a configurable timeout, 24h by default) and lost tasks raise a Telegram alert
+and wait for you; the page offers per-task retry and delete (the delete also
+removes the task and its data at CloudDrive).
+
 Nothing is ever deleted, and an existing file is never overwritten: a
 duplicate goes to the `fail` bucket and the copy already in your library
 stays. If something looks wrong afterwards, tell the Agent what to fix and hit
@@ -48,11 +61,15 @@ applies the new plan.
   is how a crashed job finishes: it just runs again.
 - Nothing is deleted. Unmapped files go to `archive`, duplicates and discarded
   jobs go to `fail`, and empty directories are removed with `rmdir` only.
-- The scanner never follows symlinks; `archive`, `fail`, hidden entries and
-  loose root files are skipped, and a folder containing a `.env*` file is
-  refused outright.
-- Outbound network access is limited to TMDB, your model provider, ACG.RIP and
-  Telegram. No shell, no arbitrary URLs, no inbound webhooks.
+- The scanner never follows symlinks; `archive`, `fail`, `in_progress`,
+  hidden entries and loose root files are skipped, and a folder containing a
+  `.env*` file is refused outright.
+- Outbound network access is limited to TMDB, your model provider, ACG.RIP,
+  Telegram and your own CloudDrive2 server (gRPC, address configured in the
+  settings page). No shell, no arbitrary URLs, no inbound webhooks.
+- The one cloud-side deletion — dropping an offline task with its data — only
+  happens when you press 删除 on the downloads page, never on the archive
+  path.
 - Inbound and library roots must be on one filesystem — moves are renames.
 
 ## Quick start

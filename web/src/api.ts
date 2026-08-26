@@ -165,9 +165,48 @@ export interface Settings {
   telegram_chat_id: string;
   telegram_pin_alerts: boolean;
   trash_retention_days: number;
+  clouddrive_address: string;
+  clouddrive_secure: boolean;
+  download_stall_hours: number;
   tmdb_api_key_set: boolean;
   llm_api_key_set: boolean;
   telegram_bot_token_set: boolean;
+  clouddrive_api_token_set: boolean;
+}
+
+export type DownloadState =
+  | "submitted"
+  | "downloading"
+  | "moving"
+  | "completed"
+  | "failed"
+  | "stalled"
+  | "lost"
+  | "removed";
+
+export interface MagnetDownload {
+  id: string;
+  magnet: string;
+  info_hash: string;
+  download_dir: string;
+  state: DownloadState;
+  name: string | null;
+  /** Percentage 0-100 as CloudDrive reports it. */
+  progress: number | null;
+  size_bytes: number | null;
+  error: string | null;
+  final_path: string | null;
+  submitted_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface DownloadsReport {
+  /** Server clock at response time. */
+  now: number;
+  downloads: MagnetDownload[];
+  /** Recently used download directories, most recent first. */
+  dirs: string[];
 }
 
 export function getToken(): string {
@@ -270,6 +309,19 @@ export const api = {
 
   listDirs: (path: string) =>
     request<DirListing>(`/fs/dirs?path=${encodeURIComponent(path)}`),
+  listCloudDirs: (path: string) =>
+    request<DirListing>(`/clouddrive/dirs?path=${encodeURIComponent(path)}`),
+
+  listDownloads: () => request<DownloadsReport>("/downloads"),
+  addDownload: (magnet: string, directory: string) =>
+    post<MagnetDownload>("/downloads", { magnet, directory }),
+  deleteDownload: (id: string) =>
+    post<MagnetDownload>(`/downloads/${id}/delete`),
+  retryDownload: (id: string) => post<MagnetDownload>(`/downloads/${id}/retry`),
+  deleteDownloadRow: (id: string) =>
+    request<{ deleted: boolean }>(`/downloads/${id}`, { method: "DELETE" }),
+  testCloudDrive: () =>
+    post<{ ok: boolean; error?: string }>("/settings/test-clouddrive"),
 
   getSettings: () => request<Settings>("/settings"),
   putSettings: (body: Record<string, string | boolean>) =>
@@ -297,6 +349,26 @@ const ERROR_LABEL: Record<string, string> = {
   unresolved_manual_groups: "洗版分组未确认",
   watch_root_missing: "监控目录不存在",
   unexpected: "意外错误",
+  invalid_magnet: "磁力链接无效（需要 v1 info hash）",
+  duplicate_download: "该磁力已有进行中的下载",
+  download_not_found: "下载记录不存在",
+  download_not_retryable: "仅失败或停滞的下载可以重试",
+  download_is_moving: "正在整理，无法删除",
+  download_not_live: "该下载已结束",
+  download_not_terminal: "进行中的下载不能移除记录",
+  clouddrive_not_configured: "未配置 CloudDrive",
+  clouddrive_unreachable: "无法连接 CloudDrive",
+  clouddrive_unauthorized: "CloudDrive API Token 无效",
+  clouddrive_timeout: "CloudDrive 请求超时",
+  clouddrive_path_not_found: "CloudDrive 路径不存在",
+  clouddrive_invalid_path: "CloudDrive 路径无效",
+  clouddrive_rejected: "CloudDrive 拒绝了该任务",
+  clouddrive_error: "CloudDrive 返回错误",
+  clouddrive_reported_error: "CloudDrive 报告下载失败",
+  download_stalled: "下载长时间无进度",
+  task_missing_from_clouddrive: "任务在 CloudDrive 上消失",
+  unsafe_name: "任务名不安全，无法整理",
+  move_did_not_settle: "整理移动未完成",
 };
 
 export function errorLabel(error: Record<string, unknown>): string {
@@ -317,6 +389,26 @@ export const STATE_LABEL: Record<RunState, string> = {
   discarded: "已放弃",
   failed: "失败",
 };
+
+export const DOWNLOAD_STATE_LABEL: Record<DownloadState, string> = {
+  submitted: "已提交",
+  downloading: "下载中",
+  moving: "整理中",
+  completed: "已完成",
+  failed: "失败",
+  stalled: "停滞",
+  lost: "丢失",
+  removed: "已删除",
+};
+
+/** States the tracker is still working on. */
+export const DOWNLOAD_LIVE_STATES: DownloadState[] = [
+  "submitted",
+  "downloading",
+  "moving",
+  "failed",
+  "stalled",
+];
 
 export const ACTIVE_STATES: RunState[] = [
   "pending",

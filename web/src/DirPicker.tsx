@@ -7,11 +7,15 @@ export function DirPicker({
   initial,
   onSelect,
   onClose,
+  fetchDirs = api.listDirs,
 }: {
   title: string;
   initial: string;
   onSelect: (path: string) => void;
   onClose: () => void;
+  /** Directory source; defaults to the server filesystem. The downloads
+   * page passes api.listCloudDirs to browse the CloudDrive tree instead. */
+  fetchDirs?: (path: string) => Promise<DirListing>;
 }) {
   const [listing, setListing] = useState<DirListing | null>(null);
   const [error, setError] = useState("");
@@ -19,7 +23,7 @@ export function DirPicker({
   async function open(path: string, fallback = false) {
     setError("");
     try {
-      setListing(await api.listDirs(path));
+      setListing(await fetchDirs(path));
     } catch (thrown) {
       // The seed path may not exist yet; start from the root instead.
       if (fallback && thrown instanceof ApiError && thrown.status === 404) {
