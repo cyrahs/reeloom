@@ -452,6 +452,12 @@ export function RunDetailPage({ runId }: { runId: string }) {
   const [message, setMessage] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
+  // A question/revision on its way to the server: echoed as a chat bubble
+  // right away so the input can clear without the message seeming lost.
+  const [pending, setPending] = useState<{
+    text: string;
+    role: "user" | "revision";
+  } | null>(null);
   const busy = busyAction !== null;
 
   async function act(key: string, action: () => Promise<unknown>) {
@@ -467,12 +473,39 @@ export function RunDetailPage({ runId }: { runId: string }) {
     }
   }
 
-  function ask() {
-    act("ask", async () => {
-      await api.ask(runId, message);
-      setMessage("");
+  function send(kind: "ask" | "revise") {
+    const text = message.trim();
+    if (!text) return;
+    setMessage("");
+    setPending({ text, role: kind === "ask" ? "user" : "revision" });
+    act(kind === "ask" ? "ask" : "revise", async () => {
+      try {
+        if (kind === "ask") await api.ask(runId, text);
+        else await api.revise(runId, text);
+      } catch (thrown) {
+        // Hand the unsent text back instead of losing it — unless the
+        // user has already typed something new.
+        setPending(null);
+        setMessage((current) => current || text);
+        throw thrown;
+      }
     });
   }
+
+  // Once the poll shows the message stored on the server, the echo has
+  // done its job.
+  const interactions = run?.interactions;
+  useEffect(() => {
+    if (!pending || !interactions) return;
+    if (
+      interactions.some(
+        (item) =>
+          item.content === pending.text &&
+          (item.role === "user" || item.role === "revision"),
+      )
+    )
+      setPending(null);
+  }, [pending, interactions]);
 
   if (error && !run) return <p className="error">{error}</p>;
   if (!run) return <p className="loading">载入中…</p>;
@@ -564,6 +597,20 @@ export function RunDetailPage({ runId }: { runId: string }) {
               <Markdown text={item.content} />
             </div>
           ))}
+          {pending &&
+            !run.interactions.some(
+              (item) =>
+                item.content === pending.text &&
+                (item.role === "user" || item.role === "revision"),
+            ) && (
+              <div className="chat user pending">
+                <strong>你</strong>
+                {pending.role === "revision" && (
+                  <span className="tag">修订</span>
+                )}
+                <Markdown text={pending.text} />
+              </div>
+            )}
         </div>
         <textarea
           value={message}
@@ -577,24 +624,22 @@ export function RunDetailPage({ runId }: { runId: string }) {
               message.trim()
             ) {
               event.preventDefault();
-              ask();
+              send("ask");
             }
           }}
         />
         <div className="actions">
-          <button disabled={busy || !message.trim()} onClick={ask}>
+          <button
+            disabled={busy || !message.trim()}
+            onClick={() => send("ask")}
+          >
             {busyAction === "ask" ? "回答中…" : "提问"}
           </button>
           <button
             className="primary"
             disabled={busy || active || !message.trim()}
             title={active ? "任务进行中" : "复原已移动的文件并按新计划重做"}
-            onClick={() =>
-              act("revise", async () => {
-                await api.revise(runId, message);
-                setMessage("");
-              })
-            }
+            onClick={() => send("revise")}
           >
             {busyAction === "revise" ? "提交中…" : "按此修订并重做"}
           </button>

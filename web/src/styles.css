@@ -779,6 +779,11 @@ ul {
   border-bottom-right-radius: 3px;
 }
 
+/* Echo of a message still on its way to the server. */
+.chat.pending {
+  opacity: 0.65;
+}
+
 .chat.agent {
   justify-self: start;
   border-bottom-left-radius: 3px;
