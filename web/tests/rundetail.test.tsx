@@ -29,6 +29,8 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
     },
     error: null,
     attempts: 0,
+    created_at: "2026-08-25T10:00:00Z",
+    updated_at: "2026-08-25T12:00:00Z",
     snapshot: [
       {
         candidate_id: "V1",
@@ -583,8 +585,12 @@ describe("run detail page", () => {
 
     expect(await screen.findByText("需人工确认")).toBeInTheDocument();
     expect(screen.getByText(/体积比 1.08/)).toBeInTheDocument();
+    // The consequences are stated on the page, not tucked into tooltips.
+    expect(
+      screen.getByText(/旧版本移入回收区（保留期满后删除），新版本入库/),
+    ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("确认替换旧版"));
+    fireEvent.click(screen.getByRole("button", { name: "确认替换旧版" }));
     await waitFor(() =>
       expect(posts).toContain("/api/runs/run-1/replace"),
     );
@@ -682,5 +688,98 @@ describe("run detail page", () => {
     const files = order.findIndex((text) => text.startsWith("文件"));
     expect(order.indexOf("结果")).toBeLessThan(order.indexOf("交流"));
     expect(order.indexOf("交流")).toBeLessThan(files);
+  });
+
+  it("puts the one-line result above the plan's move list", async () => {
+    mockDetail(detail());
+
+    render(<RunDetailPage runId="run-1" />);
+    await screen.findByText("结果");
+
+    const order = screen
+      .getAllByRole("heading", { level: 2 })
+      .map((heading) => heading.textContent ?? "");
+    expect(order.indexOf("结果")).toBeLessThan(order.indexOf("计划"));
+  });
+
+  it("leads with the identified title and keeps the folder as meta", async () => {
+    mockDetail(detail());
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Show (2024)" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("[Group] Show")).toBeInTheDocument();
+    expect(screen.getByText(/创建于 08-25/)).toBeInTheDocument();
+  });
+
+  it("labels errors in words and appends the detail", async () => {
+    mockDetail(
+      detail({
+        state: "failed",
+        result: null,
+        error: { code: "tmdb_not_found", detail: "no hits for query" },
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(
+      await screen.findByText("TMDB 未找到匹配条目 · no hits for query"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/tmdb_not_found/)).not.toBeInTheDocument();
+  });
+
+  it("omits the error line for a parked replacement", async () => {
+    mockDetail(
+      detail({
+        state: "needs_attention",
+        result: null,
+        error: { code: "replace_confirmation" },
+      }),
+    );
+
+    render(<RunDetailPage runId="run-1" />);
+
+    await screen.findByText("需要处理");
+    // The replace panel explains the situation; the raw code would only
+    // repeat it as noise.
+    expect(screen.queryByText(/replace_confirmation/)).not.toBeInTheDocument();
+  });
+
+  it("asks before discarding and before deleting the record", async () => {
+    const posts: string[] = [];
+    const body = detail();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "POST" || init?.method === "DELETE") {
+          posts.push(url);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ state: "discarding", deleted: true }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+    const confirmMock = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirmMock);
+
+    render(<RunDetailPage runId="run-1" />);
+
+    fireEvent.click(await screen.findByText("放弃"));
+    fireEvent.click(screen.getByText("删除记录"));
+    expect(confirmMock).toHaveBeenCalledTimes(2);
+    expect(posts).toHaveLength(0);
+
+    confirmMock.mockReturnValue(true);
+    fireEvent.click(screen.getByText("放弃"));
+    await waitFor(() =>
+      expect(posts).toContain("/api/runs/run-1/discard"),
+    );
   });
 });

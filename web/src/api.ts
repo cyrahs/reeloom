@@ -39,6 +39,8 @@ export interface RunSummary {
   result: RunResult | null;
   error: Record<string, unknown> | null;
   attempts: number;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface IntakeFolder {
@@ -189,18 +191,32 @@ export class ApiError extends Error {
   }
 }
 
+/** Fired when any request comes back 401, so the shell can re-ask for the
+ * token instead of leaving every page stuck on an error. */
+export const UNAUTHORIZED_EVENT = "reeloom:unauthorized";
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      Authorization: `Bearer ${getToken()}`,
-      ...init.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      ...init,
+      headers: {
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        Authorization: `Bearer ${getToken()}`,
+        ...init.headers,
+      },
+    });
+  } catch {
+    // fetch only rejects on network-level failures; the English TypeError
+    // message would leak into the UI otherwise.
+    throw new ApiError(0, "无法连接服务器");
+  }
+  if (response.status === 401) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -262,6 +278,31 @@ export const api = {
       body: JSON.stringify(body),
     }),
 };
+
+/** Human wording for the run error codes an operator actually encounters.
+ * Unlisted codes fall back to the raw code, same as before. */
+const ERROR_LABEL: Record<string, string> = {
+  replace_confirmation: "等待洗版确认",
+  tmdb_not_found: "TMDB 未找到匹配条目",
+  tmdb_unauthorized: "TMDB API Key 无效",
+  tmdb_rate_limited: "TMDB 请求过于频繁",
+  tmdb_unreachable: "无法连接 TMDB",
+  tmdb_timeout: "TMDB 请求超时",
+  tmdb_error: "TMDB 返回错误",
+  missing_tmdb_key: "未配置 TMDB API Key",
+  missing_model: "未配置模型",
+  model_empty_response: "模型返回为空",
+  config_deleted: "监控配置已删除",
+  destination_collision: "目标位置已存在同名文件",
+  unresolved_manual_groups: "洗版分组未确认",
+  watch_root_missing: "监控目录不存在",
+  unexpected: "意外错误",
+};
+
+export function errorLabel(error: Record<string, unknown>): string {
+  const code = typeof error.code === "string" ? error.code : "";
+  return ERROR_LABEL[code] ?? (code || "错误");
+}
 
 export const STATE_LABEL: Record<RunState, string> = {
   pending: "等待处理",

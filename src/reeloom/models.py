@@ -9,6 +9,7 @@ so they are kept small and obvious.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Self
 
@@ -448,6 +449,9 @@ class Run:
     error: dict[str, Any] | None = None
     attempts: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+    """Set by the repository from the row; None for unsaved instances."""
+    updated_at: datetime | None = None
 
     def candidate(self, candidate_id: str) -> SnapshotFile:
         for item in self.snapshot:

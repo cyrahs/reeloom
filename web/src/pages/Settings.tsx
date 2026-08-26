@@ -461,6 +461,8 @@ function Credentials({
   });
   const [pinAlerts, setPinAlerts] = useState(settings.telegram_pin_alerts);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ok: boolean;
@@ -536,6 +538,8 @@ function Credentials({
       className="credentials card"
       onSubmit={async (event) => {
         event.preventDefault();
+        setSaving(true);
+        setSaveError("");
         const body: Record<string, string | boolean> = Object.fromEntries(
           Object.entries(form).filter(([, value]) => value !== ""),
         );
@@ -544,16 +548,22 @@ function Credentials({
         // "keep unchanged".
         body.llm_reasoning_effort = form.llm_reasoning_effort ?? "";
         body.telegram_pin_alerts = pinAlerts;
-        await api.putSettings(body);
-        setForm({
-          llm_base_url: form.llm_base_url,
-          llm_model: form.llm_model,
-          llm_reasoning_effort: form.llm_reasoning_effort,
-          telegram_chat_id: form.telegram_chat_id,
-          trash_retention_days: form.trash_retention_days,
-        });
-        setSaved(true);
-        onSaved();
+        try {
+          await api.putSettings(body);
+          setForm({
+            llm_base_url: form.llm_base_url,
+            llm_model: form.llm_model,
+            llm_reasoning_effort: form.llm_reasoning_effort,
+            telegram_chat_id: form.telegram_chat_id,
+            trash_retention_days: form.trash_retention_days,
+          });
+          setSaved(true);
+          onSaved();
+        } catch (thrown) {
+          setSaveError((thrown as Error).message);
+        } finally {
+          setSaving(false);
+        }
       }}
     >
       <div className="cred-group">
@@ -659,10 +669,11 @@ function Credentials({
         </div>
       </div>
       <div className="form-actions">
-        <button type="submit" className="primary">
-          保存
+        <button type="submit" className="primary" disabled={saving}>
+          {saving ? "保存中…" : "保存"}
         </button>
         {saved && <span className="muted">已保存</span>}
+        {saveError && <span className="error">{saveError}</span>}
       </div>
     </form>
   );
