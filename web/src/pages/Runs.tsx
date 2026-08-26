@@ -8,6 +8,7 @@ import {
   type IntakeFolder,
   type RunSummary,
 } from "../api";
+import { Link } from "../router";
 import { formatWhen } from "../time";
 import { usePoll } from "../usePoll";
 
@@ -209,7 +210,7 @@ export function RunsPage() {
             .join(" · ");
           return (
             <li key={run.id} id={`run-${run.id}`}>
-              <a href={`#/runs/${run.id}`}>
+              <Link to={`/runs/${run.id}`}>
                 <span className="run-main">
                   <span className="folder">
                     {run.title ? `${run.title} (${run.year})` : run.folder_name}
@@ -225,7 +226,7 @@ export function RunsPage() {
                     <span className="time">{formatWhen(run.updated_at)}</span>
                   )}
                 </span>
-              </a>
+              </Link>
             </li>
           );
         })}

@@ -108,10 +108,12 @@ function PathField({
   label,
   value,
   onChange,
+  onRemove,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  onRemove?: () => void;
 }) {
   const [picking, setPicking] = useState(false);
 
@@ -129,6 +131,11 @@ function PathField({
           <button type="button" onClick={() => setPicking(true)}>
             浏览…
           </button>
+          {onRemove && (
+            <button type="button" className="danger" onClick={onRemove}>
+              移除
+            </button>
+          )}
         </span>
       </label>
       {picking && (
@@ -157,22 +164,15 @@ function ExtraDirsField({
     <div className="field extra-dirs">
       额外检测目录
       {dirs.map((dir, index) => (
-        <span className="path-row" key={index}>
-          <PathField
-            label={`目录 ${index + 1}`}
-            value={dir}
-            onChange={(value) =>
-              onChange(dirs.map((item, at) => (at === index ? value : item)))
-            }
-          />
-          <button
-            type="button"
-            className="link"
-            onClick={() => onChange(dirs.filter((_, at) => at !== index))}
-          >
-            移除
-          </button>
-        </span>
+        <PathField
+          key={index}
+          label={`目录 ${index + 1}`}
+          value={dir}
+          onChange={(value) =>
+            onChange(dirs.map((item, at) => (at === index ? value : item)))
+          }
+          onRemove={() => onChange(dirs.filter((_, at) => at !== index))}
+        />
       ))}
       <button
         type="button"
@@ -236,74 +236,78 @@ function ConfigFields({
           onChange={(library_root) => onChange({ library_root })}
         />
       </div>
-      <label className="field">
-        静置秒数
-        <input
-          type="number"
-          min={0}
-          value={form.stability_seconds}
-          onChange={(event) =>
-            onChange({ stability_seconds: Number(event.target.value) })
-          }
-        />
-      </label>
-      <label className="field checkbox-field">
-        <input
-          type="checkbox"
-          checked={form.enabled}
-          onChange={(event) => onChange({ enabled: event.target.checked })}
-        />
-        启用监控
-      </label>
-      <label className="field checkbox-field">
-        <input
-          type="checkbox"
-          checked={form.notify}
-          onChange={(event) => onChange({ notify: event.target.checked })}
-        />
-        通知
-      </label>
-      {form.media_type === "anime" && (
-        <label className="field checkbox-field">
+      <div className="checkbox-row">
+        <label className="checkbox-field">
           <input
             type="checkbox"
-            checked={form.acquire_subtitles}
+            checked={form.enabled}
+            onChange={(event) => onChange({ enabled: event.target.checked })}
+          />
+          启用监控
+        </label>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={form.notify}
+            onChange={(event) => onChange({ notify: event.target.checked })}
+          />
+          通知
+        </label>
+        {form.media_type === "anime" && (
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.acquire_subtitles}
+              onChange={(event) =>
+                onChange({ acquire_subtitles: event.target.checked })
+              }
+            />
+            自动找字幕
+          </label>
+        )}
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={form.replace_enabled}
             onChange={(event) =>
-              onChange({ acquire_subtitles: event.target.checked })
+              onChange({ replace_enabled: event.target.checked })
             }
           />
-          自动找字幕
+          洗版
         </label>
-      )}
-      {form.media_type === "anime" && form.acquire_subtitles && (
+      </div>
+      <div className="field-pair">
         <label className="field">
-          字幕偏好
-          <select
-            value={form.subtitle_variant}
+          静置秒数
+          <input
+            type="number"
+            min={0}
+            value={form.stability_seconds}
             onChange={(event) =>
-              onChange({
-                subtitle_variant: event.target.value as "chs" | "cht",
-              })
+              onChange({ stability_seconds: Number(event.target.value) })
             }
-          >
-            <option value="chs">简体</option>
-            <option value="cht">繁体</option>
-          </select>
+          />
         </label>
-      )}
-      <label className="field checkbox-field">
-        <input
-          type="checkbox"
-          checked={form.replace_enabled}
-          onChange={(event) =>
-            onChange({ replace_enabled: event.target.checked })
-          }
-        />
-        洗版
-      </label>
+        {form.media_type === "anime" && form.acquire_subtitles && (
+          <label className="field">
+            字幕偏好
+            <select
+              value={form.subtitle_variant}
+              onChange={(event) =>
+                onChange({
+                  subtitle_variant: event.target.value as "chs" | "cht",
+                })
+              }
+            >
+              <option value="chs">简体</option>
+              <option value="cht">繁体</option>
+            </select>
+          </label>
+        )}
+      </div>
       {form.replace_enabled && (
         <>
-          <label className="field">
+          <label className="field field-wide">
             自动替换体积比
             <input
               type="number"
@@ -595,21 +599,22 @@ function Credentials({
             <option value="max">max</option>
           </select>
         </label>
-        <div className="field llm-test">
+        <div className="llm-test">
           <button type="button" disabled={testing} onClick={testLlm}>
             {testing ? "测试中…" : "测试模型"}
           </button>
-          {testResult && (
+          {testResult ? (
             <span className={testResult.ok ? "muted" : "error"}>
               {testResult.detail}
             </span>
+          ) : (
+            <span className="muted">测试使用已保存的模型凭据。</span>
           )}
-          <span className="muted">测试使用已保存的模型凭据。</span>
         </div>
       </div>
       <div className="cred-group">
         <h3>回收区</h3>
-        <label className="field">
+        <label className="field field-wide">
           保留天数
           <input
             type="number"

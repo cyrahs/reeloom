@@ -12,6 +12,7 @@ import {
   type RunDetail,
 } from "../api";
 import { Markdown } from "../Markdown";
+import { Link, navigate } from "../router";
 import { formatDateTime, formatLogTs, formatWhen } from "../time";
 import { usePoll } from "../usePoll";
 
@@ -491,7 +492,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
   return (
     <>
       <p className="crumb">
-        <a href="#/">← 任务</a>
+        <Link to="/">← 任务</Link>
       </p>
       {error && (
         <p className="banner">连接中断：{error} · 正在自动重试</p>
@@ -638,7 +639,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
                 return;
               act("delete", async () => {
                 await api.deleteRun(runId);
-                window.location.hash = "#/";
+                navigate("/");
               });
             }}
           >
