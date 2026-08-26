@@ -458,8 +458,11 @@ function Credentials({
     llm_reasoning_effort: settings.llm_reasoning_effort,
     telegram_chat_id: settings.telegram_chat_id,
     trash_retention_days: String(settings.trash_retention_days),
+    clouddrive_address: settings.clouddrive_address,
+    download_stall_hours: String(settings.download_stall_hours),
   });
   const [pinAlerts, setPinAlerts] = useState(settings.telegram_pin_alerts);
+  const [cloudSecure, setCloudSecure] = useState(settings.clouddrive_secure);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -470,6 +473,11 @@ function Credentials({
   } | null>(null);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramResult, setTelegramResult] = useState<{
+    ok: boolean;
+    detail: string;
+  } | null>(null);
+  const [testingCloud, setTestingCloud] = useState(false);
+  const [cloudResult, setCloudResult] = useState<{
     ok: boolean;
     detail: string;
   } | null>(null);
@@ -505,6 +513,23 @@ function Credentials({
       setTelegramResult({ ok: false, detail: (thrown as Error).message });
     } finally {
       setTestingTelegram(false);
+    }
+  }
+
+  async function testCloudDrive() {
+    setTestingCloud(true);
+    setCloudResult(null);
+    try {
+      const body = await api.testCloudDrive();
+      setCloudResult(
+        body.ok
+          ? { ok: true, detail: "CloudDrive 连通" }
+          : { ok: false, detail: body.error ?? "未知错误" },
+      );
+    } catch (thrown) {
+      setCloudResult({ ok: false, detail: (thrown as Error).message });
+    } finally {
+      setTestingCloud(false);
     }
   }
 
@@ -548,6 +573,7 @@ function Credentials({
         // "keep unchanged".
         body.llm_reasoning_effort = form.llm_reasoning_effort ?? "";
         body.telegram_pin_alerts = pinAlerts;
+        body.clouddrive_secure = cloudSecure;
         try {
           await api.putSettings(body);
           setForm({
@@ -556,6 +582,8 @@ function Credentials({
             llm_reasoning_effort: form.llm_reasoning_effort,
             telegram_chat_id: form.telegram_chat_id,
             trash_retention_days: form.trash_retention_days,
+            clouddrive_address: form.clouddrive_address,
+            download_stall_hours: form.download_stall_hours,
           });
           setSaved(true);
           onSaved();
@@ -666,6 +694,59 @@ function Credentials({
           <span className="muted">
             发送一条普通和一条需要处理的测试通知，使用已保存的凭据。
           </span>
+        </div>
+      </div>
+      <div className="cred-group">
+        <h3>CloudDrive</h3>
+        <label className="field">
+          地址
+          <input
+            placeholder="clouddrive.internal:19798"
+            {...bind("clouddrive_address")}
+          />
+        </label>
+        {secretField(
+          "clouddrive_api_token",
+          "API Token",
+          settings.clouddrive_api_token_set,
+        )}
+        <label className="field checkbox-field">
+          <input
+            type="checkbox"
+            checked={cloudSecure}
+            onChange={(event) => {
+              setSaved(false);
+              setCloudSecure(event.target.checked);
+            }}
+          />
+          使用 TLS 连接
+        </label>
+        <label className="field field-wide">
+          停滞判定（小时）
+          <input
+            type="number"
+            min={1}
+            max={720}
+            {...bind("download_stall_hours")}
+          />
+          <span className="muted">
+            下载进度停止超过该时长即视为停滞并发送通知。
+          </span>
+        </label>
+        <div className="field llm-test">
+          <button
+            type="button"
+            disabled={testingCloud}
+            onClick={testCloudDrive}
+          >
+            {testingCloud ? "测试中…" : "测试连接"}
+          </button>
+          {cloudResult && (
+            <span className={cloudResult.ok ? "muted" : "error"}>
+              {cloudResult.detail}
+            </span>
+          )}
+          <span className="muted">测试使用已保存的地址与 Token。</span>
         </div>
       </div>
       <div className="form-actions">

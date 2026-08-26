@@ -499,3 +499,62 @@ async def test_a_gray_zone_upgrade_waits_for_the_user_and_obeys_them(
         inbound / TRASH_DIR / run_id / "library" / CANONICAL / "S01"
         / "Show S01E01.mkv"
     ).stat().st_size == 100
+
+
+async def test_an_in_progress_download_only_archives_after_the_cloud_move(
+    harness: Harness, roots: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """The magnet journey: a downloading folder under in_progress is
+    invisible to intake; once the tracker moves it out cloud-side, the
+    normal archive flow takes over unchanged."""
+
+    from reeloom.adapters.clouddrive import OfflineStatus
+    from reeloom.models import DownloadState
+    from reeloom.server.downloads import DownloadService
+    from tests.fakes import FakeCloudDrive, StubDownloadClients
+
+    inbound, library = roots
+    dl_folder = "[Group] Show DL S01"
+    dl_hash = "C9E15763F722F23E98A29DECDFAE341B98D53056"
+    make_files(
+        inbound / "in_progress" / dl_folder, "[Group] Show - 03 [1080p].mkv"
+    )
+
+    # The regular folder organizes itself; the in-progress one is invisible.
+    await harness.drain()
+    assert {run.folder_name for run in harness.database.runs.values()} == {
+        FOLDER
+    }
+    assert (inbound / "in_progress" / dl_folder).is_dir()
+
+    # CloudDrive reports the task finished; the tracker moves it out.
+    cloud = FakeCloudDrive(tmp_path)
+    service = DownloadService(harness.database, StubDownloadClients(cloud))
+    download = await harness.database.create_magnet_download(
+        magnet=f"magnet:?xt=urn:btih:{dl_hash.lower()}",
+        info_hash=dl_hash,
+        download_dir="/inbound",
+    )
+    cloud.script_task(
+        dl_hash, name=dl_folder, status=OfflineStatus.FINISHED, progress=100.0
+    )
+    await service.poll()
+
+    current = harness.database.downloads[download.id]
+    assert current.state is DownloadState.COMPLETED
+    assert current.final_path == f"/inbound/{dl_folder}"
+    assert (inbound / dl_folder / "[Group] Show - 03 [1080p].mkv").is_file()
+
+    # The mounted watch root now sees the folder: normal intake.
+    harness.model.replies = [
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 3)))
+    ]
+    await harness.drain()
+
+    season = library / "Show (2024) {tmdb-123}" / "S01"
+    assert (season / "Show S01E03.mkv").is_file()
+    assert not (inbound / dl_folder).exists()
+    states = {
+        run.folder_name: run.state for run in harness.database.runs.values()
+    }
+    assert states[dl_folder] is RunState.DONE

@@ -8,6 +8,7 @@ import {
   getToken,
   setToken,
 } from "./api";
+import { DownloadsPage } from "./pages/Downloads";
 import { RunDetailPage } from "./pages/RunDetail";
 import { RunsPage } from "./pages/Runs";
 import { SettingsPage } from "./pages/Settings";
@@ -116,6 +117,12 @@ export function App() {
               任务
             </Link>
             <Link
+              to="/downloads"
+              className={route === "/downloads" ? "active" : ""}
+            >
+              下载
+            </Link>
+            <Link
               to="/settings"
               className={route === "/settings" ? "active" : ""}
             >
@@ -138,6 +145,8 @@ export function App() {
           <RunDetailPage runId={runMatch[1]} />
         ) : route === "/settings" ? (
           <SettingsPage />
+        ) : route === "/downloads" ? (
+          <DownloadsPage />
         ) : (
           <RunsPage />
         )}

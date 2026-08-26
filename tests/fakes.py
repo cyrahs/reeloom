@@ -7,15 +7,20 @@ else runs against these so the default suite needs no network and no server.
 from __future__ import annotations
 
 import json
+import posixpath
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Sequence
 
+from reeloom.adapters.clouddrive import CloudDriveError, OfflineStatus
 from reeloom.adapters.llm import Conversation, ModelReply, ToolCall
 from reeloom.adapters.tmdb import TmdbHit
 from reeloom.models import (
+    DownloadState,
     ExecutedMove,
+    MagnetDownload,
     MediaType,
     Plan,
     Run,
@@ -25,6 +30,8 @@ from reeloom.models import (
     SubtitleVariant,
     WatchConfig,
 )
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 
 class FakeDatabase:
@@ -36,6 +43,7 @@ class FakeDatabase:
         self.logs: list[tuple[str, str]] = []
         self.interactions: dict[str, list[dict[str, Any]]] = {}
         self.settings: dict[str, Any] = {}
+        self.downloads: dict[str, MagnetDownload] = {}
 
     async def list_configs(self, *, enabled_only: bool = False) -> list[WatchConfig]:
         return [
@@ -181,6 +189,10 @@ class FakeDatabase:
             "telegram_chat_id",
             "telegram_pin_alerts",
             "trash_retention_days",
+            "clouddrive_address",
+            "clouddrive_api_token",
+            "clouddrive_secure",
+            "download_stall_hours",
         }
         self.settings.update(
             {key: value for key, value in values.items() if key in allowed}
@@ -212,6 +224,113 @@ class FakeDatabase:
     async def delete_run(self, run_id: str) -> None:
         self.runs.pop(run_id, None)
 
+    # ---- magnet downloads (semantics mirror db.py, CAS included) -------
+
+    async def create_magnet_download(
+        self, *, magnet: str, info_hash: str, download_dir: str
+    ) -> MagnetDownload | None:
+        for download in self.downloads.values():
+            if download.info_hash == info_hash and download.state.is_live:
+                return None
+        now = datetime.now(timezone.utc)
+        download = MagnetDownload(
+            id=str(uuid.uuid4()),
+            magnet=magnet,
+            info_hash=info_hash,
+            download_dir=download_dir,
+            state=DownloadState.SUBMITTED,
+            submitted_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        self.downloads[download.id] = download
+        return download
+
+    async def get_magnet_download(self, download_id: str) -> MagnetDownload | None:
+        return self.downloads.get(download_id)
+
+    async def list_magnet_downloads(self, limit: int = 100) -> list[MagnetDownload]:
+        ordered = sorted(
+            self.downloads.values(),
+            key=lambda item: item.updated_at or _EPOCH,
+            reverse=True,
+        )
+        return ordered[:limit]
+
+    async def live_magnet_downloads(self) -> list[MagnetDownload]:
+        return sorted(
+            (item for item in self.downloads.values() if item.state.is_live),
+            key=lambda item: item.created_at or _EPOCH,
+        )
+
+    async def record_download_progress(
+        self,
+        download_id: str,
+        *,
+        state: DownloadState,
+        progress: float | None,
+        size_bytes: int | None,
+        name: str | None,
+        expected: Sequence[DownloadState],
+    ) -> bool:
+        download = self.downloads.get(download_id)
+        if download is None or download.state not in expected:
+            return False
+        # The distinct-guard is load-bearing: updated_at must move only when
+        # state or progress actually changed, or stall detection breaks.
+        if download.state == state and download.progress == progress:
+            return False
+        self.downloads[download_id] = replace(
+            download,
+            state=state,
+            progress=progress,
+            size_bytes=size_bytes if size_bytes is not None else download.size_bytes,
+            name=name if name is not None else download.name,
+            updated_at=datetime.now(timezone.utc),
+        )
+        return True
+
+    async def transition_download(
+        self,
+        download_id: str,
+        *,
+        expected: Sequence[DownloadState],
+        target: DownloadState,
+        error: str | None = None,
+        final_path: str | None = None,
+        mark_submitted: bool = False,
+    ) -> bool:
+        download = self.downloads.get(download_id)
+        if download is None or download.state not in expected:
+            return False
+        now = datetime.now(timezone.utc)
+        self.downloads[download_id] = replace(
+            download,
+            state=target,
+            error=error,
+            final_path=final_path if final_path is not None else download.final_path,
+            submitted_at=now if mark_submitted else download.submitted_at,
+            progress=None if mark_submitted else download.progress,
+            updated_at=now,
+        )
+        return True
+
+    async def delete_magnet_download(self, download_id: str) -> None:
+        self.downloads.pop(download_id, None)
+
+    async def magnet_download_dirs(self, limit: int = 10) -> list[str]:
+        latest: dict[str, datetime] = {}
+        for download in self.downloads.values():
+            created = download.created_at or _EPOCH
+            if download.download_dir not in latest:
+                latest[download.download_dir] = created
+            else:
+                latest[download.download_dir] = max(
+                    latest[download.download_dir], created
+                )
+        ordered = sorted(latest, key=lambda key: latest[key], reverse=True)
+        return ordered[:limit]
+
 
 class RecordingNotifier:
     def __init__(self) -> None:
@@ -219,6 +338,143 @@ class RecordingNotifier:
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
         self.sent.append(run)
+
+
+class StubDownloadClients:
+    """The two Clients accessors DownloadService uses."""
+
+    def __init__(self, cloud: Any = None, *, stall_hours: int = 24) -> None:
+        self.cloud = cloud
+        self.stall_hours = stall_hours
+
+    async def clouddrive(self) -> Any:
+        from reeloom.server.composition import NotConfigured
+
+        if self.cloud is None:
+            raise NotConfigured("clouddrive_not_configured")
+        return self.cloud
+
+    async def download_stall_hours(self) -> int:
+        return self.stall_hours
+
+
+class RecordingDownloadNotifier:
+    def __init__(self) -> None:
+        self.alerts: list[MagnetDownload] = []
+
+    async def download_trouble(self, download: MagnetDownload) -> None:
+        self.alerts.append(download)
+
+
+class FakeCloudDrive:
+    """AsyncCloudDrive surface over a tmp_path tree and a scripted task list.
+
+    API paths map onto the local filesystem under ``root``, and ``move_file``
+    performs a real rename — exactly what the FUSE mount would observe — so
+    journey tests can point a watch root at the same tree.
+    """
+
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self.added: list[tuple[list[str], str]] = []
+        self.removed: list[tuple[list[str], str, bool]] = []
+        self.ensured: list[tuple[str, str]] = []
+        self.moves: list[tuple[str, str]] = []
+        self.fail_add: Exception | None = None
+        self.fail_list_offline: Exception | None = None
+        self.add_result: dict[str, Any] = {
+            "success": True,
+            "duplicate": False,
+            "error_message": "",
+        }
+
+    def script_task(
+        self,
+        info_hash: str,
+        *,
+        name: str,
+        status: OfflineStatus,
+        progress: float = 0.0,
+        size: int = 0,
+    ) -> None:
+        self.tasks[info_hash.upper()] = {
+            "name": name,
+            "size": size,
+            "url": "",
+            "status": status,
+            "info_hash": info_hash.upper(),
+            "file_id": "",
+            "add_time": 0,
+            "progress": progress,
+            "peers": 0,
+        }
+
+    def _local(self, api_path: str) -> Path:
+        assert self.root is not None, "this FakeCloudDrive has no filesystem"
+        return self.root / api_path.lstrip("/")
+
+    async def check(self) -> dict[str, Any]:
+        return {"reachable": True, "authenticated": True}
+
+    async def list_directory(
+        self, api_dir: str, *, force_refresh: bool = True
+    ) -> tuple[dict[str, Any], ...]:
+        base = self._local(api_dir)
+        if not base.is_dir():
+            raise CloudDriveError("clouddrive_path_not_found", details=api_dir)
+        return tuple(
+            {
+                "id": "",
+                "name": entry.name,
+                "full_path": posixpath.join(api_dir, entry.name),
+                "size": entry.stat().st_size if entry.is_file() else 0,
+                "is_directory": entry.is_dir(),
+            }
+            for entry in sorted(base.iterdir())
+        )
+
+    async def ensure_directory(
+        self, parent_api_dir: str, folder_name: str
+    ) -> dict[str, Any]:
+        self.ensured.append((parent_api_dir, folder_name))
+        path = posixpath.join(parent_api_dir, folder_name)
+        local = self._local(path)
+        created = not local.is_dir()
+        local.mkdir(parents=True, exist_ok=True)
+        return {"created": created, "path": path}
+
+    async def move_file(
+        self, source_api_path: str, destination_api_dir: str
+    ) -> dict[str, Any]:
+        self.moves.append((source_api_path, destination_api_dir))
+        source = self._local(source_api_path)
+        destination = self._local(destination_api_dir) / source.name
+        if destination.exists():
+            # Conflict policy skip: report success, move nothing.
+            return {"success": True, "error_message": ""}
+        source.rename(destination)
+        return {"success": True, "error_message": ""}
+
+    async def add_offline_files(
+        self, urls: list[str], dst_dir: str
+    ) -> dict[str, Any]:
+        if self.fail_add is not None:
+            raise self.fail_add
+        self.added.append((list(urls), dst_dir))
+        return dict(self.add_result)
+
+    async def list_offline_files(self, path: str) -> tuple[dict[str, Any], ...]:
+        if self.fail_list_offline is not None:
+            raise self.fail_list_offline
+        return tuple(dict(task) for task in self.tasks.values())
+
+    async def remove_offline_files(
+        self, info_hashes: list[str], path: str, *, delete_files: bool
+    ) -> None:
+        self.removed.append((list(info_hashes), path, delete_files))
+        for info_hash in info_hashes:
+            self.tasks.pop(info_hash.upper(), None)
 
 
 class ScriptedModel:

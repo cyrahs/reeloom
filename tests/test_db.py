@@ -38,7 +38,8 @@ async def database(postgres_dsn: str) -> AsyncIterator[Database]:
         # Every test starts from an empty control plane.
         async with database._connection() as connection:  # noqa: SLF001
             await connection.execute(
-                "truncate watch_config, run, run_log, interaction cascade"
+                "truncate watch_config, run, run_log, interaction,"
+                " magnet_download cascade"
             )
         yield database
 
@@ -239,3 +240,159 @@ async def test_logs_and_interactions(
     assert [item["message"] for item in logs] == ["first", "second"]
     interactions = await database.list_interactions(run.id)
     assert interactions[0]["content"] == "wrong season"
+
+
+# ---- magnet downloads ---------------------------------------------------
+
+DL_HASH = "C9E15763F722F23E98A29DECDFAE341B98D53056"
+DL_MAGNET = f"magnet:?xt=urn:btih:{DL_HASH.lower()}"
+
+
+async def test_magnet_download_round_trip(database: Database) -> None:
+    from reeloom.models import DownloadState
+
+    created = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    assert created is not None
+    assert created.state is DownloadState.SUBMITTED
+    assert created.submitted_at is not None
+
+    fetched = await database.get_magnet_download(created.id)
+    assert fetched == created
+    assert await database.list_magnet_downloads() == [created]
+    assert await database.live_magnet_downloads() == [created]
+
+
+async def test_one_live_row_per_hash(database: Database) -> None:
+    from reeloom.models import DownloadState
+
+    first = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    assert first is not None
+    assert (
+        await database.create_magnet_download(
+            magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+        )
+        is None
+    )
+
+    # A concluded row releases the slot; its own hash stays for history.
+    assert await database.transition_download(
+        first.id,
+        expected=[DownloadState.SUBMITTED],
+        target=DownloadState.REMOVED,
+    )
+    second = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    assert second is not None
+
+
+async def test_progress_writes_only_on_change(database: Database) -> None:
+    from reeloom.models import DownloadState
+
+    created = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    assert await database.record_download_progress(
+        created.id,
+        state=DownloadState.DOWNLOADING,
+        progress=33.33,
+        size_bytes=2048,
+        name="Show",
+        expected=[DownloadState.SUBMITTED, DownloadState.DOWNLOADING],
+    )
+    first = await database.get_magnet_download(created.id)
+    assert first.progress == pytest.approx(33.33)
+    assert first.name == "Show"
+
+    # Same state, same progress: nothing moves — updated_at is the stall clock.
+    assert not await database.record_download_progress(
+        created.id,
+        state=DownloadState.DOWNLOADING,
+        progress=33.33,
+        size_bytes=2048,
+        name="Show",
+        expected=[DownloadState.SUBMITTED, DownloadState.DOWNLOADING],
+    )
+    assert (await database.get_magnet_download(created.id)).updated_at == (
+        first.updated_at
+    )
+
+    assert await database.record_download_progress(
+        created.id,
+        state=DownloadState.DOWNLOADING,
+        progress=34.0,
+        size_bytes=None,
+        name=None,
+        expected=[DownloadState.SUBMITTED, DownloadState.DOWNLOADING],
+    )
+    third = await database.get_magnet_download(created.id)
+    assert third.updated_at > first.updated_at
+    assert third.size_bytes == 2048  # coalesce keeps the known size
+    assert third.name == "Show"
+
+
+async def test_transition_is_compare_and_set(database: Database) -> None:
+    from reeloom.models import DownloadState
+
+    created = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    assert not await database.transition_download(
+        created.id,
+        expected=[DownloadState.DOWNLOADING],
+        target=DownloadState.STALLED,
+    )
+    assert await database.transition_download(
+        created.id,
+        expected=[DownloadState.SUBMITTED],
+        target=DownloadState.FAILED,
+        error="boom",
+    )
+    failed = await database.get_magnet_download(created.id)
+    assert failed.state is DownloadState.FAILED
+    assert failed.error == "boom"
+
+    # mark_submitted resets the retry clock and clears stale progress.
+    assert await database.transition_download(
+        created.id,
+        expected=[DownloadState.FAILED],
+        target=DownloadState.SUBMITTED,
+        mark_submitted=True,
+    )
+    retried = await database.get_magnet_download(created.id)
+    assert retried.progress is None
+    assert retried.error is None
+    assert retried.submitted_at > failed.submitted_at
+
+
+async def test_download_dir_history_is_most_recent_first(
+    database: Database,
+) -> None:
+    from reeloom.models import DownloadState
+
+    for index, directory in enumerate(["/a", "/b", "/a", "/c"]):
+        created = await database.create_magnet_download(
+            magnet=f"magnet:?xt=urn:btih:{index:040x}",
+            info_hash=f"{index:040X}",
+            download_dir=directory,
+        )
+        await database.transition_download(
+            created.id,
+            expected=[DownloadState.SUBMITTED],
+            target=DownloadState.REMOVED,
+        )
+
+    assert await database.magnet_download_dirs() == ["/c", "/a", "/b"]
+    assert await database.magnet_download_dirs(limit=1) == ["/c"]
+
+
+async def test_delete_magnet_download_row(database: Database) -> None:
+    created = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    await database.delete_magnet_download(created.id)
+    assert await database.get_magnet_download(created.id) is None

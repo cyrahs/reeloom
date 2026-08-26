@@ -128,8 +128,12 @@ async def test_every_api_route_needs_the_admin_token(client) -> None:
         ("get", "/api/settings"),
         ("post", "/api/settings/test-llm"),
         ("post", "/api/settings/test-telegram"),
+        ("post", "/api/settings/test-clouddrive"),
         ("get", "/api/fs/dirs"),
         ("post", "/api/configs"),
+        ("get", "/api/downloads"),
+        ("post", "/api/downloads"),
+        ("get", "/api/clouddrive/dirs"),
     ]:
         response = await getattr(client, method)(path)
         assert response.status_code == 401, path
@@ -676,3 +680,234 @@ async def test_llm_test_reports_failure_without_an_error_status(
     body = response.json()
     assert body["ok"] is False
     assert "model_error" in body["error"]
+
+
+# ---- magnet downloads ---------------------------------------------------
+
+DL_HASH = "C9E15763F722F23E98A29DECDFAE341B98D53056"
+DL_MAGNET = f"magnet:?xt=urn:btih:{DL_HASH.lower()}"
+
+
+@pytest_asyncio.fixture
+async def download_client(database, worker, tmp_path):
+    from reeloom.server.downloads import DownloadService
+    from tests.fakes import FakeCloudDrive, StubDownloadClients
+
+    (tmp_path / "dl").mkdir()
+    cloud = FakeCloudDrive(tmp_path)
+    clients = StubDownloadClients(cloud)
+    downloads = DownloadService(database, clients)
+    app = create_app(
+        database=database,
+        admin_token=TOKEN,
+        worker=worker,
+        downloads=downloads,
+        clients=clients,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        yield client, cloud
+
+
+async def test_download_submit_lands_under_in_progress(
+    download_client, database, worker
+) -> None:
+    client, cloud = download_client
+    response = await client.post(
+        "/api/downloads",
+        headers=AUTH,
+        json={"magnet": DL_MAGNET, "directory": "/dl/"},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["state"] == "submitted"
+    assert body["download_dir"] == "/dl"  # trailing slash normalized away
+    assert cloud.added == [([DL_MAGNET], "/dl/in_progress")]
+    assert worker.woken == 1
+
+    listing = (await client.get("/api/downloads", headers=AUTH)).json()
+    assert [item["id"] for item in listing["downloads"]] == [body["id"]]
+    assert listing["dirs"] == ["/dl"]
+    assert "now" in listing
+
+
+async def test_download_submit_error_codes(download_client) -> None:
+    client, cloud = download_client
+    v2_only = "magnet:?xt=urn:btmh:1220" + "a" * 64
+    response = await client.post(
+        "/api/downloads",
+        headers=AUTH,
+        json={"magnet": v2_only + "x" * 20, "directory": "/dl"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid_magnet"
+
+    response = await client.post(
+        "/api/downloads",
+        headers=AUTH,
+        json={"magnet": DL_MAGNET, "directory": "relative/path"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "clouddrive_invalid_path"
+
+    assert (
+        await client.post(
+            "/api/downloads",
+            headers=AUTH,
+            json={"magnet": DL_MAGNET, "directory": "/dl"},
+        )
+    ).status_code == 201
+    duplicate = await client.post(
+        "/api/downloads",
+        headers=AUTH,
+        json={"magnet": DL_MAGNET, "directory": "/dl"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "duplicate_download"
+
+
+async def test_download_delete_and_retry_guards(
+    download_client, database
+) -> None:
+    client, cloud = download_client
+    body = (
+        await client.post(
+            "/api/downloads",
+            headers=AUTH,
+            json={"magnet": DL_MAGNET, "directory": "/dl"},
+        )
+    ).json()
+
+    retry = await client.post(
+        f"/api/downloads/{body['id']}/retry", headers=AUTH
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"] == "download_not_retryable"
+
+    removed = await client.post(
+        f"/api/downloads/{body['id']}/delete", headers=AUTH
+    )
+    assert removed.status_code == 200
+    assert removed.json()["state"] == "removed"
+    assert cloud.removed == [([DL_HASH], "/dl", True)]
+
+    again = await client.post(
+        f"/api/downloads/{body['id']}/delete", headers=AUTH
+    )
+    assert again.status_code == 409
+    assert again.json()["detail"] == "download_not_live"
+
+    pruned = await client.delete(f"/api/downloads/{body['id']}", headers=AUTH)
+    assert pruned.json() == {"deleted": True}
+    assert (await client.get("/api/downloads", headers=AUTH)).json()[
+        "downloads"
+    ] == []
+
+
+async def test_download_row_prune_needs_a_terminal_state(
+    download_client,
+) -> None:
+    client, _ = download_client
+    body = (
+        await client.post(
+            "/api/downloads",
+            headers=AUTH,
+            json={"magnet": DL_MAGNET, "directory": "/dl"},
+        )
+    ).json()
+    response = await client.delete(f"/api/downloads/{body['id']}", headers=AUTH)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "download_not_terminal"
+
+    missing = await client.delete("/api/downloads/nope", headers=AUTH)
+    assert missing.status_code == 404
+
+
+async def test_cloud_dir_browse(download_client, tmp_path) -> None:
+    client, _ = download_client
+    (tmp_path / "dl/sub_b").mkdir(parents=True)
+    (tmp_path / "dl/Sub_a").mkdir()
+    (tmp_path / "dl/loose.mkv").write_bytes(b"x")
+
+    response = await client.get(
+        "/api/clouddrive/dirs", headers=AUTH, params={"path": "/dl"}
+    )
+    assert response.json() == {
+        "path": "/dl",
+        "parent": "/",
+        "dirs": ["Sub_a", "sub_b"],
+    }
+
+    root = await client.get("/api/clouddrive/dirs", headers=AUTH)
+    assert root.json()["parent"] is None
+
+    missing = await client.get(
+        "/api/clouddrive/dirs", headers=AUTH, params={"path": "/nope"}
+    )
+    assert missing.status_code == 404
+
+    invalid = await client.get(
+        "/api/clouddrive/dirs", headers=AUTH, params={"path": "relative"}
+    )
+    assert invalid.status_code == 422
+
+
+async def test_downloads_without_service_report_unavailable(client) -> None:
+    response = await client.post(
+        "/api/downloads",
+        headers=AUTH,
+        json={"magnet": DL_MAGNET, "directory": "/dl"},
+    )
+    assert response.status_code == 503
+
+    browse = await client.get("/api/clouddrive/dirs", headers=AUTH)
+    assert browse.status_code == 503
+
+
+async def test_clouddrive_settings_roundtrip(client) -> None:
+    body = (await client.get("/api/settings", headers=AUTH)).json()
+    assert body["clouddrive_address"] == ""
+    assert body["clouddrive_secure"] is True
+    assert body["download_stall_hours"] == 24
+    assert body["clouddrive_api_token_set"] is False
+
+    await client.put(
+        "/api/settings",
+        headers=AUTH,
+        json={
+            "clouddrive_address": "cloud.internal:19798",
+            "clouddrive_api_token": "cd-secret-token",
+            "clouddrive_secure": False,
+            "download_stall_hours": 48,
+        },
+    )
+    body = (await client.get("/api/settings", headers=AUTH)).json()
+    assert body["clouddrive_address"] == "cloud.internal:19798"
+    assert body["clouddrive_secure"] is False
+    assert body["download_stall_hours"] == 48
+    assert body["clouddrive_api_token_set"] is True
+    assert "cd-secret-token" not in str(body)
+
+    refused = await client.put(
+        "/api/settings", headers=AUTH, json={"download_stall_hours": 0}
+    )
+    assert refused.status_code == 422
+
+
+async def test_clouddrive_test_endpoint(download_client, client) -> None:
+    unconfigured = await client.post(
+        "/api/settings/test-clouddrive", headers=AUTH
+    )
+    assert unconfigured.status_code == 200
+    assert unconfigured.json() == {
+        "ok": False,
+        "error": "clouddrive_not_configured",
+    }
+
+    configured_client, _ = download_client
+    response = await configured_client.post(
+        "/api/settings/test-clouddrive", headers=AUTH
+    )
+    assert response.json() == {"ok": True}

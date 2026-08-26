@@ -448,3 +448,78 @@ async def test_send_test_reports_a_failed_send() -> None:
         transport=httpx.MockTransport(lambda request: httpx.Response(429)),
     )
     assert await notifier.send_test() == "send_failed"
+
+
+# ---- magnet download alerts ---------------------------------------------
+
+
+def make_download(**kwargs):
+    from reeloom.models import DownloadState, MagnetDownload
+
+    return MagnetDownload(
+        id="dl-1",
+        magnet="magnet:?xt=urn:btih:" + "c" * 40 + "&dn=<i>x</i>",
+        info_hash="C" * 40,
+        download_dir="/115/downloads",
+        state=kwargs.pop("state", DownloadState.FAILED),
+        **kwargs,
+    )
+
+
+def test_download_alert_carries_name_progress_and_reason() -> None:
+    from reeloom.models import DownloadState
+    from reeloom.server.notify import render_download
+
+    text = render_download(
+        make_download(
+            state=DownloadState.STALLED,
+            name="Show S01",
+            progress=78.4,
+            size_bytes=12_884_901_888,
+            error="no progress for 1d at 78%",
+        )
+    )
+
+    assert "REELOOM · 磁力下载" in text
+    assert "下载停滞" in text
+    assert "Show S01" in text
+    assert "进度 78.4%" in text
+    assert "12.0 GB" in text
+    assert "目录：/115/downloads" in text
+    assert "原因：no progress for 1d at 78%" in text
+
+
+def test_download_alert_escapes_untrusted_text_and_falls_back_to_the_magnet() -> None:
+    from reeloom.server.notify import render_download
+
+    text = render_download(make_download(name=None))
+    assert "下载失败" in text
+    assert "magnet:?xt=urn:btih:" in text  # magnet head stands in for the name
+
+    escaped = render_download(make_download(name="<i>evil</i> & co"))
+    assert "&lt;i&gt;evil&lt;/i&gt; &amp; co" in escaped
+    assert "<i>" not in escaped
+
+
+async def test_download_alert_is_pinned_like_other_attention_states() -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=recording_transport(seen)
+    )
+    await notifier.download_trouble(make_download())
+    assert methods(seen) == ["sendMessage", "pinChatMessage"]
+
+
+async def test_download_alert_honors_the_pin_switch() -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT), pin_alerts=False),
+        transport=recording_transport(seen),
+    )
+    await notifier.download_trouble(make_download())
+    assert methods(seen) == ["sendMessage"]
+
+
+async def test_download_alert_is_silent_without_credentials() -> None:
+    notifier = TelegramNotifier(StubClients(None))
+    await notifier.download_trouble(make_download())  # must not raise

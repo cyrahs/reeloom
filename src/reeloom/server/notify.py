@@ -14,6 +14,8 @@ import httpx
 
 from reeloom.adapters.telegram import TelegramClient, TelegramError
 from reeloom.models import (
+    DownloadState,
+    MagnetDownload,
     MediaIdentity,
     MediaType,
     ReeloomError,
@@ -83,6 +85,52 @@ def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
     return "\n".join(lines)
 
 
+_DOWNLOAD_HEADLINE = {
+    DownloadState.FAILED: "❌ 下载失败",
+    DownloadState.STALLED: "🐢 下载停滞",
+    DownloadState.LOST: "❓ 下载任务丢失",
+}
+
+_DOWNLOAD_REASON = {
+    "download_stalled": "下载长时间无进度",
+    "clouddrive_reported_error": "CloudDrive 报告下载失败",
+    "task_missing_from_clouddrive": "任务在 CloudDrive 上消失",
+    "unsafe_name": "任务名不安全，无法整理",
+    "move_did_not_settle": "整理移动未完成",
+}
+
+
+def render_download(download: MagnetDownload) -> str:
+    """Telegram HTML for a download that needs a human. Task names and
+    magnets are untrusted and escaped."""
+
+    lines = [
+        f"{_BRAND} · 磁力下载",
+        _DOWNLOAD_HEADLINE.get(download.state, download.state.value),
+    ]
+    label = download.name or f"{download.magnet[:60]}…"
+    detail = [_text(label)]
+    if download.progress is not None:
+        detail.append(f"进度 {download.progress:.1f}%")
+    if download.size_bytes:
+        detail.append(_size(download.size_bytes))
+    lines.append(" · ".join(detail))
+    lines.append(f"目录：{_text(download.download_dir)}")
+    if download.error:
+        reason = _DOWNLOAD_REASON.get(download.error, download.error)
+        lines.append(f"原因：{_text(reason)}")
+    return "\n".join(lines)
+
+
+def _size(size_bytes: int) -> str:
+    value = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
 def _title_url(run_id: str, identity: MediaIdentity, public_url: str) -> str:
     """The run's page when the deployment knows its own URL, else TMDB.
     Every part is trusted: ``run_id`` is a UUID, ``tmdb_id`` an int, and
@@ -136,6 +184,22 @@ class TelegramNotifier:
             if message_id is None:
                 _LOGGER.info("notification dropped for run=%s", run.id)
             elif message_id and await self._should_pin(run):
+                await client.pin(message_id)
+        finally:
+            await client.aclose()
+
+    async def download_trouble(self, download: MagnetDownload) -> None:
+        """Alert for a download that needs a human: failed, stalled or lost.
+        Pinned like other attention states when pinning is enabled."""
+
+        client = await self._client()
+        if client is None:
+            return
+        try:
+            message_id = await client.send(render_download(download))
+            if message_id is None:
+                _LOGGER.info("notification dropped for download=%s", download.id)
+            elif message_id and await self._pin_enabled():
                 await client.pin(message_id)
         finally:
             await client.aclose()

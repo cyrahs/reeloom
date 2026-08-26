@@ -42,7 +42,7 @@ def test_discover_skips_buckets_hidden_loose_files_and_symlinks(
     roots: tuple[Path, Path],
 ) -> None:
     inbound, _ = roots
-    for name in ("Show A", "archive", "fail", ".hidden"):
+    for name in ("Show A", "archive", "fail", "in_progress", ".hidden"):
         (inbound / name).mkdir()
     (inbound / "loose.mkv").write_bytes(b"x")
     os.symlink(inbound / "Show A", inbound / "linked")

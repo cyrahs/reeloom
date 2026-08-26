@@ -41,9 +41,16 @@ def build_comparer(database: Database, clients: Clients):
     return ReplaceComparer(database, clients)
 
 
+def build_downloads(database: Database, clients: Clients, notifier):
+    from reeloom.server.downloads import DownloadService
+
+    return DownloadService(database, clients, notifier=notifier)
+
+
 def build(settings: Settings, database: Database):
     clients = Clients(database)
     notifier = build_notifier(clients, settings)
+    downloads = build_downloads(database, clients, notifier)
     worker = Worker(
         database,
         identifier=AgentIdentifier(clients, database),
@@ -51,6 +58,7 @@ def build(settings: Settings, database: Database):
         comparer=build_comparer(database, clients),
         subtitles=build_subtitles(database, clients, settings),
         notifier=notifier,
+        downloads=downloads,
         scan_interval_seconds=settings.scan_interval_seconds,
     )
     app = create_app(
@@ -59,6 +67,8 @@ def build(settings: Settings, database: Database):
         worker=worker,
         answerer=Answerer(clients),
         notifier=notifier,
+        downloads=downloads,
+        clients=clients,
         static_dir=STATIC_DIR,
     )
     return app, worker, clients

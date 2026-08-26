@@ -7,6 +7,7 @@ route. The UI polls; there is no event stream to reconnect, buffer or replay.
 from __future__ import annotations
 
 import logging
+import posixpath
 import secrets
 import time
 import uuid
@@ -16,6 +17,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from reeloom.adapters.clouddrive import validate_api_path
 from reeloom.db import Database
 from reeloom.models import MediaType, ReeloomError, Run, RunState, SubtitleVariant
 from reeloom.models import WatchConfig as WatchConfigModel
@@ -72,10 +74,19 @@ class SettingsInput(BaseModel):
     telegram_chat_id: str | None = Field(default=None, max_length=64)
     telegram_pin_alerts: bool | None = None
     trash_retention_days: int | None = Field(default=None, ge=0, le=365)
+    clouddrive_address: str | None = Field(default=None, max_length=200)
+    clouddrive_api_token: str | None = Field(default=None, max_length=500)
+    clouddrive_secure: bool | None = None
+    download_stall_hours: int | None = Field(default=None, ge=1, le=720)
 
 
 class MessageInput(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
+
+
+class DownloadInput(BaseModel):
+    magnet: str = Field(min_length=20, max_length=8192)
+    directory: str = Field(min_length=2, max_length=1024)
 
 
 class ReplaceResolveInput(BaseModel):
@@ -89,6 +100,8 @@ def create_app(
     worker=None,
     answerer=None,
     notifier=None,
+    downloads=None,
+    clients=None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Reeloom", version="2.0.0", docs_url=None, redoc_url=None)
@@ -350,9 +363,13 @@ def create_app(
             "telegram_chat_id": stored.get("telegram_chat_id", ""),
             "telegram_pin_alerts": bool(stored.get("telegram_pin_alerts", True)),
             "trash_retention_days": stored.get("trash_retention_days", 3),
+            "clouddrive_address": stored.get("clouddrive_address", ""),
+            "clouddrive_secure": bool(stored.get("clouddrive_secure", True)),
+            "download_stall_hours": stored.get("download_stall_hours", 24),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),
             "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
+            "clouddrive_api_token_set": bool(stored.get("clouddrive_api_token")),
         }
 
     @api.put("/settings")
@@ -385,6 +402,104 @@ def create_app(
         error = await notifier.send_test()
         return {"ok": True} if error is None else {"ok": False, "error": error}
 
+    @api.post("/settings/test-clouddrive")
+    async def test_clouddrive():
+        """Ping the configured CloudDrive2 server and list its root, so the
+        admin can check the saved address and token from the settings page."""
+
+        if clients is None:
+            return {"ok": False, "error": "clouddrive_not_configured"}
+        try:
+            cloud = await clients.clouddrive()
+            await cloud.check()
+        except ReeloomError as error:
+            return {"ok": False, "error": error.code}
+        return {"ok": True}
+
+    # ---- magnet downloads ---------------------------------------------
+
+    @api.post("/downloads", status_code=201)
+    async def add_download(payload: DownloadInput):
+        if downloads is None:
+            raise HTTPException(status_code=503, detail="downloads_not_available")
+        directory = payload.directory.strip()
+        if len(directory) > 1:
+            directory = directory.rstrip("/")
+        try:
+            download = await downloads.submit(payload.magnet.strip(), directory)
+        except ReeloomError as error:
+            raise _download_error(error)
+        nudge()
+        return download.to_json()
+
+    @api.get("/downloads")
+    async def list_downloads(limit: int = 100):
+        items = await database.list_magnet_downloads(limit=min(limit, 500))
+        return {
+            "now": time.time(),
+            "downloads": [item.to_json() for item in items],
+            "dirs": await database.magnet_download_dirs(),
+        }
+
+    @api.post("/downloads/{download_id}/delete")
+    async def delete_download(download_id: str):
+        """Remove the task at CloudDrive2, downloaded data included, and
+        close the row. POST, not DELETE: this has a cloud-side effect."""
+
+        if downloads is None:
+            raise HTTPException(status_code=503, detail="downloads_not_available")
+        try:
+            download = await downloads.remove(download_id)
+        except ReeloomError as error:
+            raise _download_error(error)
+        return download.to_json()
+
+    @api.post("/downloads/{download_id}/retry")
+    async def retry_download(download_id: str):
+        if downloads is None:
+            raise HTTPException(status_code=503, detail="downloads_not_available")
+        try:
+            download = await downloads.retry(download_id)
+        except ReeloomError as error:
+            raise _download_error(error)
+        nudge()
+        return download.to_json()
+
+    @api.delete("/downloads/{download_id}")
+    async def delete_download_row(download_id: str):
+        """Prune one concluded row from history. DB only; never touches
+        CloudDrive."""
+
+        download = await database.get_magnet_download(download_id)
+        if download is None:
+            raise HTTPException(status_code=404, detail="download_not_found")
+        if not download.state.is_terminal:
+            raise HTTPException(status_code=409, detail="download_not_terminal")
+        await database.delete_magnet_download(download_id)
+        return {"deleted": True}
+
+    @api.get("/clouddrive/dirs")
+    async def list_cloud_dirs(path: str = "/"):
+        """List CloudDrive2 subdirectories, for the download dir picker.
+        Same response shape as /api/fs/dirs so the picker is reusable."""
+
+        if clients is None:
+            raise HTTPException(
+                status_code=503, detail="clouddrive_not_configured"
+            )
+        try:
+            validate_api_path(path, allow_root=True)
+            cloud = await clients.clouddrive()
+            entries = await cloud.list_directory(path, force_refresh=False)
+        except ReeloomError as error:
+            raise _download_error(error)
+        dirs = sorted(
+            (str(entry["name"]) for entry in entries if entry["is_directory"]),
+            key=str.casefold,
+        )
+        parent = None if path == "/" else posixpath.dirname(path)
+        return {"path": path, "parent": parent, "dirs": dirs}
+
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}
@@ -413,6 +528,26 @@ def _mount_ui(app: FastAPI, static_dir: Path) -> None:
         if path.startswith("api/"):
             raise HTTPException(status_code=404, detail="not_found")
         return FileResponse(index)
+
+
+# CloudDrive-side failures not listed here surface as 502 with the stable
+# error code as the detail.
+_DOWNLOAD_ERROR_STATUS = {
+    "invalid_magnet": 422,
+    "clouddrive_invalid_path": 422,
+    "duplicate_download": 409,
+    "download_not_found": 404,
+    "download_not_retryable": 409,
+    "download_is_moving": 409,
+    "download_not_live": 409,
+    "clouddrive_not_configured": 503,
+    "clouddrive_path_not_found": 404,
+}
+
+
+def _download_error(error: ReeloomError) -> HTTPException:
+    status = _DOWNLOAD_ERROR_STATUS.get(error.code, 502)
+    return HTTPException(status_code=status, detail=error.code)
 
 
 def _check_roots(inbound: str | None, library: str | None) -> None:

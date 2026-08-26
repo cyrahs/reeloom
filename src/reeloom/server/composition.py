@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from reeloom.adapters.clouddrive import AsyncCloudDrive, CloudDriveClient
 from reeloom.adapters.llm import (
     Conversation,
     Model,
@@ -39,6 +40,8 @@ class Clients:
         self._model_key: tuple[str, str, str, str] | None = None
         self._tmdb: TmdbClient | None = None
         self._tmdb_key: str | None = None
+        self._clouddrive: AsyncCloudDrive | None = None
+        self._clouddrive_key: tuple[str, str, bool] | None = None
 
     async def model(self) -> Model:
         settings = await self._db.get_settings()
@@ -77,6 +80,26 @@ class Clients:
         assert self._tmdb is not None
         return self._tmdb
 
+    async def clouddrive(self) -> AsyncCloudDrive:
+        settings = await self._db.get_settings()
+        address = settings.get("clouddrive_address", "")
+        token = settings.get("clouddrive_api_token", "")
+        if not address or not token:
+            raise NotConfigured("clouddrive_not_configured")
+        key = (address, token, bool(settings.get("clouddrive_secure", True)))
+        if key != self._clouddrive_key:
+            await self._close_clouddrive()
+            self._clouddrive = AsyncCloudDrive(
+                CloudDriveClient(address=key[0], api_token=key[1], secure=key[2])
+            )
+            self._clouddrive_key = key
+        assert self._clouddrive is not None
+        return self._clouddrive
+
+    async def download_stall_hours(self) -> int:
+        settings = await self._db.get_settings()
+        return int(settings.get("download_stall_hours", 24) or 24)
+
     async def telegram(self) -> tuple[str, str] | None:
         settings = await self._db.get_settings()
         token = settings.get("telegram_bot_token", "")
@@ -90,6 +113,7 @@ class Clients:
     async def aclose(self) -> None:
         await self._close_model()
         await self._close_tmdb()
+        await self._close_clouddrive()
 
     async def _close_model(self) -> None:
         if self._model is not None and hasattr(self._model, "aclose"):
@@ -102,6 +126,12 @@ class Clients:
             await self._tmdb.aclose()
         self._tmdb = None
         self._tmdb_key = None
+
+    async def _close_clouddrive(self) -> None:
+        if self._clouddrive is not None:
+            await self._clouddrive.aclose()
+        self._clouddrive = None
+        self._clouddrive_key = None
 
 
 _ANSWER_SYSTEM = """\
@@ -195,5 +225,9 @@ def settings_summary(settings: dict[str, Any]) -> dict[str, bool]:
         ),
         "telegram": bool(
             settings.get("telegram_bot_token") and settings.get("telegram_chat_id")
+        ),
+        "clouddrive": bool(
+            settings.get("clouddrive_address")
+            and settings.get("clouddrive_api_token")
         ),
     }

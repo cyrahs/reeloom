@@ -458,3 +458,78 @@ class Run:
             if item.candidate_id == candidate_id:
                 return item
         raise PlanError("unknown_candidate", candidate_id=candidate_id)
+
+
+class DownloadState(StrEnum):
+    """Lifecycle of one magnet submitted to CloudDrive2.
+
+    Live states hold the unique info-hash slot and keep being polled; failed
+    and stalled stay live on purpose, so a task the user un-sticks at
+    CloudDrive resumes tracking and the same magnet cannot be re-added while
+    its task still exists.
+    """
+
+    SUBMITTED = "submitted"
+    DOWNLOADING = "downloading"
+    MOVING = "moving"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STALLED = "stalled"
+    LOST = "lost"
+    REMOVED = "removed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in _DOWNLOAD_TERMINAL_STATES
+
+    @property
+    def is_live(self) -> bool:
+        return self not in _DOWNLOAD_TERMINAL_STATES
+
+
+_DOWNLOAD_TERMINAL_STATES = frozenset(
+    {DownloadState.COMPLETED, DownloadState.LOST, DownloadState.REMOVED}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MagnetDownload:
+    id: str
+    magnet: str
+    info_hash: str
+    """Upper-case hex v1 hash; the join key against CloudDrive's task list."""
+    download_dir: str
+    """CloudDrive API path; tasks download into ``<download_dir>/in_progress``."""
+    state: DownloadState
+    name: str | None = None
+    """Task name reported by CloudDrive; unknown until the first poll sees it."""
+    progress: float | None = None
+    """Percentage 0-100 as CloudDrive reports it."""
+    size_bytes: int | None = None
+    error: str | None = None
+    final_path: str | None = None
+    """Where the finished item landed after the cloud-side move."""
+    submitted_at: datetime | None = None
+    created_at: datetime | None = None
+    """Set by the repository from the row; None for unsaved instances."""
+    updated_at: datetime | None = None
+    """For live rows: the last time state or progress actually changed."""
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "magnet": self.magnet,
+            "info_hash": self.info_hash,
+            "download_dir": self.download_dir,
+            "state": self.state.value,
+            "name": self.name,
+            "progress": self.progress,
+            "size_bytes": self.size_bytes,
+            "error": self.error,
+            "final_path": self.final_path,
+            "submitted_at": (
+                self.submitted_at.isoformat() if self.submitted_at else None
+            ),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

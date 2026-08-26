@@ -115,6 +115,10 @@ class Notifier(Protocol):
     async def run_settled(self, run: Run, config: WatchConfig) -> None: ...
 
 
+class DownloadPoller(Protocol):
+    async def poll(self) -> None: ...
+
+
 class Worker:
     def __init__(
         self,
@@ -126,6 +130,7 @@ class Worker:
         subtitles: SubtitleService | None = None,
         notifier: Notifier | None = None,
         tracker: StabilityTracker | None = None,
+        downloads: DownloadPoller | None = None,
         scan_interval_seconds: int = 30,
     ) -> None:
         self._db = database
@@ -135,10 +140,12 @@ class Worker:
         self._subtitles = subtitles
         self._notifier = notifier
         self._tracker = tracker or StabilityTracker()
+        self._downloads = downloads
         self._scan_interval = scan_interval_seconds
         self._wake = asyncio.Event()
         self._intake: list[IntakeFolder] = []
         self._last_purge = float("-inf")
+        self._last_download_poll = float("-inf")
 
     def wake(self) -> None:
         """Ask the loop to run a step now instead of waiting for the timer."""
@@ -159,6 +166,7 @@ class Worker:
                 _LOGGER.exception("worker tick failed")
                 progressed = False
             await self._maybe_purge()
+            await self._maybe_poll_downloads()
             if progressed:
                 continue
             try:
@@ -464,6 +472,27 @@ class Worker:
         await self._db.log(run.id, "done")
         await self._notify(run.id, config)
         await self._purge_after_settle(run, config)
+
+    # ---- magnet download tracking --------------------------------------
+
+    async def _maybe_poll_downloads(self) -> None:
+        """Track CloudDrive2 downloads, at most once per scan interval.
+
+        The monotonic guard keeps an active-run busy loop from hammering
+        CloudDrive; like the purge, this contributes nothing to
+        ``progressed``.
+        """
+
+        if self._downloads is None:
+            return
+        now = time.monotonic()
+        if now - self._last_download_poll < self._scan_interval:
+            return
+        self._last_download_poll = now
+        try:
+            await self._downloads.poll()
+        except Exception:
+            _LOGGER.exception("download poll failed")
 
     # ---- trash purging -------------------------------------------------
 

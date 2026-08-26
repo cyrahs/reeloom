@@ -25,10 +25,15 @@ const SETTINGS = {
   llm_model: "",
   llm_reasoning_effort: "",
   telegram_chat_id: "",
+  telegram_pin_alerts: true,
   trash_retention_days: 3,
+  clouddrive_address: "",
+  clouddrive_secure: true,
+  download_stall_hours: 24,
   tmdb_api_key_set: false,
   llm_api_key_set: false,
   telegram_bot_token_set: false,
+  clouddrive_api_token_set: false,
 };
 
 function mockSettingsApi(config: WatchConfig = CONFIG) {
@@ -47,6 +52,9 @@ function mockSettingsApi(config: WatchConfig = CONFIG) {
       if (url.endsWith("/settings/test-llm") && method === "POST") {
         llmTest.calls += 1;
         return { ok: true, status: 200, json: async () => llmTest.response };
+      }
+      if (url.endsWith("/settings/test-clouddrive") && method === "POST") {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
       }
       if (url.endsWith("/settings") && method === "PUT") {
         puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -290,6 +298,9 @@ describe("settings page", () => {
     expect(puts[0]).toEqual({
       llm_reasoning_effort: "",
       trash_retention_days: "3",
+      telegram_pin_alerts: true,
+      clouddrive_secure: true,
+      download_stall_hours: "24",
     });
 
     fireEvent.change(select, { target: { value: "high" } });
@@ -298,6 +309,9 @@ describe("settings page", () => {
     expect(puts[1]).toEqual({
       llm_reasoning_effort: "high",
       trash_retention_days: "3",
+      telegram_pin_alerts: true,
+      clouddrive_secure: true,
+      download_stall_hours: "24",
     });
   });
 
