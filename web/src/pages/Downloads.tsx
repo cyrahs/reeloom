@@ -126,17 +126,27 @@ function AddForm({
             placeholder="/115/downloads"
             value={directory}
             onChange={(event) => setDirectory(event.target.value)}
-            list="download-dir-history"
           />
           <button type="button" onClick={() => setPicking(true)}>
             浏览…
           </button>
         </div>
-        <datalist id="download-dir-history">
-          {dirs.map((dir) => (
-            <option key={dir} value={dir} />
-          ))}
-        </datalist>
+        {dirs.length > 0 && (
+          <div className="dir-history" aria-label="最近使用的目录">
+            <span className="muted">最近使用：</span>
+            {dirs.map((dir) => (
+              <button
+                key={dir}
+                type="button"
+                className={`chip${dir === directory.trim() ? " chip-active" : ""}`}
+                title={dir}
+                onClick={() => setDirectory(dir)}
+              >
+                {dir}
+              </button>
+            ))}
+          </div>
+        )}
         <span className="muted">
           任务先下载到该目录的 in_progress 子目录（reeloom
           保留名，扫描器不会拾取），完成后自动移出并进入正常整理流程。
