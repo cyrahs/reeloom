@@ -912,6 +912,30 @@ ul {
   grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
 }
 
+.dir-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.dir-history .chip {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dir-history .chip-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* Full-width row: button and status share one baseline instead of
    floating next to labeled fields. */
 .llm-test {
