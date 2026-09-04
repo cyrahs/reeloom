@@ -120,7 +120,8 @@ describe("DownloadsPage", () => {
     await screen.findByText("添加磁力下载");
 
     const dirInput = screen.getByPlaceholderText("/115/downloads");
-    expect(dirInput).toHaveValue("/115/downloads");
+    // Seeding happens in an effect after the poll resolves.
+    await waitFor(() => expect(dirInput).toHaveValue("/115/downloads"));
     // Every history entry is visible without touching the input, not hidden
     // behind a browser datalist that filters on the pre-seeded value.
     const chips = screen.getByLabelText("最近使用的目录");
