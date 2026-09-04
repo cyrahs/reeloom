@@ -298,6 +298,7 @@ class FakeDatabase:
         target: DownloadState,
         error: str | None = None,
         final_path: str | None = None,
+        name: str | None = None,
         mark_submitted: bool = False,
     ) -> bool:
         download = self.downloads.get(download_id)
@@ -309,6 +310,7 @@ class FakeDatabase:
             state=target,
             error=error,
             final_path=final_path if final_path is not None else download.final_path,
+            name=download.name if download.name is not None else name,
             submitted_at=now if mark_submitted else download.submitted_at,
             progress=None if mark_submitted else download.progress,
             updated_at=now,
