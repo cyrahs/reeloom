@@ -114,6 +114,21 @@ describe("DownloadsPage", () => {
     expect(await screen.findByText("已添加 2 个下载")).toBeInTheDocument();
   });
 
+  it("lists recent directories as visible chips that fill the input", async () => {
+    mockDownloads([], ["/115/downloads", "/115/anime"]);
+    render(<DownloadsPage />);
+    await screen.findByText("添加磁力下载");
+
+    const dirInput = screen.getByPlaceholderText("/115/downloads");
+    expect(dirInput).toHaveValue("/115/downloads");
+    // Every history entry is visible without touching the input, not hidden
+    // behind a browser datalist that filters on the pre-seeded value.
+    const chips = screen.getByLabelText("最近使用的目录");
+    expect(chips).toHaveTextContent("/115/anime");
+    fireEvent.click(screen.getByRole("button", { name: "/115/anime" }));
+    expect(dirInput).toHaveValue("/115/anime");
+  });
+
   it("gates the cloud-side delete behind a confirm", async () => {
     const { posts } = mockDownloads([download()]);
     const confirmSpy = vi
