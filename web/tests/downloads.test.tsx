@@ -96,6 +96,41 @@ describe("DownloadsPage", () => {
     expect(screen.getAllByRole("button", { name: "重试" })).toHaveLength(1);
   });
 
+  it("falls back to the landed folder, then the magnet's dn hint", async () => {
+    mockDownloads([
+      download({
+        id: "dl-landed",
+        state: "completed",
+        name: null,
+        progress: null,
+        final_path: "/115/emby_in/movie/Kill Bill (2006) [1080p]",
+      }),
+      download({
+        id: "dl-hinted",
+        state: "submitted",
+        name: null,
+        progress: null,
+        magnet: `${MAGNET}&dn=Kill Bill: The Whole Bloody Affair&tr=udp://t.example:1337`,
+      }),
+      download({
+        id: "dl-bare",
+        state: "submitted",
+        name: null,
+        progress: null,
+        magnet: MAGNET,
+      }),
+    ]);
+    render(<DownloadsPage />);
+
+    expect(
+      await screen.findByText("Kill Bill (2006) [1080p]"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Kill Bill: The Whole Bloody Affair"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(MAGNET)).toBeInTheDocument();
+  });
+
   it("splits multi-line input into one request per magnet", async () => {
     const { posts } = mockDownloads([], ["/dl"]);
     render(<DownloadsPage />);

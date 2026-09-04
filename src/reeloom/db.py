@@ -639,9 +639,15 @@ class Database:
         target: DownloadState,
         error: str | None = None,
         final_path: str | None = None,
+        name: str | None = None,
         mark_submitted: bool = False,
     ) -> bool:
-        """Compare-and-set state change; False when another path got there first."""
+        """Compare-and-set state change; False when another path got there first.
+
+        ``name`` fills in only when still unknown: a task that is already
+        finished on its first poll never passes through the progress
+        writer, so the move is its one chance to record the task name.
+        """
 
         async with self._connection() as connection:
             cursor = await connection.execute(
@@ -650,6 +656,7 @@ class Database:
                 set state = %(target)s,
                     error = %(error)s,
                     final_path = coalesce(%(final_path)s, final_path),
+                    name = coalesce(name, %(name)s),
                     submitted_at = case when %(mark_submitted)s then now()
                                         else submitted_at end,
                     progress = case when %(mark_submitted)s then null
@@ -662,6 +669,7 @@ class Database:
                     "target": target.value,
                     "error": error,
                     "final_path": final_path,
+                    "name": name,
                     "mark_submitted": mark_submitted,
                     "expected": [item.value for item in expected],
                 },

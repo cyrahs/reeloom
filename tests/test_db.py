@@ -335,6 +335,37 @@ async def test_progress_writes_only_on_change(database: Database) -> None:
     assert third.name == "Show"
 
 
+async def test_transition_fills_name_only_when_unknown(
+    database: Database,
+) -> None:
+    """A task finished on its first poll skips the progress writer; the
+    move's transition is what names the history row, and never renames."""
+
+    from reeloom.models import DownloadState
+
+    created = await database.create_magnet_download(
+        magnet=DL_MAGNET, info_hash=DL_HASH, download_dir="/dl"
+    )
+    assert await database.transition_download(
+        created.id,
+        expected=[DownloadState.SUBMITTED],
+        target=DownloadState.MOVING,
+        name="Feature",
+    )
+    assert (await database.get_magnet_download(created.id)).name == "Feature"
+
+    assert await database.transition_download(
+        created.id,
+        expected=[DownloadState.MOVING],
+        target=DownloadState.COMPLETED,
+        final_path="/dl/Feature",
+        name="Other",
+    )
+    concluded = await database.get_magnet_download(created.id)
+    assert concluded.name == "Feature"
+    assert concluded.final_path == "/dl/Feature"
+
+
 async def test_transition_is_compare_and_set(database: Database) -> None:
     from reeloom.models import DownloadState
 
