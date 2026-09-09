@@ -775,3 +775,341 @@ async def test_purge_passes_are_rate_limited(
     await worker._maybe_purge()  # inside the hourly window: no pass runs
 
     assert path.exists()
+
+
+# ---- daily subtitle recheck ----------------------------------------------
+
+
+from datetime import datetime, timedelta, timezone
+
+from reeloom.server.worker import SUBTITLE_RECHECK_INTERVAL_SECONDS
+
+NOTE_MISSING = "未找到合适的字幕发布"
+
+
+def finished_anime_run(
+    config: WatchConfig,
+    run_id: str = "run-1",
+    *,
+    note: str = NOTE_MISSING,
+    settled_days_ago: float = 2.0,
+    created_days_ago: float | None = None,
+    extra: dict | None = None,
+) -> Run:
+    now = datetime.now(timezone.utc)
+    return Run(
+        id=run_id,
+        config_id=config.id,
+        folder_name=f"Show {run_id}",
+        state=RunState.DONE,
+        plan=Plan(identity=IDENTITY, moves=()),
+        result=RunResult(moved=12, subtitle_note=note),
+        extra=extra or {},
+        created_at=now - timedelta(days=created_days_ago or settled_days_ago),
+        updated_at=now - timedelta(days=settled_days_ago),
+    )
+
+
+class RecheckSubtitles:
+    """Finds ``found`` subtitles on every pass."""
+
+    def __init__(self, found: int) -> None:
+        self.found = found
+        self.calls: list[str] = []
+
+    async def acquire(self, run, config, result):
+        self.calls.append(run.id)
+        if not self.found:
+            return result
+        return replace(
+            result,
+            subtitles_acquired=result.subtitles_acquired + self.found,
+            subtitle_note="",
+        )
+
+
+def recheck_config(config: WatchConfig) -> WatchConfig:
+    return replace(config, acquire_subtitles=True)
+
+
+async def test_a_daily_recheck_finds_subtitles_and_announces_them(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    subtitles = RecheckSubtitles(found=12)
+    notifier = RecordingNotifier()
+    database, worker = build(config, subtitles=subtitles, notifier=notifier)
+    database.runs["run-1"] = finished_anime_run(config)
+
+    assert await worker._maybe_recheck_subtitles() is True
+    armed = database.runs["run-1"]
+    assert armed.state is RunState.ACQUIRING_SUBS
+    assert armed.extra["subtitle_recheck"]["pending"] is True
+
+    await drain(worker)
+
+    run = database.runs["run-1"]
+    assert subtitles.calls == ["run-1"]
+    assert run.state is RunState.DONE
+    assert run.result is not None
+    assert run.result.subtitles_acquired == 12
+    assert run.result.subtitle_note == ""
+    assert run.result.moved == 12
+    record = run.extra["subtitle_recheck"]
+    assert record["count"] == 1 and "pending" not in record
+    # Announced as a subtitle arrival, not as a second "organized" message.
+    assert [item.id for item in notifier.rechecked] == ["run-1"]
+    assert notifier.sent == []
+
+
+async def test_a_recheck_that_finds_nothing_stays_quiet(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    subtitles = RecheckSubtitles(found=0)
+    notifier = RecordingNotifier()
+    database, worker = build(config, subtitles=subtitles, notifier=notifier)
+    database.runs["run-1"] = finished_anime_run(config)
+
+    assert await worker._maybe_recheck_subtitles() is True
+    await drain(worker)
+
+    run = database.runs["run-1"]
+    assert subtitles.calls == ["run-1"]
+    assert run.state is RunState.DONE
+    assert run.result is not None and run.result.subtitle_note == NOTE_MISSING
+    assert notifier.sent == [] and notifier.rechecked == []
+    messages = [entry["message"] for entry in await database.list_logs("run-1")]
+    assert any("subtitle recheck #1" in message for message in messages)
+    assert any("found nothing" in message for message in messages)
+    # The record keeps the clock, so the next look is a day away.
+    assert run.extra["subtitle_recheck"]["count"] == 1
+
+
+async def test_a_run_is_rechecked_at_most_once_a_day(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    database, worker = build(config, subtitles=RecheckSubtitles(found=1))
+    database.runs["fresh"] = finished_anime_run(
+        config, "fresh", settled_days_ago=0.5
+    )
+    database.runs["seen"] = finished_anime_run(
+        config,
+        "seen",
+        extra={
+            "subtitle_recheck": {
+                "count": 3,
+                "last_at": time_module.time()
+                - SUBTITLE_RECHECK_INTERVAL_SECONDS / 2,
+            }
+        },
+    )
+
+    assert await worker._maybe_recheck_subtitles() is False
+    assert all(run.state is RunState.DONE for run in database.runs.values())
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["too_old", "switched_off", "nothing_missing", "acquire_off", "movie", "disabled"],
+)
+async def test_runs_outside_the_recheck_scope_are_left_alone(
+    config: WatchConfig, reason: str
+) -> None:
+    config = recheck_config(config)
+    run = finished_anime_run(config)
+    settings: dict = {}
+    if reason == "too_old":
+        run = finished_anime_run(config, created_days_ago=40.0)
+    elif reason == "switched_off":
+        settings = {"subtitle_recheck_days": 0}
+    elif reason == "nothing_missing":
+        run = finished_anime_run(config, note="")
+    elif reason == "acquire_off":
+        config = replace(config, acquire_subtitles=False)
+    elif reason == "movie":
+        config = replace(config, media_type=MediaType.MOVIE)
+    elif reason == "disabled":
+        config = replace(config, enabled=False)
+    database, worker = build(config, subtitles=RecheckSubtitles(found=1))
+    database.settings.update(settings)
+    database.runs[run.id] = run
+
+    assert await worker._maybe_recheck_subtitles() is False
+    assert database.runs[run.id].state is RunState.DONE
+
+
+async def test_rechecks_go_one_at_a_time_and_never_beside_active_work(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    subtitles = RecheckSubtitles(found=1)
+    database, worker = build(config, subtitles=subtitles)
+    database.runs["newer"] = finished_anime_run(
+        config, "newer", settled_days_ago=2.0
+    )
+    database.runs["older"] = finished_anime_run(
+        config, "older", settled_days_ago=5.0
+    )
+
+    # The run that has waited longest goes first, alone.
+    assert await worker._maybe_recheck_subtitles() is True
+    assert database.runs["older"].state is RunState.ACQUIRING_SUBS
+    assert database.runs["newer"].state is RunState.DONE
+
+    # While it is being worked on, nothing else is armed.
+    worker._last_subtitle_recheck = float("-inf")
+    assert await worker._maybe_recheck_subtitles() is False
+    assert database.runs["newer"].state is RunState.DONE
+
+    await drain(worker)
+    worker._last_subtitle_recheck = float("-inf")
+    assert await worker._maybe_recheck_subtitles() is True
+    assert database.runs["newer"].state is RunState.ACQUIRING_SUBS
+    await drain(worker)
+    assert subtitles.calls == ["older", "newer"]
+
+
+async def test_recheck_passes_are_rate_limited(config: WatchConfig) -> None:
+    config = recheck_config(config)
+    database, worker = build(config, subtitles=RecheckSubtitles(found=1))
+
+    assert await worker._maybe_recheck_subtitles() is False
+    database.runs["run-1"] = finished_anime_run(config)
+    # Inside the pass window: the new candidate waits for the next pass.
+    assert await worker._maybe_recheck_subtitles() is False
+    assert database.runs["run-1"].state is RunState.DONE
+
+
+async def test_without_a_subtitle_service_nothing_is_rechecked(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    database, worker = build(config)
+    database.runs["run-1"] = finished_anime_run(config)
+
+    assert await worker._maybe_recheck_subtitles() is False
+    assert database.runs["run-1"].state is RunState.DONE
+
+
+async def test_an_exhausted_window_warns_once_and_stops(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    subtitles = RecheckSubtitles(found=1)
+    notifier = RecordingNotifier()
+    database, worker = build(config, subtitles=subtitles, notifier=notifier)
+    database.runs["run-1"] = finished_anime_run(
+        config,
+        created_days_ago=40.0,
+        settled_days_ago=40.0,
+        extra={"subtitle_recheck": {"count": 30, "last_at": 0.0}},
+    )
+
+    assert await worker._maybe_recheck_subtitles() is False
+
+    run = database.runs["run-1"]
+    assert run.state is RunState.DONE
+    assert subtitles.calls == []
+    assert [item.id for item in notifier.given_up] == ["run-1"]
+    assert notifier.sent == [] and notifier.rechecked == []
+    record = run.extra["subtitle_recheck"]
+    assert record["given_up"] is True and record["count"] == 30
+    messages = [entry["message"] for entry in await database.list_logs("run-1")]
+    assert any("gave up after 30 attempt(s)" in message for message in messages)
+
+    # The next pass sees the mark and stays silent.
+    worker._last_subtitle_recheck = float("-inf")
+    assert await worker._maybe_recheck_subtitles() is False
+    assert len(notifier.given_up) == 1
+
+
+async def test_a_run_never_rechecked_before_expiry_gets_no_warning(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    notifier = RecordingNotifier()
+    database, worker = build(
+        config, subtitles=RecheckSubtitles(found=1), notifier=notifier
+    )
+    database.runs["run-1"] = finished_anime_run(
+        config, created_days_ago=40.0, settled_days_ago=40.0
+    )
+
+    assert await worker._maybe_recheck_subtitles() is False
+    assert notifier.given_up == []
+    assert "subtitle_recheck" not in database.runs["run-1"].extra
+
+
+async def test_a_longer_window_resumes_a_given_up_run(
+    config: WatchConfig,
+) -> None:
+    config = recheck_config(config)
+    subtitles = RecheckSubtitles(found=1)
+    database, worker = build(config, subtitles=subtitles)
+    database.settings["subtitle_recheck_days"] = 60
+    database.runs["run-1"] = finished_anime_run(
+        config,
+        created_days_ago=40.0,
+        settled_days_ago=40.0,
+        extra={
+            "subtitle_recheck": {"count": 30, "last_at": 0.0, "given_up": True}
+        },
+    )
+
+    assert await worker._maybe_recheck_subtitles() is True
+    armed = database.runs["run-1"]
+    assert armed.state is RunState.ACQUIRING_SUBS
+    assert armed.extra["subtitle_recheck"] == {
+        "count": 31,
+        "last_at": armed.extra["subtitle_recheck"]["last_at"],
+        "pending": True,
+    }
+
+
+async def test_recheck_status_reports_every_stage(config: WatchConfig) -> None:
+    from reeloom.server.worker import subtitle_recheck_status
+
+    config = recheck_config(config)
+    database = FakeDatabase([config])
+    database.runs["waiting"] = finished_anime_run(config, "waiting")
+    searching = finished_anime_run(
+        config,
+        "searching",
+        extra={"subtitle_recheck": {"count": 2, "last_at": 5.0, "pending": True}},
+    )
+    database.runs["searching"] = replace(searching, state=RunState.ACQUIRING_SUBS)
+    database.runs["given-up"] = finished_anime_run(
+        config,
+        "given-up",
+        created_days_ago=40.0,
+        settled_days_ago=40.0,
+        extra={"subtitle_recheck": {"count": 30, "last_at": 1.0, "given_up": True}},
+    )
+    # A first-pass acquisition is not a recheck, whatever its note says.
+    database.runs["first-pass"] = replace(
+        finished_anime_run(config, "first-pass"), state=RunState.ACQUIRING_SUBS
+    )
+    database.runs["satisfied"] = finished_anime_run(config, "satisfied", note="")
+
+    now = time_module.time()
+    items = {
+        item.run.id: item
+        for item in await subtitle_recheck_status(database, now=now, days=30)
+    }
+
+    assert set(items) == {"waiting", "searching", "given-up"}
+    waiting = items["waiting"]
+    assert waiting.status == "waiting" and waiting.count == 0
+    assert waiting.next_at is not None and waiting.next_at < now
+    assert items["searching"].status == "searching"
+    assert items["searching"].next_at is None
+    given_up = items["given-up"]
+    assert given_up.status == "given_up" and given_up.warned is True
+    assert given_up.deadline < now
+    payload = waiting.to_json()
+    assert payload["title"] == "Show" and payload["note"] == NOTE_MISSING
+    assert payload["config_name"] == config.name
+
+    assert await subtitle_recheck_status(database, now=now, days=0) == []

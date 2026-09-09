@@ -82,11 +82,21 @@ class FakeDatabase:
         return self.runs.get(run_id)
 
     async def list_runs(
-        self, *, states: Sequence[RunState] | None = None, limit: int = 100
+        self,
+        *,
+        states: Sequence[RunState] | None = None,
+        created_after: datetime | None = None,
+        limit: int = 100,
     ) -> list[Run]:
         runs = list(self.runs.values())
         if states:
             runs = [run for run in runs if run.state in states]
+        if created_after is not None:
+            runs = [
+                run
+                for run in runs
+                if run.created_at is not None and run.created_at >= created_after
+            ]
         return runs[:limit]
 
     async def open_folder_names(self, config_id: str) -> set[str]:
@@ -193,6 +203,7 @@ class FakeDatabase:
             "clouddrive_api_token",
             "clouddrive_secure",
             "download_stall_hours",
+            "subtitle_recheck_days",
         }
         self.settings.update(
             {key: value for key, value in values.items() if key in allowed}
@@ -335,9 +346,17 @@ class FakeDatabase:
 class RecordingNotifier:
     def __init__(self) -> None:
         self.sent: list[Run] = []
+        self.rechecked: list[Run] = []
+        self.given_up: list[Run] = []
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
         self.sent.append(run)
+
+    async def subtitles_rechecked(self, run: Run, config: WatchConfig) -> None:
+        self.rechecked.append(run)
+
+    async def subtitles_given_up(self, run: Run, config: WatchConfig) -> None:
+        self.given_up.append(run)
 
 
 class StubDownloadClients:

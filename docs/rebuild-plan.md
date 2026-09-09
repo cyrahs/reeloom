@@ -320,3 +320,15 @@ done → （修订会话得到新计划）→ reverting → executing → … �
   `trash.prune_trash` 随执行、revert 与 purge 顺手 rmdir，回收区
   清空后目录本身也消失。保留期内 revert 可整体复原；purge 后
   revert 对缺失源记 missing 跳过，与 §11.1 的降级规则一致。
+- 字幕每日复查：新番整理完成时字幕组往往还没发布，因此 DONE 且
+  `result.subtitle_note` 非空（有集数想要字幕却没拿到）的番剧 run
+  在创建后 `subtitle_recheck_days`（默认 30，0=关闭）天内每天
+  重新进入 ACQUIRING_SUBS 搜一次。worker 每 10 分钟扫一遍、每次
+  只放行一个、且没有活动 run 时才放行，不与新下载抢队列；进度记在
+  `run.extra.subtitle_recheck`（count / last_at / pending / given_up）。
+  复查没找到就安静地回到 DONE，找到才发「字幕已补全」通知，不重复
+  「整理完成」；窗口到期仍没找到且至少复查过一次的 run 发一次
+  「字幕仍未找到」警告（按 pin 设置置顶）并记 given_up，从未复查过
+  就到期的旧 run 不打扰。候选判定集中在
+  `worker.subtitle_recheck_status`，`/api/subtitle-rechecks` 与前端
+  「字幕」页复用同一份结果（searching / waiting / given_up）。

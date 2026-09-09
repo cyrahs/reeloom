@@ -134,6 +134,7 @@ async def test_every_api_route_needs_the_admin_token(client) -> None:
         ("get", "/api/downloads"),
         ("post", "/api/downloads"),
         ("get", "/api/clouddrive/dirs"),
+        ("get", "/api/subtitle-rechecks"),
     ]:
         response = await getattr(client, method)(path)
         assert response.status_code == 401, path
@@ -607,6 +608,70 @@ async def test_trash_retention_roundtrips(client) -> None:
         "/api/settings", headers=AUTH, json={"trash_retention_days": 999}
     )
     assert refused.status_code == 422
+
+
+async def test_subtitle_recheck_days_roundtrips(client) -> None:
+    response = await client.get("/api/settings", headers=AUTH)
+    assert response.json()["subtitle_recheck_days"] == 30
+
+    await client.put(
+        "/api/settings", headers=AUTH, json={"subtitle_recheck_days": 0}
+    )
+    response = await client.get("/api/settings", headers=AUTH)
+    assert response.json()["subtitle_recheck_days"] == 0
+
+    refused = await client.put(
+        "/api/settings", headers=AUTH, json={"subtitle_recheck_days": 999}
+    )
+    assert refused.status_code == 422
+
+
+async def test_subtitle_rechecks_list_the_runs_still_wanting_subtitles(
+    client, database, config
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from reeloom.models import Plan
+
+    anime = replace(config, acquire_subtitles=True)
+    database.configs[config.id] = anime
+    now = datetime.now(timezone.utc)
+    waiting = Run(
+        id="waiting",
+        config_id=config.id,
+        folder_name="[Group] Show",
+        state=RunState.DONE,
+        plan=Plan(identity=IDENTITY, moves=()),
+        result=RunResult(moved=12, subtitle_note="未找到合适的字幕发布"),
+        created_at=now - timedelta(days=2),
+        updated_at=now - timedelta(days=2),
+    )
+    database.runs[waiting.id] = waiting
+    database.runs["given-up"] = replace(
+        waiting,
+        id="given-up",
+        folder_name="[Group] Old",
+        extra={"subtitle_recheck": {"count": 30, "last_at": 1.0, "given_up": True}},
+        created_at=now - timedelta(days=40),
+        updated_at=now - timedelta(days=40),
+    )
+
+    body = (await client.get("/api/subtitle-rechecks", headers=AUTH)).json()
+
+    assert body["days"] == 30
+    assert [item["run_id"] for item in body["items"]] == ["waiting", "given-up"]
+    first = body["items"][0]
+    assert first["status"] == "waiting" and first["title"] == "Show"
+    assert first["config_name"] == config.name
+    assert first["note"] == "未找到合适的字幕发布"
+    assert first["next_at"] < body["now"]
+    assert body["items"][1]["status"] == "given_up"
+
+    await client.put(
+        "/api/settings", headers=AUTH, json={"subtitle_recheck_days": 0}
+    )
+    body = (await client.get("/api/subtitle-rechecks", headers=AUTH)).json()
+    assert body["days"] == 0 and body["items"] == []
 
 
 async def test_pin_alerts_default_on_and_roundtrip(client) -> None:

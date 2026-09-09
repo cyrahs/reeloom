@@ -13,6 +13,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -177,6 +178,9 @@ alter table settings
 
 alter table settings
     add column if not exists download_stall_hours integer not null default 24;
+
+alter table settings
+    add column if not exists subtitle_recheck_days integer not null default 30;
 """
 
 
@@ -245,6 +249,7 @@ class Database:
             "clouddrive_api_token",
             "clouddrive_secure",
             "download_stall_hours",
+            "subtitle_recheck_days",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
@@ -381,13 +386,23 @@ class Database:
         return _run(row) if row else None
 
     async def list_runs(
-        self, *, states: Sequence[RunState] | None = None, limit: int = 100
+        self,
+        *,
+        states: Sequence[RunState] | None = None,
+        created_after: datetime | None = None,
+        limit: int = 100,
     ) -> list[Run]:
         query = "select * from run"
+        clauses: list[str] = []
         params: list[Any] = []
         if states:
-            query += " where state = any(%s)"
+            clauses.append("state = any(%s)")
             params.append([state.value for state in states])
+        if created_after is not None:
+            clauses.append("created_at >= %s")
+            params.append(created_after)
+        if clauses:
+            query += " where " + " and ".join(clauses)
         query += " order by updated_at desc limit %s"
         params.append(limit)
         async with self._connection() as connection:

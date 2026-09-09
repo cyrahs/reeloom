@@ -30,6 +30,7 @@ const SETTINGS = {
   clouddrive_address: "",
   clouddrive_secure: true,
   download_stall_hours: 24,
+  subtitle_recheck_days: 30,
   tmdb_api_key_set: false,
   llm_api_key_set: false,
   telegram_bot_token_set: false,
@@ -301,6 +302,7 @@ describe("settings page", () => {
       telegram_pin_alerts: true,
       clouddrive_secure: true,
       download_stall_hours: "24",
+      subtitle_recheck_days: "30",
     });
 
     fireEvent.change(select, { target: { value: "high" } });
@@ -312,6 +314,7 @@ describe("settings page", () => {
       telegram_pin_alerts: true,
       clouddrive_secure: true,
       download_stall_hours: "24",
+      subtitle_recheck_days: "30",
     });
   });
 
@@ -349,5 +352,20 @@ describe("settings page", () => {
 
     await waitFor(() => expect(puts).toHaveLength(1));
     expect(puts[0]).toMatchObject({ trash_retention_days: "0" });
+  });
+
+  it("edits the subtitle recheck window", async () => {
+    const { puts } = mockSettingsApi();
+
+    render(<SettingsPage />);
+
+    const input = await screen.findByLabelText(/复查天数/);
+    expect(input).toHaveValue(30);
+    const form = input.closest("form")!;
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.click(within(form).getByText("保存"));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toMatchObject({ subtitle_recheck_days: "0" });
   });
 });
