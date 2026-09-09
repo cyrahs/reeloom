@@ -502,6 +502,149 @@ async def test_retrying_an_executed_run_keeps_the_recorded_summary(
     )
 
 
+# ---- rescanning before re-identification --------------------------------
+
+
+class SnapshotRecordingIdentifier(StubIdentifier):
+    """Remembers the candidate listing each identification saw."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.seen: list[tuple[str, ...]] = []
+
+    async def identify(self, run: Run, config: WatchConfig) -> Plan:
+        self.seen.append(tuple(item.relative_path for item in run.snapshot))
+        return await super().identify(run, config)
+
+
+async def test_retry_rescans_the_folder_before_reidentifying(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv", "other01.mkv")
+    identifier = SnapshotRecordingIdentifier(
+        error=NeedsAttention("agent_reported_problem", reason="two shows")
+    )
+    database, worker = build(config, identifier=identifier)
+    await drain(worker)
+    run_id = next(iter(database.runs))
+    assert database.runs[run_id].state is RunState.NEEDS_ATTENTION
+
+    # The human pulls the stray file out, then hits retry.
+    (inbound / "Show" / "other01.mkv").unlink()
+    identifier.error = None
+    await database.set_state(run_id, RunState.PENDING)
+    await drain(worker)
+
+    run = database.runs[run_id]
+    assert run.state is RunState.DONE
+    assert identifier.seen == [("ep01.mkv", "other01.mkv"), ("ep01.mkv",)]
+    assert [item.candidate_id for item in run.snapshot] == ["V1"]
+    assert (
+        run_id,
+        "folder rescanned: 1 file(s), 0 added, 1 removed",
+    ) in database.logs
+
+
+async def test_unchanged_folder_is_not_logged_as_rescanned(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    identifier = StubIdentifier(error=NeedsAttention("ambiguous_title", hits=3))
+    database, worker = build(config, identifier=identifier)
+    await drain(worker)
+    run_id = next(iter(database.runs))
+
+    identifier.error = None
+    await database.set_state(run_id, RunState.PENDING)
+    await drain(worker)
+
+    assert database.runs[run_id].state is RunState.DONE
+    assert not any(
+        stored_id == run_id and message.startswith("folder rescanned")
+        for stored_id, message in database.logs
+    )
+
+
+async def test_revising_an_executed_run_keeps_its_original_snapshot(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    # After execution the intake folder is gone; the model must still see the
+    # listing the plan was built from, not an empty (or missing) folder.
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    identifier = SnapshotRecordingIdentifier()
+    database, worker = build(config, identifier=identifier)
+    await drain(worker)
+    run_id = next(iter(database.runs))
+    assert database.runs[run_id].state is RunState.DONE
+    (inbound / "Show" / "ep01.mkv").unlink()
+    (inbound / "Show").rmdir()
+    await database.append_executed(
+        run_id,
+        ExecutedMove(
+            Move(
+                kind=MoveKind.MEDIA,
+                source_root=Root.INBOUND,
+                source_path="Show/ep01.mkv",
+                dest_root=Root.LIBRARY,
+                dest_path="Show (2024) {tmdb-1}/S01/Show S01E01.mkv",
+            ),
+            MoveOutcome.MOVED,
+        ),
+    )
+
+    # The revise endpoint re-enters IDENTIFYING directly.
+    await database.set_state(run_id, RunState.IDENTIFYING)
+    await drain(worker)
+
+    assert identifier.seen == [("ep01.mkv",), ("ep01.mkv",)]
+    assert database.runs[run_id].state is RunState.DONE
+
+
+async def test_retry_of_a_vanished_folder_parks_the_run(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv")
+    identifier = StubIdentifier(error=NeedsAttention("ambiguous_title", hits=3))
+    database, worker = build(config, identifier=identifier)
+    await drain(worker)
+    run_id = next(iter(database.runs))
+
+    (inbound / "Show" / "ep01.mkv").unlink()
+    (inbound / "Show").rmdir()
+    identifier.error = None
+    await database.set_state(run_id, RunState.PENDING)
+    await drain(worker)
+
+    run = database.runs[run_id]
+    assert run.state is RunState.NEEDS_ATTENTION
+    assert run.error == {"code": "folder_missing", "folder": "Show"}
+    assert identifier.calls == 1
+
+
+async def test_retry_of_a_folder_left_without_video_parks_the_run(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "ep01.mkv", "notes.txt")
+    identifier = StubIdentifier(error=NeedsAttention("ambiguous_title", hits=3))
+    database, worker = build(config, identifier=identifier)
+    await drain(worker)
+    run_id = next(iter(database.runs))
+
+    (inbound / "Show" / "ep01.mkv").unlink()
+    identifier.error = None
+    await database.set_state(run_id, RunState.PENDING)
+    await drain(worker)
+
+    run = database.runs[run_id]
+    assert run.state is RunState.NEEDS_ATTENTION
+    assert run.error == {"code": "no_video", "folder": "Show"}
+
+
 # ---- version replacement routing ----------------------------------------
 
 

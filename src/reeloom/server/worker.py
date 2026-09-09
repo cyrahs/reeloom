@@ -349,6 +349,8 @@ class Worker:
                 raise ReeloomError("unexpected_state", state=run.state.value)
 
     async def _identify(self, run: Run, config: WatchConfig) -> None:
+        if not run.executed_moves:
+            run = await self._refresh_snapshot(run, config)
         plan = await self._identifier.identify(run, config)
         await self._db.set_plan(run.id, plan)
         await self._db.log(
@@ -365,6 +367,44 @@ class Worker:
             if run.executed_moves
             else self._post_plan_state(config),
         )
+
+    async def _refresh_snapshot(self, run: Run, config: WatchConfig) -> Run:
+        """Re-read the intake folder before (re-)identifying.
+
+        A run's snapshot is taken when the folder settles. By the time a
+        human retries or revises a parked run they have usually changed the
+        folder — pulled out files that belong elsewhere, dropped in a missing
+        episode — and the model has to see the folder as it is now, not the
+        listing that led to the previous verdict. Only unexecuted runs are
+        rescanned: once files have moved into the library the intake folder
+        no longer describes the run, and the ledger does.
+        """
+
+        path = Path(config.inbound_root) / run.folder_name
+        try:
+            snapshot = tuple(snapshot_folder(path))
+        except ReeloomError as error:
+            raise NeedsAttention(error.code, **error.context) from error
+        if not snapshot:
+            raise NeedsAttention("folder_missing", folder=run.folder_name)
+        if not any(item.kind is FileKind.VIDEO for item in snapshot):
+            raise NeedsAttention("no_video", folder=run.folder_name)
+        if snapshot == run.snapshot:
+            return run
+        before = {item.relative_path for item in run.snapshot}
+        after = {item.relative_path for item in snapshot}
+        await self._db.set_snapshot(run.id, snapshot)
+        # The UI shows only the message, so the counts live in it.
+        await self._db.log(
+            run.id,
+            f"folder rescanned: {len(snapshot)} file(s),"
+            f" {len(after - before)} added, {len(before - after)} removed",
+            data={
+                "added": sorted(after - before),
+                "removed": sorted(before - after),
+            },
+        )
+        return replace(run, snapshot=snapshot)
 
     def _wants_compare(self, config: WatchConfig) -> bool:
         return config.replace_enabled and self._comparer is not None

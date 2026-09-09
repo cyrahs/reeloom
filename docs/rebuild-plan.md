@@ -183,7 +183,9 @@ pending → identifying → executing → acquiring_subs → done
                                                │ 用户放弃 → discarded（文件夹入 fail）
 
 done → （修订会话得到新计划）→ reverting → executing → … → done
-任何未捕获错误 → failed（可从 UI 重试，即重置为 pending 重扫）
+任何未捕获错误 → failed（可从 UI 重试，即重置为 pending 重扫：未执行过
+移动的 run 进入识别前会重新快照文件夹，用户在重试前整理过的文件以
+当前清单为准；已执行过的 run 文件已不在收件夹，沿用原快照）
 ```
 
 崩溃恢复 = 幂等重放，没有 journal：
