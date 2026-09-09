@@ -16,7 +16,7 @@ from reeloom.models import (
     WatchConfig,
 )
 from reeloom.server.composition import NotConfigured
-from reeloom.server.notify import TelegramNotifier, render
+from reeloom.server.notify import RECHECK_HEADLINE, TelegramNotifier, render
 
 from tests.fakes import FakeTmdb
 
@@ -523,3 +523,74 @@ async def test_download_alert_honors_the_pin_switch() -> None:
 async def test_download_alert_is_silent_without_credentials() -> None:
     notifier = TelegramNotifier(StubClients(None))
     await notifier.download_trouble(make_download())  # must not raise
+
+
+# ---- daily subtitle recheck ----------------------------------------------
+
+
+def test_a_recheck_headline_replaces_the_state_line(config: WatchConfig) -> None:
+    run = make_run(
+        plan=Plan(identity=IDENTITY, moves=()),
+        result=RunResult(moved=12, subtitles_acquired=12),
+    )
+
+    text = render(run, config, headline=RECHECK_HEADLINE)
+
+    assert text.splitlines()[:2] == ["REELOOM · anime", "💬 字幕已补全"]
+    assert "下载字幕 12" in text
+
+
+async def test_a_recheck_notification_carries_the_headline_and_is_not_pinned(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=recording_transport(seen)
+    )
+    run = make_run(
+        plan=Plan(identity=IDENTITY, moves=()),
+        result=RunResult(moved=12, subtitles_acquired=12),
+    )
+
+    await notifier.subtitles_rechecked(run, config)
+
+    assert methods(seen) == ["sendMessage"]
+    fields = parse_qs(seen[0].content.decode())
+    assert "💬 字幕已补全" in fields["text"][0]
+    assert "✅ 整理完成" not in fields["text"][0]
+
+
+async def test_a_give_up_warning_explains_and_is_pinned(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)), transport=recording_transport(seen)
+    )
+    run = make_run(
+        plan=Plan(identity=IDENTITY, moves=()),
+        result=RunResult(moved=12, subtitle_note="未找到合适的字幕发布"),
+        extra={"subtitle_recheck": {"count": 30, "given_up": True}},
+    )
+
+    await notifier.subtitles_given_up(run, config)
+
+    assert methods(seen) == ["sendMessage", "pinChatMessage"]
+    text = parse_qs(seen[0].content.decode())["text"][0]
+    assert text.splitlines()[1] == "⚠️ 字幕仍未找到"
+    assert "字幕：未找到合适的字幕发布" in text
+    assert "已每日复查 30 次" in text
+
+
+async def test_a_give_up_warning_honors_the_pin_switch(
+    config: WatchConfig,
+) -> None:
+    seen: list[httpx.Request] = []
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT), pin_alerts=False),
+        transport=recording_transport(seen),
+    )
+
+    await notifier.subtitles_given_up(make_run(), config)
+
+    assert methods(seen) == ["sendMessage"]

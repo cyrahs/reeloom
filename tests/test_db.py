@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import pytest
 import pytest_asyncio
@@ -202,6 +203,24 @@ async def test_next_active_run_ignores_terminal_runs(
 
     await database.set_state(run.id, RunState.DONE)
     assert await database.next_active_run() is None
+
+
+async def test_list_runs_can_be_limited_to_recent_creations(
+    database: Database, watch: WatchConfig
+) -> None:
+    run = await database.create_run(
+        config_id=watch.id, folder_name="Show", snapshot=SNAPSHOT
+    )
+    assert run is not None and run.created_at is not None
+
+    recent = await database.list_runs(
+        states=[RunState.PENDING], created_after=run.created_at
+    )
+    assert [item.id for item in recent] == [run.id]
+    later = await database.list_runs(
+        created_after=run.created_at + timedelta(seconds=1)
+    )
+    assert later == []
 
 
 async def test_next_active_run_picks_up_a_discarding_run(

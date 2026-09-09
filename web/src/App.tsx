@@ -12,6 +12,7 @@ import { DownloadsPage } from "./pages/Downloads";
 import { RunDetailPage } from "./pages/RunDetail";
 import { RunsPage } from "./pages/Runs";
 import { SettingsPage } from "./pages/Settings";
+import { SubtitlesPage } from "./pages/Subtitles";
 import { Link, useRoute } from "./router";
 
 // Old bookmarks and previously shared links use "#/…" hash routes.
@@ -123,6 +124,12 @@ export function App() {
               下载
             </Link>
             <Link
+              to="/subtitles"
+              className={route === "/subtitles" ? "active" : ""}
+            >
+              字幕
+            </Link>
+            <Link
               to="/settings"
               className={route === "/settings" ? "active" : ""}
             >
@@ -147,6 +154,8 @@ export function App() {
           <SettingsPage />
         ) : route === "/downloads" ? (
           <DownloadsPage />
+        ) : route === "/subtitles" ? (
+          <SubtitlesPage />
         ) : (
           <RunsPage />
         )}

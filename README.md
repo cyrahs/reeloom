@@ -28,7 +28,12 @@ watch root                          media library
 3. **Execute.** Automatically, straight away. Files are renamed into the
    library; anything left over goes to the watch root's `archive` bucket.
 4. **Subtitles.** For anime watches with the option on, episodes still missing
-   a Chinese subtitle get one from ACG.RIP.
+   a Chinese subtitle get one from ACG.RIP. A freshly aired show often has no
+   release yet, so a finished job still short of subtitles is searched again
+   once a day for a configurable window (30 days by default, 0 turns it off).
+   You hear about it when subtitles land, or once as a warning when the
+   window closes without a find; the 字幕 page lists what is still being
+   searched and what gave up.
 5. **Notify.** One Telegram message per finished job.
 
 ### Magnet downloads (optional)

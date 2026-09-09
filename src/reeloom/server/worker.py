@@ -46,6 +46,13 @@ _LOGGER = logging.getLogger(__name__)
 
 PURGE_INTERVAL_SECONDS = 3600
 DEFAULT_TRASH_RETENTION_DAYS = 3
+# A subtitle release for a freshly aired show tends to appear days or weeks
+# after the video, so a finished run still short of subtitles is searched
+# again once a day. The pass itself runs more often and arms at most one run
+# each time, which spreads the forum and model traffic over the day.
+SUBTITLE_RECHECK_PASS_SECONDS = 600
+SUBTITLE_RECHECK_INTERVAL_SECONDS = 86400
+DEFAULT_SUBTITLE_RECHECK_DAYS = 30
 
 
 class NeedsAttention(ReeloomError):
@@ -114,6 +121,12 @@ class SubtitleService(Protocol):
 class Notifier(Protocol):
     async def run_settled(self, run: Run, config: WatchConfig) -> None: ...
 
+    async def subtitles_rechecked(self, run: Run, config: WatchConfig) -> None:
+        """A daily recheck found subtitles for an already finished run."""
+
+    async def subtitles_given_up(self, run: Run, config: WatchConfig) -> None:
+        """The recheck window closed and the run still lacks subtitles."""
+
 
 class DownloadPoller(Protocol):
     async def poll(self) -> None: ...
@@ -146,6 +159,7 @@ class Worker:
         self._intake: list[IntakeFolder] = []
         self._last_purge = float("-inf")
         self._last_download_poll = float("-inf")
+        self._last_subtitle_recheck = float("-inf")
 
     def wake(self) -> None:
         """Ask the loop to run a step now instead of waiting for the timer."""
@@ -167,6 +181,7 @@ class Worker:
                 progressed = False
             await self._maybe_purge()
             await self._maybe_poll_downloads()
+            progressed |= await self._maybe_recheck_subtitles()
             if progressed:
                 continue
             try:
@@ -463,15 +478,14 @@ class Worker:
             await self._settle(run, config)
 
     def _should_acquire(self, config: WatchConfig) -> bool:
-        return (
-            config.acquire_subtitles
-            and self._subtitles is not None
-            and config.media_type is MediaType.ANIME
-        )
+        return self._subtitles is not None and wants_subtitles(config)
 
     async def _acquire(self, run: Run, config: WatchConfig) -> None:
         assert self._subtitles is not None
         result = run.result or RunResult()
+        recheck = dict(run.extra.get("subtitle_recheck") or {})
+        rechecking = bool(recheck.pop("pending", False))
+        acquired_before = result.subtitles_acquired
         try:
             result = await self._subtitles.acquire(run, config, result)
         except Exception as error:
@@ -485,7 +499,24 @@ class Worker:
             # leave the full error to the log lines above.
             result = replace(result, subtitle_note=f"失败：{str(error)[:120]}")
         await self._db.set_result(run.id, result)
-        await self._settle(run, config)
+        if not rechecking:
+            await self._settle(run, config)
+            return
+        # A recheck that found nothing settles quietly: the run already had
+        # its notification, and a daily "still nothing" would only be noise.
+        await self._db.set_extra(
+            run.id, {**run.extra, "subtitle_recheck": recheck}
+        )
+        found = result.subtitles_acquired - acquired_before
+        if found > 0:
+            await self._db.log(
+                run.id, f"subtitle recheck published {found} file(s)"
+            )
+        else:
+            await self._db.log(
+                run.id, f"subtitle recheck found nothing: {result.subtitle_note}"
+            )
+        await self._settle(run, config, notify="rechecked" if found > 0 else None)
 
     async def _revert(self, run: Run, config: WatchConfig) -> None:
         await self._executor.revert(run, config)
@@ -507,11 +538,105 @@ class Worker:
         await self._notify(run.id, config)
         await self._purge_after_settle(run, config)
 
-    async def _settle(self, run: Run, config: WatchConfig) -> None:
+    async def _settle(
+        self,
+        run: Run,
+        config: WatchConfig,
+        *,
+        notify: str | None = "settled",
+    ) -> None:
         await self._db.set_state(run.id, RunState.DONE)
         await self._db.log(run.id, "done")
-        await self._notify(run.id, config)
+        if notify is not None:
+            await self._notify(run.id, config, kind=notify)
         await self._purge_after_settle(run, config)
+
+    # ---- daily subtitle recheck -----------------------------------------
+
+    async def _maybe_recheck_subtitles(self) -> bool:
+        """Send one finished run still short of subtitles back through
+        acquisition, at most once per pass, and warn about the ones whose
+        window ran out. True if a run was armed."""
+
+        if self._subtitles is None:
+            return False
+        now = time.monotonic()
+        if now - self._last_subtitle_recheck < SUBTITLE_RECHECK_PASS_SECONDS:
+            return False
+        self._last_subtitle_recheck = now
+        try:
+            return await self._recheck_pass()
+        except Exception:
+            _LOGGER.exception("subtitle recheck failed")
+            return False
+
+    async def _recheck_pass(self) -> bool:
+        settings = await self._db.get_settings()
+        days = int(
+            settings.get("subtitle_recheck_days", DEFAULT_SUBTITLE_RECHECK_DAYS)
+            or 0
+        )
+        if days <= 0:
+            return False
+        now = time.time()
+        items = await subtitle_recheck_status(self._db, now=now, days=days)
+        for item in items:
+            if item.status == RECHECK_GIVEN_UP and not item.warned:
+                await self._give_up_on_subtitles(item)
+        if await self._db.next_active_run() is not None:
+            # Never queue behind, or ahead of, a fresh download.
+            return False
+        due = [
+            item
+            for item in items
+            if item.status == RECHECK_WAITING
+            and item.next_at is not None
+            and item.next_at <= now
+        ]
+        if not due:
+            return False
+        item = min(due, key=lambda item: item.next_at or 0.0)
+        run = item.run
+        count = item.count + 1
+        await self._db.set_extra(
+            run.id,
+            {
+                **run.extra,
+                "subtitle_recheck": {
+                    "count": count,
+                    "last_at": now,
+                    "pending": True,
+                },
+            },
+        )
+        await self._db.log(
+            run.id,
+            f"subtitle recheck #{count}: searching again",
+            data={"note": run.result.subtitle_note if run.result else ""},
+        )
+        await self._db.set_state(run.id, RunState.ACQUIRING_SUBS)
+        _LOGGER.info("subtitle recheck #%d armed run=%s", count, run.id)
+        return True
+
+    async def _give_up_on_subtitles(self, item: SubtitleRecheck) -> None:
+        """The window closed with subtitles still missing: say so once."""
+
+        run = item.run
+        record = dict(run.extra.get("subtitle_recheck") or {})
+        record["given_up"] = True
+        await self._db.set_extra(
+            run.id, {**run.extra, "subtitle_recheck": record}
+        )
+        note = run.result.subtitle_note if run.result else ""
+        await self._db.log(
+            run.id,
+            f"subtitle recheck gave up after {item.count} attempt(s): {note}",
+            level="warning",
+        )
+        _LOGGER.warning(
+            "subtitle recheck gave up run=%s attempts=%d", run.id, item.count
+        )
+        await self._notify(run.id, item.config, kind="given_up")
 
     # ---- magnet download tracking --------------------------------------
 
@@ -615,13 +740,140 @@ class Worker:
             roots.setdefault(config.inbound_root, Path(config.inbound_root))
         return list(roots.values())
 
-    async def _notify(self, run_id: str, config: WatchConfig) -> None:
+    async def _notify(
+        self, run_id: str, config: WatchConfig, *, kind: str = "settled"
+    ) -> None:
         if self._notifier is None or not config.notify:
             return
         run = await self._db.get_run(run_id)
         if run is None:
             return
         try:
-            await self._notifier.run_settled(run, config)
+            if kind == "rechecked":
+                await self._notifier.subtitles_rechecked(run, config)
+            elif kind == "given_up":
+                await self._notifier.subtitles_given_up(run, config)
+            else:
+                await self._notifier.run_settled(run, config)
         except Exception:
             _LOGGER.warning("notification failed run=%s", run_id, exc_info=True)
+
+
+# ---- daily subtitle recheck: shared status ---------------------------------
+
+RECHECK_WAITING = "waiting"
+RECHECK_SEARCHING = "searching"
+RECHECK_GIVEN_UP = "given_up"
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleRecheck:
+    """One finished run that still wants subtitles, and where its daily
+    search stands. ``waiting`` runs are searched again at ``next_at``,
+    ``searching`` ones are in acquisition right now, and ``given_up`` ones
+    ran out their window (``warned`` once the notification went out)."""
+
+    run: Run
+    config: WatchConfig
+    status: str
+    count: int
+    last_at: float | None
+    next_at: float | None
+    deadline: float
+    warned: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        plan = self.run.plan
+        result = self.run.result
+        assert plan is not None and result is not None
+        return {
+            "run_id": self.run.id,
+            "config_name": self.config.name,
+            "folder_name": self.run.folder_name,
+            "title": plan.identity.title,
+            "year": plan.identity.year,
+            "tmdb_id": plan.identity.tmdb_id,
+            "status": self.status,
+            "count": self.count,
+            "last_at": self.last_at,
+            "next_at": self.next_at,
+            "deadline": self.deadline,
+            "note": result.subtitle_note,
+            "created_at": (
+                self.run.created_at.isoformat() if self.run.created_at else None
+            ),
+        }
+
+
+def wants_subtitles(config: WatchConfig) -> bool:
+    return config.acquire_subtitles and config.media_type is MediaType.ANIME
+
+
+async def subtitle_recheck_status(
+    database: Database, *, now: float, days: int
+) -> list[SubtitleRecheck]:
+    """Every run the daily subtitle search still cares about.
+
+    A run qualifies when it finished with a non-empty subtitle note (some
+    episode wanted a subtitle and did not get one) on an enabled anime watch
+    with acquisition on. Runs whose window closed before they were ever
+    rechecked are left out: there is nothing to report about them.
+    """
+
+    if days <= 0:
+        return []
+    window_start = now - days * 86400
+    configs: dict[str, WatchConfig | None] = {}
+    items: list[SubtitleRecheck] = []
+    runs = await database.list_runs(
+        states=[RunState.DONE, RunState.ACQUIRING_SUBS], limit=500
+    )
+    for run in runs:
+        if run.plan is None or run.result is None:
+            continue
+        if not run.result.subtitle_note:
+            # Empty note: nothing was wanted, or everything was found.
+            continue
+        record = run.extra.get("subtitle_recheck") or {}
+        pending = bool(record.get("pending"))
+        if run.state is RunState.ACQUIRING_SUBS and not pending:
+            # The run's own first acquisition, not a recheck.
+            continue
+        count = int(record.get("count", 0))
+        created = run.created_at.timestamp() if run.created_at else 0.0
+        expired = created < window_start
+        if expired and count == 0:
+            continue
+        if run.config_id not in configs:
+            configs[run.config_id] = await database.get_config(run.config_id)
+        config = configs[run.config_id]
+        if config is None or not config.enabled or not wants_subtitles(config):
+            continue
+        last = record.get("last_at")
+        last_at = float(last) if isinstance(last, (int, float)) else None
+        if pending:
+            status, next_at = RECHECK_SEARCHING, None
+        elif expired:
+            status, next_at = RECHECK_GIVEN_UP, None
+        else:
+            status = RECHECK_WAITING
+            baseline = last_at if last_at is not None else _settled_at(run)
+            next_at = baseline + SUBTITLE_RECHECK_INTERVAL_SECONDS
+        items.append(
+            SubtitleRecheck(
+                run=run,
+                config=config,
+                status=status,
+                count=count,
+                last_at=last_at,
+                next_at=next_at,
+                deadline=created + days * 86400,
+                warned=bool(record.get("given_up")),
+            )
+        )
+    return items
+
+
+def _settled_at(run: Run) -> float:
+    stamp = run.updated_at or run.created_at
+    return stamp.timestamp() if stamp is not None else 0.0

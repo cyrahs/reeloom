@@ -168,6 +168,8 @@ export interface Settings {
   clouddrive_address: string;
   clouddrive_secure: boolean;
   download_stall_hours: number;
+  /** Days after a run during which missing anime subtitles are searched for again daily; 0 turns it off. */
+  subtitle_recheck_days: number;
   tmdb_api_key_set: boolean;
   llm_api_key_set: boolean;
   telegram_bot_token_set: boolean;
@@ -207,6 +209,36 @@ export interface DownloadsReport {
   downloads: MagnetDownload[];
   /** Recently used download directories, most recent first. */
   dirs: string[];
+}
+
+export type SubtitleRecheckStatus = "waiting" | "searching" | "given_up";
+
+export interface SubtitleRecheck {
+  run_id: string;
+  config_name: string;
+  folder_name: string;
+  title: string;
+  year: number;
+  tmdb_id: number;
+  status: SubtitleRecheckStatus;
+  /** Daily searches made so far. */
+  count: number;
+  /** Unix seconds of the last daily search; null before the first. */
+  last_at: number | null;
+  /** Unix seconds of the next daily search; null unless waiting. */
+  next_at: number | null;
+  /** Unix seconds when the recheck window closes. */
+  deadline: number;
+  note: string;
+  created_at: string | null;
+}
+
+export interface SubtitleRecheckReport {
+  /** Server clock at response time. */
+  now: number;
+  /** The configured window; 0 means the feature is off. */
+  days: number;
+  items: SubtitleRecheck[];
 }
 
 export function getToken(): string {
@@ -312,6 +344,8 @@ export const api = {
   listCloudDirs: (path: string) =>
     request<DirListing>(`/clouddrive/dirs?path=${encodeURIComponent(path)}`),
 
+  listSubtitleRechecks: () =>
+    request<SubtitleRecheckReport>("/subtitle-rechecks"),
   listDownloads: () => request<DownloadsReport>("/downloads"),
   addDownload: (magnet: string, directory: string) =>
     post<MagnetDownload>("/downloads", { magnet, directory }),
