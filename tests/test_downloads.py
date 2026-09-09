@@ -254,6 +254,9 @@ async def test_finished_folder_is_moved_out_and_completed(
     current = database.downloads[download.id]
     assert current.state is DownloadState.COMPLETED
     assert current.final_path == "/dl/Show S01"
+    # Finished on the first poll: the progress writer never ran, so the
+    # move is what records the task name for the history row.
+    assert current.name == "Show S01"
     assert (tmp_path / "dl/Show S01/ep01.mkv").is_file()
     assert not (tmp_path / "dl/in_progress/Show S01").exists()
     assert not notifier.alerts  # completion is the archive flow's story

@@ -27,8 +27,24 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+function magnetDisplayName(magnet: string): string | null {
+  const query = magnet.indexOf("?");
+  if (query < 0) return null;
+  try {
+    return new URLSearchParams(magnet.slice(query + 1)).get("dn")?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best available name: CloudDrive's task name, else the landed folder,
+ * else the magnet's own ``dn`` hint, else the raw link truncated. */
 function label(download: MagnetDownload): string {
   if (download.name) return download.name;
+  const landed = download.final_path?.split("/").filter(Boolean).at(-1);
+  if (landed) return landed;
+  const hinted = magnetDisplayName(download.magnet);
+  if (hinted) return hinted;
   const magnet = download.magnet;
   return magnet.length > 60 ? `${magnet.slice(0, 60)}…` : magnet;
 }

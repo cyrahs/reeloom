@@ -338,15 +338,20 @@ class DownloadService:
         timeout turns the row into failed.
         """
 
+        task_name = (str(task["name"]) or None) if task else None
         if download.state is not DownloadState.MOVING:
+            # The task name rides along here: a task already finished on
+            # its first poll never hits the progress writer, and the task
+            # record is gone once the move concludes.
             if not await self._db.transition_download(
                 download.id,
                 expected=list(_PRE_MOVE_STATES),
                 target=DownloadState.MOVING,
+                name=task_name,
             ):
                 return  # concluded concurrently by the API
 
-        name = download.name or (str(task["name"]) if task else None)
+        name = download.name or task_name
         if not name:
             return  # no name to move by yet; the next poll will carry one
         try:
@@ -416,6 +421,7 @@ class DownloadService:
                 expected=[DownloadState.MOVING],
                 target=DownloadState.MOVING,
                 final_path=planned_final,
+                name=name,
             )
         source_path = posixpath.join(in_progress, name)
         if source["is_directory"]:
