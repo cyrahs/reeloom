@@ -15,6 +15,7 @@ from typing import Any, Protocol
 import httpx
 
 from reeloom.models import ReeloomError
+from reeloom.redact import redact
 
 _MAX_RESPONSE_BYTES = 1024 * 1024
 
@@ -150,10 +151,11 @@ class OpenAICompatibleModel:
             raise ModelError("model_unreachable") from error
 
         if response.status_code >= 400:
+            # Some providers echo the rejected key back in the error body.
             raise ModelError(
                 "model_error",
                 status=response.status_code,
-                detail=response.text[:400],
+                detail=redact(response.text[:400], self.__api_key),
             )
         if len(response.content) > _MAX_RESPONSE_BYTES:
             raise ModelError("model_response_too_large")

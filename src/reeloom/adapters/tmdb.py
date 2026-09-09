@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from reeloom.models import ReeloomError
+from reeloom.redact import describe
 
 _ORIGIN = "https://api.themoviedb.org/3"
 _LANGUAGE = "zh-CN"
@@ -86,9 +87,14 @@ class TmdbClient:
                 path, params={**params, "api_key": self.__api_key}
             )
         except httpx.TimeoutException as error:
-            raise TmdbError("tmdb_timeout", path=path) from error
+            raise TmdbError(
+                "tmdb_timeout", path=path, detail=describe(error, self.__api_key)
+            ) from error
         except httpx.TransportError as error:
-            raise TmdbError("tmdb_unreachable", path=path) from error
+            # httpx may quote the request URL, key included, in its message.
+            raise TmdbError(
+                "tmdb_unreachable", path=path, detail=describe(error, self.__api_key)
+            ) from error
 
         if response.status_code == 404:
             raise TmdbError("tmdb_not_found", path=path)
