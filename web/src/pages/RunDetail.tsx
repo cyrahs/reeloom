@@ -653,6 +653,11 @@ export function RunDetailPage({ runId }: { runId: string }) {
         <div className="actions">
           <button
             disabled={busy || active}
+            title={
+              run.executed_moves.length > 0
+                ? "从已完成的记录继续执行"
+                : "重新扫描文件夹并重新识别"
+            }
             onClick={() => act("retry", () => api.retry(runId))}
           >
             重试
