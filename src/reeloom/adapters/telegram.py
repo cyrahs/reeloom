@@ -12,6 +12,7 @@ import re
 import httpx
 
 from reeloom.models import ReeloomError
+from reeloom.redact import describe
 
 _ORIGIN = "https://api.telegram.org"
 _TOKEN = re.compile(r"^[0-9]{5,20}:[A-Za-z0-9_-]{20,128}$")
@@ -116,7 +117,10 @@ class TelegramClient:
                 f"/bot{self.__token}/{method}", data=data
             )
         except httpx.HTTPError as error:
-            _LOGGER.warning("telegram send failed: %s", type(error).__name__)
+            # The bot token sits in the URL path; never log the raw message.
+            _LOGGER.warning(
+                "telegram send failed: %s", describe(error, self.__token)
+            )
             return None
         if response.status_code != 200:
             _LOGGER.warning(
