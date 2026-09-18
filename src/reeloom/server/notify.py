@@ -37,14 +37,25 @@ _HEADLINE = {
 # States that need a human: their notification is pinned so it stays visible
 # until someone deals with it.
 _PIN_STATES = frozenset({RunState.NEEDS_ATTENTION, RunState.FAILED})
+# A daily recheck that finally found subtitles for an already finished run.
+RECHECK_HEADLINE = "💬 字幕已补全"
+# The recheck window closed and the run still lacks subtitles.
+GIVE_UP_HEADLINE = "⚠️ 字幕仍未找到"
 
 
-def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
+def render(
+    run: Run,
+    config: WatchConfig,
+    public_url: str = "",
+    *,
+    headline: str | None = None,
+    trailer: str = "",
+) -> str:
     """Telegram HTML. Every interpolated value is untrusted and escaped."""
 
     lines = [
         f"{_BRAND} · {_text(config.name)}",
-        _HEADLINE.get(run.state, run.state.value),
+        headline or _HEADLINE.get(run.state, run.state.value),
     ]
     if run.plan:
         identity = run.plan.identity
@@ -82,7 +93,18 @@ def render(run: Run, config: WatchConfig, public_url: str = "") -> str:
             )
             lines.append(f"原因：{_text(code)}{f' — {detail}' if detail else ''}")
 
+    if trailer:
+        lines.append(_text(trailer))
     return "\n".join(lines)
+
+
+def give_up_trailer(run: Run) -> str:
+    record = run.extra.get("subtitle_recheck") or {}
+    count = int(record.get("count", 0) or 0)
+    return (
+        f"已每日复查 {count} 次仍未找到，已停止自动搜索；"
+        "可延长设置中的复查天数或手动放入字幕"
+    )
 
 
 _DOWNLOAD_HEADLINE = {
@@ -170,10 +192,41 @@ class TelegramNotifier:
         self._transport = transport
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
+        await self._send_run(run, config, pin=await self._should_pin(run))
+
+    async def subtitles_rechecked(self, run: Run, config: WatchConfig) -> None:
+        """The run was reported when it finished; this only says that the
+        subtitles it lacked have now arrived. Never pinned."""
+
+        await self._send_run(run, config, headline=RECHECK_HEADLINE, pin=False)
+
+    async def subtitles_given_up(self, run: Run, config: WatchConfig) -> None:
+        """A warning that wants a human: pinned like other attention states
+        when pinning is on."""
+
+        await self._send_run(
+            run,
+            config,
+            headline=GIVE_UP_HEADLINE,
+            trailer=give_up_trailer(run),
+            pin=await self._pin_enabled(),
+        )
+
+    async def _send_run(
+        self,
+        run: Run,
+        config: WatchConfig,
+        *,
+        headline: str | None = None,
+        trailer: str = "",
+        pin: bool,
+    ) -> None:
         client = await self._client()
         if client is None:
             return
-        text = render(run, config, self._public_url)
+        text = render(
+            run, config, self._public_url, headline=headline, trailer=trailer
+        )
         poster = await self._poster(run)
         try:
             message_id = None
@@ -183,7 +236,7 @@ class TelegramNotifier:
                 message_id = await client.send(text)
             if message_id is None:
                 _LOGGER.info("notification dropped for run=%s", run.id)
-            elif message_id and await self._should_pin(run):
+            elif message_id and pin:
                 await client.pin(message_id)
         finally:
             await client.aclose()

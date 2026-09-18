@@ -14,6 +14,7 @@ from reeloom.config import Settings
 from reeloom.db import Database
 from reeloom.executor import FilesystemExecutor
 from reeloom.agent.identify import AgentIdentifier
+from reeloom.redact import RedactingFormatter
 from reeloom.server.api import create_app
 from reeloom.server.composition import Answerer, Clients
 from reeloom.server.worker import Worker
@@ -21,6 +22,24 @@ from reeloom.server.worker import Worker
 _LOGGER = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+def configure_logging() -> None:
+    """Root at INFO through a redacting formatter; HTTP client chatter off.
+
+    httpx logs every request URL at INFO, which would print the TMDB key
+    (query string) and the Telegram bot token (path) into pod logs. Those
+    loggers are held at WARNING so the request lines never exist, and the
+    formatter scrubs the same shapes out of everything else — a chained
+    httpx cause inside a traceback, for one.
+    """
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(RedactingFormatter(LOG_FORMAT))
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def build_subtitles(database: Database, clients: Clients, settings: Settings):
@@ -75,10 +94,7 @@ def build(settings: Settings, database: Database):
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging()
     settings = Settings.from_env()
     settings.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -104,6 +120,9 @@ def main() -> None:
                     host=settings.host,
                     port=settings.port,
                     log_level="info",
+                    # No uvicorn-private handlers: its records propagate to
+                    # the redacting root handler like everything else.
+                    log_config=None,
                     access_log=False,
                 )
             )

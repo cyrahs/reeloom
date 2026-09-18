@@ -460,6 +460,7 @@ function Credentials({
     trash_retention_days: String(settings.trash_retention_days),
     clouddrive_address: settings.clouddrive_address,
     download_stall_hours: String(settings.download_stall_hours),
+    subtitle_recheck_days: String(settings.subtitle_recheck_days),
   });
   const [pinAlerts, setPinAlerts] = useState(settings.telegram_pin_alerts);
   const [cloudSecure, setCloudSecure] = useState(settings.clouddrive_secure);
@@ -584,6 +585,7 @@ function Credentials({
             trash_retention_days: form.trash_retention_days,
             clouddrive_address: form.clouddrive_address,
             download_stall_hours: form.download_stall_hours,
+            subtitle_recheck_days: form.subtitle_recheck_days,
           });
           setSaved(true);
           onSaved();
@@ -653,6 +655,22 @@ function Credentials({
           <span className="muted">
             被洗版替换/判定重复的文件先移回监控目录下的隐藏回收区
             .reeloom-trash，到期后自动删除；0 表示任务完成即删。
+          </span>
+        </label>
+      </div>
+      <div className="cred-group">
+        <h3>字幕复查</h3>
+        <label className="field field-wide">
+          复查天数
+          <input
+            type="number"
+            min={0}
+            max={365}
+            {...bind("subtitle_recheck_days")}
+          />
+          <span className="muted">
+            开启字幕获取的番剧整理完成后若仍缺字幕，之后每天在 ACG.RIP
+            再搜一次，直到任务创建满这么多天；找到才会通知。0 表示不复查。
           </span>
         </label>
       </div>

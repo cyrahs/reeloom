@@ -21,6 +21,13 @@ from reeloom.adapters.clouddrive import validate_api_path
 from reeloom.db import Database
 from reeloom.models import MediaType, ReeloomError, Run, RunState, SubtitleVariant
 from reeloom.models import WatchConfig as WatchConfigModel
+from reeloom.server.worker import (
+    DEFAULT_SUBTITLE_RECHECK_DAYS,
+    RECHECK_GIVEN_UP,
+    RECHECK_SEARCHING,
+    RECHECK_WAITING,
+    subtitle_recheck_status,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +85,9 @@ class SettingsInput(BaseModel):
     clouddrive_api_token: str | None = Field(default=None, max_length=500)
     clouddrive_secure: bool | None = None
     download_stall_hours: int | None = Field(default=None, ge=1, le=720)
+    # Days after a run is created during which a finished anime run still
+    # short of subtitles gets one more ACG.RIP search per day; 0 turns it off.
+    subtitle_recheck_days: int | None = Field(default=None, ge=0, le=365)
 
 
 class MessageInput(BaseModel):
@@ -366,6 +376,7 @@ def create_app(
             "clouddrive_address": stored.get("clouddrive_address", ""),
             "clouddrive_secure": bool(stored.get("clouddrive_secure", True)),
             "download_stall_hours": stored.get("download_stall_hours", 24),
+            "subtitle_recheck_days": stored.get("subtitle_recheck_days", 30),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),
             "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
@@ -431,6 +442,34 @@ def create_app(
             raise _download_error(error)
         nudge()
         return download.to_json()
+
+    # ---- daily subtitle recheck ----------------------------------------
+
+    @api.get("/subtitle-rechecks")
+    async def list_subtitle_rechecks():
+        """Finished runs the daily subtitle search still cares about: the
+        ones being searched right now, the ones waiting for their next
+        daily look, and the ones whose window closed without a find."""
+
+        settings = await database.get_settings()
+        days = int(
+            settings.get("subtitle_recheck_days", DEFAULT_SUBTITLE_RECHECK_DAYS)
+            or 0
+        )
+        now = time.time()
+        items = await subtitle_recheck_status(database, now=now, days=days)
+        order = {RECHECK_SEARCHING: 0, RECHECK_WAITING: 1, RECHECK_GIVEN_UP: 2}
+        items.sort(
+            key=lambda item: (
+                order.get(item.status, 3),
+                item.next_at if item.next_at is not None else -item.deadline,
+            )
+        )
+        return {
+            "now": now,
+            "days": days,
+            "items": [item.to_json() for item in items],
+        }
 
     @api.get("/downloads")
     async def list_downloads(limit: int = 100):
