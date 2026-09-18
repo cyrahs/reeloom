@@ -20,7 +20,9 @@ from reeloom.models import ReeloomError
 _ORIGIN = "https://api.themoviedb.org/3"
 _LANGUAGE = "zh-CN"
 _MAX_RESPONSE_BYTES = 512 * 1024
-_MAX_RESULTS = 8
+_MAX_RESULTS = 20
+"""One TMDB page; the Agent pages explicitly when the title is further down."""
+MAX_SEARCH_PAGE = 5
 _MAX_OVERVIEW = 300
 _POSTER_BASE = "https://image.tmdb.org/t/p/w780"
 _POSTER_PATH = re.compile(r"^/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg)$", re.IGNORECASE)
@@ -39,6 +41,9 @@ class TmdbHit:
     original_title: str
     year: int | None
     overview: str
+    adult: bool = False
+    date: str = ""
+    """First air date (TV) or release date (movie), ISO or empty."""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -46,7 +51,25 @@ class TmdbHit:
             "title": self.title,
             "original_title": self.original_title,
             "year": self.year,
+            "date": self.date,
+            "adult": self.adult,
             "overview": self.overview,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TmdbSearch:
+    """One page of search hits plus what it takes to ask for the next."""
+
+    hits: tuple[TmdbHit, ...]
+    page: int
+    total_pages: int
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "results": [hit.to_json() for hit in self.hits],
+            "page": self.page,
+            "total_pages": self.total_pages,
         }
 
 
@@ -107,21 +130,27 @@ class TmdbClient:
         self._cache[key] = payload
         return payload
 
-    async def search(self, query: str, *, movie: bool) -> list[TmdbHit]:
+    async def search(
+        self, query: str, *, movie: bool, page: int = 1
+    ) -> TmdbSearch:
         if not query.strip():
             raise TmdbError("empty_query")
+        if not 1 <= page <= MAX_SEARCH_PAGE:
+            raise TmdbError("invalid_page", page=page)
         path = "/search/movie" if movie else "/search/tv"
         payload = await self._get(
             path,
             query=query[:200],
             language=_LANGUAGE,
             include_adult="true",
+            page=str(page),
         )
         results = payload.get("results") or []
         hits: list[TmdbHit] = []
         for item in results[:_MAX_RESULTS]:
             if not isinstance(item, dict):
                 continue
+            date = item.get("release_date") or item.get("first_air_date")
             hits.append(
                 TmdbHit(
                     tmdb_id=int(item.get("id", 0)),
@@ -131,13 +160,20 @@ class TmdbClient:
                         or item.get("original_name")
                         or ""
                     ),
-                    year=_year(
-                        item.get("release_date") or item.get("first_air_date")
-                    ),
+                    year=_year(date),
                     overview=str(item.get("overview") or "")[:_MAX_OVERVIEW],
+                    adult=bool(item.get("adult", False)),
+                    date=_date(date),
                 )
             )
-        return [hit for hit in hits if hit.tmdb_id > 0]
+        total_pages = payload.get("total_pages")
+        if not isinstance(total_pages, int) or total_pages < 1:
+            total_pages = 1
+        return TmdbSearch(
+            hits=tuple(hit for hit in hits if hit.tmdb_id > 0),
+            page=page,
+            total_pages=min(MAX_SEARCH_PAGE, total_pages),
+        )
 
     async def get_series(self, tmdb_id: int) -> dict[str, Any]:
         payload = await self._get(f"/tv/{int(tmdb_id)}", language=_LANGUAGE)
@@ -147,6 +183,7 @@ class TmdbClient:
                 "name": str(item.get("name") or ""),
                 "episode_count": int(item.get("episode_count", 0)),
                 "air_year": _year(item.get("air_date")),
+                "air_date": _date(item.get("air_date")),
             }
             for item in payload.get("seasons") or []
             if isinstance(item, dict)
@@ -156,6 +193,9 @@ class TmdbClient:
             "title": str(payload.get("name") or ""),
             "original_title": str(payload.get("original_name") or ""),
             "year": _year(payload.get("first_air_date")),
+            "first_air_date": _date(payload.get("first_air_date")),
+            "last_air_date": _date(payload.get("last_air_date")),
+            "adult": bool(payload.get("adult", False)),
             "overview": str(payload.get("overview") or "")[:_MAX_OVERVIEW],
             "seasons": seasons,
         }
@@ -204,9 +244,15 @@ class TmdbClient:
             "title": str(payload.get("title") or ""),
             "original_title": str(payload.get("original_title") or ""),
             "year": _year(payload.get("release_date")),
+            "release_date": _date(payload.get("release_date")),
+            "adult": bool(payload.get("adult", False)),
             "runtime": payload.get("runtime"),
             "overview": str(payload.get("overview") or "")[:_MAX_OVERVIEW],
         }
+
+
+def _date(value: Any) -> str:
+    return value[:10] if isinstance(value, str) else ""
 
 
 def _year(value: Any) -> int | None:

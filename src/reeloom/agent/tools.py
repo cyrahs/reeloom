@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from reeloom.adapters.tmdb import TmdbClient
+from reeloom.adapters.tmdb import MAX_SEARCH_PAGE, TmdbClient
 from reeloom.agent.loop import Escalate, Finished
 from reeloom.library import find_existing_folder
 from reeloom.models import (
@@ -91,8 +91,18 @@ class IdentificationTools:
         schemas = [
             _tool(
                 "search_tmdb",
-                "Search TMDB by title. Returns at most 8 candidates.",
-                {"query": {"type": "string", "maxLength": 200}},
+                "Search TMDB by title. Returns one page of up to 20 candidates"
+                " with `page` and `total_pages`; when the title is not on this"
+                " page, call again with the next page. Adult titles are"
+                " included and flagged with `adult`.",
+                {
+                    "query": {"type": "string", "maxLength": 200},
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_SEARCH_PAGE,
+                    },
+                },
                 ["query"],
             ),
             lookup,
@@ -157,10 +167,21 @@ class IdentificationTools:
     async def call(self, name: str, arguments: dict[str, Any]) -> Any:
         match name:
             case "search_tmdb":
-                hits = await self._tmdb.search(
-                    _text(arguments, "query"), movie=self._movie
+                page = (
+                    1
+                    if arguments.get("page") is None
+                    else _integer(arguments, "page")
                 )
-                return {"results": [hit.to_json() for hit in hits]}
+                if not 1 <= page <= MAX_SEARCH_PAGE:
+                    raise PlanError(
+                        "invalid_argument",
+                        argument="page",
+                        expected=f"1..{MAX_SEARCH_PAGE}",
+                    )
+                found = await self._tmdb.search(
+                    _text(arguments, "query"), movie=self._movie, page=page
+                )
+                return found.to_json()
             case "get_series":
                 return await self._tmdb.get_series(_integer(arguments, "tmdb_id"))
             case "get_movie":
