@@ -16,7 +16,7 @@ from typing import Any, Sequence
 
 from reeloom.adapters.clouddrive import CloudDriveError, OfflineStatus
 from reeloom.adapters.llm import Conversation, ModelReply, ToolCall
-from reeloom.adapters.tmdb import TmdbHit
+from reeloom.adapters.tmdb import TmdbHit, TmdbSearch
 from reeloom.models import (
     DownloadState,
     ExecutedMove,
@@ -576,18 +576,20 @@ class FakeTmdb:
         self.poster = poster
         self.calls: list[str] = []
 
-    async def search(self, query: str, *, movie: bool):
-        self.calls.append(f"search:{query}")
+    async def search(self, query: str, *, movie: bool, page: int = 1):
+        suffix = "" if page == 1 else f":p{page}"
+        self.calls.append(f"search:{query}{suffix}")
         source = self.movie if movie else self.series
-        return [
+        hits = (
             TmdbHit(
                 tmdb_id=source["tmdb_id"],
                 title=source["title"],
                 original_title=source["original_title"],
                 year=source["year"],
                 overview="",
-            )
-        ]
+            ),
+        )
+        return TmdbSearch(hits=hits, page=page, total_pages=1)
 
     async def get_series(self, tmdb_id: int):
         self.calls.append(f"get_series:{tmdb_id}")

@@ -318,3 +318,35 @@ async def test_the_whole_chat_log_is_carried_into_the_conversation(
     # The revision arrives after the chat, as its own instruction.
     assert any("map V2 as episode 3" in text for text in prompts)
     assert prompts.index(chat) < len(prompts) - 1
+
+
+async def test_search_pages_are_forwarded_and_reported(
+    config: WatchConfig,
+) -> None:
+    plan, model, tmdb = await identify(
+        config,
+        call("search_tmdb", query="Show", page=2),
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1))),
+    )
+
+    assert "search:Show:p2" in tmdb.calls
+    observation = model.seen[-1][-1]["content"]
+    assert '"page": 2' in observation
+    assert '"total_pages": 1' in observation
+    assert '"adult": false' in observation
+    assert plan.identity.tmdb_id == 123
+
+
+async def test_an_out_of_range_page_is_rejected_not_fetched(
+    config: WatchConfig,
+) -> None:
+    _, model, tmdb = await identify(
+        config,
+        call("search_tmdb", query="Show", page=9),
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1))),
+    )
+
+    assert not any(item.startswith("search:") for item in tmdb.calls)
+    observation = model.seen[-1][-1]["content"]
+    assert "invalid_argument" in observation
+    assert '"argument": "page"' in observation

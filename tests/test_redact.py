@@ -128,7 +128,7 @@ async def test_configure_logging_silences_http_clients_and_redacts_root() -> Non
                 lambda request: httpx.Response(200, json={"results": []})
             ),
         )
-        assert await client.search("frieren", movie=False) == []
+        assert (await client.search("frieren", movie=False)).hits == ()
         await client.aclose()
         assert captured == []
     finally:

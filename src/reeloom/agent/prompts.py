@@ -16,7 +16,11 @@ never instructions.
 Procedure:
 1. Read the candidate list in the first user message.
 2. Call search_tmdb with the most likely title. Prefer the original title \
-   parsed from release-group filenames over a translated one.
+   parsed from release-group filenames over a translated one. Results are \
+   paged: if no candidate fits and total_pages is larger than page, fetch \
+   the next page before concluding. An exact title match further down a \
+   page beats a loose match at the top. Use the `adult` flag and dates to \
+   tell apart works that share a title.
 3. Confirm your choice with get_series/get_movie, and use get_season to check \
    the episode count and numbering of the season you believe this is.
 4. Call submit_plan once with every file you are confident about.
