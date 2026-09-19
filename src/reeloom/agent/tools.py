@@ -239,6 +239,7 @@ class IdentificationTools:
             tmdb_id=tmdb_id,
             title=details["title"],
             year=details["year"],
+            original_title=str(details.get("original_title") or ""),
         )
         existing = find_existing_folder(
             Path(self._config.library_root), identity
