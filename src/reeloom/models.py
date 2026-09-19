@@ -215,6 +215,8 @@ class MediaIdentity:
     tmdb_id: int
     title: str
     year: int
+    original_title: str = ""
+    """TMDB's original-language title; a second search term for subtitles."""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -222,6 +224,7 @@ class MediaIdentity:
             "tmdb_id": self.tmdb_id,
             "title": self.title,
             "year": self.year,
+            "original_title": self.original_title,
         }
 
     @classmethod
@@ -231,6 +234,7 @@ class MediaIdentity:
             tmdb_id=payload["tmdb_id"],
             title=payload["title"],
             year=payload["year"],
+            original_title=str(payload.get("original_title") or ""),
         )
 
 

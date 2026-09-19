@@ -46,6 +46,11 @@ _SESSION_COOKIE = re.compile(r"^[A-Za-z0-9]{1,16}_2132_(?:saltkey|lastvisit|sid|
 _CHALLENGE = ("cf-chl-widget", "challenge-form", "just a moment", "captcha", "验证码")
 _LOGIN = ("您需要先登录才能继续本操作", "请先登录")
 _WHITESPACE = re.compile(r"\s+")
+# Discuz highlights each search term in the results by wrapping it in
+# <highlight> markers; a term made of "/", "<" or ">" also matches inside the
+# markers themselves and corrupts the returned titles. Those characters are
+# term separators anyway, so they are sent as spaces.
+_HIGHLIGHT_BREAKERS = re.compile(r"[/<>]")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,13 +116,15 @@ class AcgripClient:
     async def search(self, keyword: str) -> list[Thread]:
         """Search the forum, retrying once with a relaxed query on no results.
 
-        The relaxed form collapses every punctuation run into an ASCII space,
-        which Discuz compiles as an AND between title terms. That recovers
-        titles whose stored form differs from the query only in punctuation —
-        typically full-width marks like ！ glued to a CJK title.
+        The relaxed form collapses every punctuation run into an ASCII space
+        and also splits CJK from Latin/digit runs, which Discuz compiles as
+        an AND between title terms. That recovers titles whose stored form
+        differs from the query only in punctuation or spacing — a full-width
+        ！ glued to a CJK title, or "魔王2099" posted as "魔王 2099".
         """
 
-        keyword = unicodedata.normalize("NFKC", keyword).strip()
+        keyword = _HIGHLIGHT_BREAKERS.sub(" ", unicodedata.normalize("NFKC", keyword))
+        keyword = _WHITESPACE.sub(" ", keyword).strip()
         if not keyword:
             raise AcgripError("empty_keyword")
 
@@ -277,21 +284,34 @@ _MIN_RELAXED_CHARACTERS = 2
 
 
 def _relaxed_keyword(value: str) -> str | None:
-    """Keep letter/mark/number runs, join them with the spaces Discuz ANDs."""
+    """Keep letter/mark/number runs, join them with the spaces Discuz ANDs.
+
+    A run also ends where the script changes between wide (CJK) and narrow
+    (Latin, digits) characters: Discuz matches each term as a substring of
+    the subject, so "魔王2099" cannot find a thread titled "魔王 2099", while
+    the two terms "魔王" and "2099" find both spellings.
+    """
 
     terms: list[str] = []
     current: list[str] = []
+    wide: bool | None = None
     informative = 0
     for character in value.casefold():
         category = unicodedata.category(character)[0]
         if category in "LMN":
+            is_wide = unicodedata.east_asian_width(character) in "WF"
+            if current and category != "M" and is_wide != wide:
+                terms.append("".join(current))
+                current = []
             current.append(character)
-            if category in "LN":
+            if category != "M":
+                wide = is_wide
                 informative += 1
             continue
         if current:
             terms.append("".join(current))
             current = []
+        wide = None
     if current:
         terms.append("".join(current))
     if informative < _MIN_RELAXED_CHARACTERS or not terms:

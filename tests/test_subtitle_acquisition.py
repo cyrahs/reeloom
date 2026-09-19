@@ -541,6 +541,41 @@ async def test_giving_up_leaves_the_run_finished(
     assert result.subtitle_note == "未找到合适的字幕发布"
 
 
+async def test_the_model_is_told_the_original_title(
+    config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
+) -> None:
+    """Regression (run c23ea38d): the forum indexed the release under its
+    romaji title only, and the model had nothing but the TMDB Chinese title
+    to search with."""
+
+    _, library = roots
+    make_files(library / LIBRARY_FOLDER / "S01", "Show S01E01.mkv")
+    monkeypatch.setattr(
+        "reeloom.server.subtitles.AcgripClient",
+        lambda **kwargs: FakeAcgrip(tmp_path / "absent.7z"),
+    )
+    database = FakeDatabase([config])
+    run = make_run(database, config, 1)
+    run = replace(
+        run,
+        plan=replace(
+            run.plan, identity=replace(IDENTITY, original_title="Maou 2099")
+        ),
+    )
+    database.runs[run.id] = run
+    model = ScriptedModel(call("give_up", reason="nothing"))
+    service = SubtitleAcquisition(
+        database, StubClients(model, None), tmp_path / "work", prober=FakeProber()
+    )
+
+    await service.acquire(run, config, RunResult(moved=1))
+
+    first_user = next(
+        message["content"] for message in model.seen[0] if message["role"] == "user"
+    )
+    assert "Title: Show\nOriginal title: Maou 2099\nYear: 2024" in first_user
+
+
 async def test_a_model_failure_becomes_a_short_note(
     config: WatchConfig, roots: tuple[Path, Path], tmp_path: Path, monkeypatch
 ) -> None:

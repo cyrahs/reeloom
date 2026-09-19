@@ -168,6 +168,13 @@ def test_thread_links_off_the_expected_shape_are_refused(value: str) -> None:
         ("我的百合乃工作是也!", "我的百合乃工作是也"),
         ("Watashi no Yuri wa Oshigoto Desu!", "watashi no yuri wa oshigoto desu"),
         ("[Group] Show (2024)", "group show 2024"),
+        # Regression (run c23ea38d): TMDB's "魔王2099" never found the thread
+        # titled "魔王 2099 / Maou 2099", and the relaxed retry was skipped
+        # because it changed nothing. Wide and narrow runs are now split.
+        ("魔王2099", "魔王 2099"),
+        ("BLEACH千年血战篇", "bleach 千年血战篇"),
+        ("Re:从零开始的异世界生活", "re 从零开始的异世界生活"),
+        ("葬送的芙莉莲", "葬送的芙莉莲"),
         ("!?", None),
         ("", None),
     ],
@@ -242,6 +249,54 @@ async def test_a_fullwidth_keyword_retries_relaxed_and_finds_threads() -> None:
     # NFKC folds the full-width ！ to ASCII first; the relaxed retry drops it.
     assert keywords == ["我的百合乃工作是也!", "我的百合乃工作是也"]
     assert threads
+    await client.aclose()
+
+
+async def test_a_cjk_title_glued_to_digits_retries_split() -> None:
+    keywords: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search.php" and request.method == "POST":
+            from urllib.parse import parse_qs
+
+            keywords.append(parse_qs(request.content.decode())["srchtxt"][0])
+        if (
+            request.url.path == "/search.php"
+            and request.method == "GET"
+            and "searchid" in request.url.query.decode()
+        ):
+            if keywords and keywords[-1] == "魔王 2099":
+                return httpx.Response(200, text=RESULTS)
+            return httpx.Response(200, text="对不起，没有找到匹配结果。")
+        return default_handler(request)
+
+    client = make_client(handler)
+
+    threads = await client.search("魔王2099")
+
+    assert keywords == ["魔王2099", "魔王 2099"]
+    assert threads
+    await client.aclose()
+
+
+async def test_highlight_breaking_characters_are_sent_as_spaces() -> None:
+    """Discuz wraps each term in <highlight> markers and then highlights the
+    markers themselves when a term is "/", corrupting every returned title."""
+
+    keywords: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search.php" and request.method == "POST":
+            from urllib.parse import parse_qs
+
+            keywords.append(parse_qs(request.content.decode())["srchtxt"][0])
+        return default_handler(request)
+
+    client = make_client(handler)
+
+    await client.search("魔王 2099 / Maou 2099")
+
+    assert keywords == ["魔王 2099 Maou 2099"]
     await client.aclose()
 
 

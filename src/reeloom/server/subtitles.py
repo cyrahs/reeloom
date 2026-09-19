@@ -320,7 +320,8 @@ You pick one subtitle release for an anime season from a Chinese subtitle \
 forum.
 
 Search with the title, then choose the single attachment most likely to \
-contain subtitles for the episodes listed. Prefer a single batch covering \
+contain subtitles for the episodes listed. If the title finds nothing, search \
+again with the original title when one is given. Prefer a single batch covering \
 everything requested, in {_VARIANT_LABEL[preferred]}, and a release matching \
 the same source group or resolution when that is visible. Post excerpts \
 often state the variant (简体/繁體/简繁/简日/GB/BIG5/JPSC/JPTC…) — use them \
@@ -521,10 +522,13 @@ class SubtitleAcquisition:
         specials = sorted(
             span.episode_start for span in wanted.values() if span.season == 0
         )
-        lines = [
-            f"Title: {run.plan.identity.title}",
-            f"Year: {run.plan.identity.year}",
-        ]
+        identity = run.plan.identity
+        lines = [f"Title: {identity.title}"]
+        # The forum indexes many releases under the romaji or English title
+        # only, so the model gets a second search term when TMDB has one.
+        if identity.original_title and identity.original_title != identity.title:
+            lines.append(f"Original title: {identity.original_title}")
+        lines.append(f"Year: {identity.year}")
         if season != 0:
             lines.append(f"Season: {season}")
             lines.append(f"Episodes needing subtitles: {regular}")
