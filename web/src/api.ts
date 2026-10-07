@@ -170,10 +170,13 @@ export interface Settings {
   download_stall_hours: number;
   /** Days after a run during which missing anime subtitles are searched for again daily; 0 turns it off. */
   subtitle_recheck_days: number;
+  /** CloudDrive path the qBittorrent-compatible API downloads under; "" while unset. */
+  qbittorrent_save_root: string;
   tmdb_api_key_set: boolean;
   llm_api_key_set: boolean;
   telegram_bot_token_set: boolean;
   clouddrive_api_token_set: boolean;
+  qbittorrent_password_set: boolean;
 }
 
 export type DownloadState =

@@ -461,6 +461,7 @@ function Credentials({
     clouddrive_address: settings.clouddrive_address,
     download_stall_hours: String(settings.download_stall_hours),
     subtitle_recheck_days: String(settings.subtitle_recheck_days),
+    qbittorrent_save_root: settings.qbittorrent_save_root,
   });
   const [pinAlerts, setPinAlerts] = useState(settings.telegram_pin_alerts);
   const [cloudSecure, setCloudSecure] = useState(settings.clouddrive_secure);
@@ -586,6 +587,7 @@ function Credentials({
             clouddrive_address: form.clouddrive_address,
             download_stall_hours: form.download_stall_hours,
             subtitle_recheck_days: form.subtitle_recheck_days,
+            qbittorrent_save_root: form.qbittorrent_save_root,
           });
           setSaved(true);
           onSaved();
@@ -766,6 +768,26 @@ function Credentials({
           )}
           <span className="muted">测试使用已保存的地址与 Token。</span>
         </div>
+      </div>
+      <div className="cred-group">
+        <h3>qBittorrent 兼容接口</h3>
+        <label className="field field-wide">
+          下载根目录
+          <input placeholder="/115/arr" {...bind("qbittorrent_save_root")} />
+          <span className="muted">
+            CloudDrive 路径。Radarr、Sonarr 等按 qBittorrent 接入本服务的
+            /api/v2，添加的种子作为离线任务下载到「根目录/分类」下，在下载页一并显示；
+            完成后由它们自己导入。不要设成监控目录。
+          </span>
+        </label>
+        {secretField(
+          "qbittorrent_password",
+          "密码",
+          settings.qbittorrent_password_set,
+        )}
+        <span className="muted">
+          客户端用户名任意，密码填这里的值（至少 8 位）。两项都配置后接口才开放。
+        </span>
       </div>
       <div className="form-actions">
         <button type="submit" className="primary" disabled={saving}>

@@ -49,6 +49,33 @@ a configurable timeout, 24h by default) and lost tasks raise a Telegram alert
 and wait for you; the page offers per-task retry and delete (the delete also
 removes the task and its data at CloudDrive).
 
+### Download clients: the qBittorrent-compatible API (optional)
+
+Radarr, Sonarr and Prowlarr can use the same CloudDrive downloads by adding
+Reeloom as a **qBittorrent** download client. Set a download root (a
+CloudDrive path, e.g. `/115/arr`, that is *not* a watch root) and a password
+under 设置 → qBittorrent 兼容接口; the `/api/v2` endpoints stay closed until
+both are set. In the client: host and port of Reeloom, any username, that
+password, and a category such as `radarr`.
+
+- A category is a folder under the download root; a torrent added with it
+  downloads into `<root>/<category>/in_progress` and, once finished, is moved
+  to `<root>/<category>/<name>` exactly like a 下载 page task. These tasks show
+  on the 下载 page too, with the same stall alerts, retry and delete.
+- Paths are reported as CloudDrive paths. Add a **Remote Path Mapping** in the
+  client from the CloudDrive path to where the client sees the mount (e.g.
+  `/115/` → `/mnt/cd2/115/`).
+- A finished download reports as paused with its seeding goal met, so with
+  the client's **Remove Completed** on, the import *moves* the files (a
+  cloud-side rename on the mount) instead of copying them through FUSE.
+- Removing an unfinished download drops its CloudDrive task (with data if the
+  client asks). Removing a finished one only forgets it; CloudDrive is never
+  asked to delete a finished task's data.
+- Only magnets and uploaded `.torrent` files are accepted — Reeloom never
+  fetches a URL — and private torrents are refused. Failed or stalled tasks
+  show as warnings in the client's queue; remove and blocklist them there to
+  search for another release.
+
 Nothing is ever deleted, and an existing file is never overwritten: a
 duplicate goes to the `fail` bucket and the copy already in your library
 stays. If something looks wrong afterwards, tell the Agent what to fix and hit
@@ -71,10 +98,12 @@ applies the new plan.
   `.env*` file is refused outright.
 - Outbound network access is limited to TMDB, your model provider, ACG.RIP,
   Telegram and your own CloudDrive2 server (gRPC, address configured in the
-  settings page). No shell, no arbitrary URLs, no inbound webhooks.
+  settings page). No shell, no arbitrary URLs, no inbound webhooks. The
+  qBittorrent-compatible API takes magnets and uploaded torrents only.
 - The one cloud-side deletion — dropping an offline task with its data — only
-  happens when you press 删除 on the downloads page, never on the archive
-  path.
+  happens when you press 删除 on the downloads page, or when a download client
+  removes an unfinished download through the qBittorrent-compatible API,
+  never on the archive path.
 - Inbound and library roots must be on one filesystem — moves are renames.
 
 ## Quick start

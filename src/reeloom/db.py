@@ -181,6 +181,12 @@ alter table settings
 
 alter table settings
     add column if not exists subtitle_recheck_days integer not null default 30;
+
+alter table settings
+    add column if not exists qbittorrent_password text not null default '';
+
+alter table settings
+    add column if not exists qbittorrent_save_root text not null default '';
 """
 
 
@@ -250,6 +256,8 @@ class Database:
             "clouddrive_secure",
             "download_stall_hours",
             "subtitle_recheck_days",
+            "qbittorrent_password",
+            "qbittorrent_save_root",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
@@ -696,6 +704,23 @@ class Database:
             await connection.execute(
                 "delete from magnet_download where id = %s", (download_id,)
             )
+
+    async def magnet_downloads_under(self, root: str) -> list[MagnetDownload]:
+        """Every row whose download dir is ``root`` or lies below it, oldest
+        first: the qBittorrent-compatible API's view of its own downloads."""
+
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                select * from magnet_download
+                where download_dir = %(root)s
+                   or left(download_dir, length(%(prefix)s)) = %(prefix)s
+                order by created_at
+                """,
+                {"root": root, "prefix": root.rstrip("/") + "/"},
+            )
+            rows = await cursor.fetchall()
+        return [_magnet_download(row) for row in rows]
 
     async def magnet_download_dirs(self, limit: int = 10) -> list[str]:
         """Recently used download directories, most recent first."""

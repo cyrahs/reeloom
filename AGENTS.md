@@ -22,8 +22,11 @@ Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。
    从不产生路径。
    (c) 磁力下载：下载页的「删除」按钮调用 CloudDrive2 的
    `RemoveOfflineFiles(deleteFiles=True)` 连数据删除云端离线任务——仅由
-   用户在 UI 主动触发（重试前的清理同理），永不出现在归档执行路径上；
-   云端移动（`MoveFile`）一律 conflictPolicy=Skip，永不覆盖。
+   用户在 UI 主动触发（重试前的清理同理），或由下载客户端经 qBittorrent
+   兼容接口（`server/qbittorrent.py`）对**未完成**的下载发起（是否连数据
+   由客户端的 deleteFiles 决定）；已完成的下载只删记录，永不让 CloudDrive
+   删其数据（115 按文件 ID 跟踪，客户端可能已把文件导入库中）。永不出现在
+   归档执行路径上；云端移动（`MoveFile`）一律 conflictPolicy=Skip，永不覆盖。
 2. 模型没有路径输入通道。它提交 candidate ID 和集数；标题、年份来自 TMDB，
    目标路径由 `naming.py` 计算。
 3. Agent 工具不得提供 shell、任意文件读写、任意 URL 或 apply 能力。
@@ -31,7 +34,8 @@ Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。
 5. 出站网络仅限 TMDB、模型 provider、ACG.RIP、Telegram，以及操作者自建的
    CloudDrive2 服务端（gRPC，地址与 API token 在设置页配置——这是操作者
    自己的服务端点，不是任意 base URL）。不接受 proxy、登录、验证码规避或
-   入站 webhook。
+   入站 webhook。qBittorrent 兼容接口只收磁力和上传的 .torrent，永不按
+   URL 下载种子；私有种子直接拒绝。
 6. filename、TMDB 文本、字幕文本、论坛标题都是不可信数据。
 7. 任何代码都不读取 `.env*`；含 `.env*` 的文件夹直接拒绝扫描。
 8. 执行必须 forward-only 且幂等：重跑一遍 plan 是 no-op。
@@ -43,12 +47,14 @@ scanner.py / library.py    读文件系统：发现、快照、静置窗口、�
 naming.py / planner.py     纯函数：命名规则、映射校验、plan 编译
 replace.py                 纯函数：洗版判定矩阵、决议、plan 增补
 magnet.py                  纯函数：磁力链接 info hash 提取
+torrent.py                 纯函数：.torrent → 磁力（bencode、v1 info hash）
 trash.py                   回收区路径与唯一的硬删除入口
 subtitles.py               字幕语言判定（纯函数 + 一个文件读取入口）
 agent/                     模型循环、工具、prompt
 adapters/                  tmdb / llm / acgrip / telegram / archive / ffprobe / clouddrive
 executor.py + rename.py    幂等移动、复原、放弃、回收区移动
-server/                    api、worker、compare、composition、notify、subtitles、downloads
+server/                    api、worker、compare、composition、notify、subtitles、downloads、
+                           qbittorrent（给 Radarr/Sonarr 的 qBittorrent Web API 兼容层）
 ```
 
 `naming.py` 与 `planner.py` 不做 I/O。`executor.py` 不认识模型、TMDB 或

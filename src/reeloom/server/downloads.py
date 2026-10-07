@@ -168,9 +168,13 @@ class DownloadService:
         )
         return await self._require(download_id)
 
-    async def remove(self, download_id: str) -> MagnetDownload:
-        """Drop the task at CloudDrive, downloaded data included, and close
-        the row. User-initiated only; never on the archive execution path."""
+    async def remove(
+        self, download_id: str, *, delete_files: bool = True
+    ) -> MagnetDownload:
+        """Drop the task at CloudDrive, downloaded data included unless
+        ``delete_files`` is off, and close the row. User-initiated only —
+        the 下载 page, or a download client acting through the
+        qBittorrent-compatible API — never on the archive execution path."""
 
         download = await self._require(download_id)
         if download.state is DownloadState.MOVING:
@@ -180,7 +184,9 @@ class DownloadService:
         cloud = await self._clients.clouddrive()
         try:
             await cloud.remove_offline_files(
-                [download.info_hash], download.download_dir, delete_files=True
+                [download.info_hash],
+                download.download_dir,
+                delete_files=delete_files,
             )
         except CloudDriveError as error:
             if error.code != "clouddrive_path_not_found":
