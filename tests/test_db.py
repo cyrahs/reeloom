@@ -446,3 +446,32 @@ async def test_delete_magnet_download_row(database: Database) -> None:
     )
     await database.delete_magnet_download(created.id)
     assert await database.get_magnet_download(created.id) is None
+
+
+async def test_downloads_under_a_root_match_whole_segments(
+    database: Database,
+) -> None:
+    for index, directory in enumerate(
+        ["/arr", "/arr/radarr", "/arr/radarr/deeper", "/arrival", "/other"]
+    ):
+        await database.create_magnet_download(
+            magnet=f"magnet:?xt=urn:btih:{index:040x}",
+            info_hash=f"{index:040X}",
+            download_dir=directory,
+        )
+
+    under = await database.magnet_downloads_under("/arr")
+    assert [item.download_dir for item in under] == [
+        "/arr",
+        "/arr/radarr",
+        "/arr/radarr/deeper",
+    ]
+
+
+async def test_qbittorrent_settings_round_trip(database: Database) -> None:
+    await database.update_settings(
+        {"qbittorrent_password": "secret-pass", "qbittorrent_save_root": "/arr"}
+    )
+    settings = await database.get_settings()
+    assert settings["qbittorrent_password"] == "secret-pass"
+    assert settings["qbittorrent_save_root"] == "/arr"

@@ -8,6 +8,7 @@ otherwise. Nothing here reads a dotenv file.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from reeloom.adapters.clouddrive import AsyncCloudDrive, CloudDriveClient
@@ -29,6 +30,13 @@ MAX_ANSWER_CHARS = 2000
 
 class NotConfigured(Deferred):
     """Credentials are missing; the run waits rather than failing."""
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentConfig:
+    password: str
+    save_root: str
+    """CloudDrive API path; each category is a folder directly under it."""
 
 
 class Clients:
@@ -99,6 +107,17 @@ class Clients:
     async def download_stall_hours(self) -> int:
         settings = await self._db.get_settings()
         return int(settings.get("download_stall_hours", 24) or 24)
+
+    async def qbittorrent(self) -> QbittorrentConfig | None:
+        """The qBittorrent-compatible API's password and save root, or None
+        while either is unset: the API stays closed until both exist."""
+
+        settings = await self._db.get_settings()
+        password = settings.get("qbittorrent_password", "")
+        save_root = settings.get("qbittorrent_save_root", "")
+        if not password or not save_root:
+            return None
+        return QbittorrentConfig(password=password, save_root=save_root)
 
     async def telegram(self) -> tuple[str, str] | None:
         settings = await self._db.get_settings()

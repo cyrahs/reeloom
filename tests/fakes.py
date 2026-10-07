@@ -204,6 +204,8 @@ class FakeDatabase:
             "clouddrive_secure",
             "download_stall_hours",
             "subtitle_recheck_days",
+            "qbittorrent_password",
+            "qbittorrent_save_root",
         }
         self.settings.update(
             {key: value for key, value in values.items() if key in allowed}
@@ -331,6 +333,17 @@ class FakeDatabase:
     async def delete_magnet_download(self, download_id: str) -> None:
         self.downloads.pop(download_id, None)
 
+    async def magnet_downloads_under(self, root: str) -> list[MagnetDownload]:
+        prefix = root.rstrip("/") + "/"
+        return sorted(
+            (
+                item
+                for item in self.downloads.values()
+                if item.download_dir == root or item.download_dir.startswith(prefix)
+            ),
+            key=lambda item: item.created_at or _EPOCH,
+        )
+
     async def magnet_download_dirs(self, limit: int = 10) -> list[str]:
         latest: dict[str, datetime] = {}
         for download in self.downloads.values():
@@ -362,11 +375,14 @@ class RecordingNotifier:
 
 
 class StubDownloadClients:
-    """The two Clients accessors DownloadService uses."""
+    """The Clients accessors DownloadService and the qBittorrent API use."""
 
-    def __init__(self, cloud: Any = None, *, stall_hours: int = 24) -> None:
+    def __init__(
+        self, cloud: Any = None, *, stall_hours: int = 24, qbittorrent: Any = None
+    ) -> None:
         self.cloud = cloud
         self.stall_hours = stall_hours
+        self.qbittorrent_config = qbittorrent
 
     async def clouddrive(self) -> Any:
         from reeloom.server.composition import NotConfigured
@@ -377,6 +393,9 @@ class StubDownloadClients:
 
     async def download_stall_hours(self) -> int:
         return self.stall_hours
+
+    async def qbittorrent(self) -> Any:
+        return self.qbittorrent_config
 
 
 class RecordingDownloadNotifier:

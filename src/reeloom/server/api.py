@@ -88,6 +88,11 @@ class SettingsInput(BaseModel):
     # Days after a run is created during which a finished anime run still
     # short of subtitles gets one more ACG.RIP search per day; 0 turns it off.
     subtitle_recheck_days: int | None = Field(default=None, ge=0, le=365)
+    # The qBittorrent-compatible API (/api/v2) opens once both are set.
+    qbittorrent_password: str | None = Field(
+        default=None, min_length=8, max_length=200
+    )
+    qbittorrent_save_root: str | None = Field(default=None, max_length=1024)
 
 
 class MessageInput(BaseModel):
@@ -377,15 +382,27 @@ def create_app(
             "clouddrive_secure": bool(stored.get("clouddrive_secure", True)),
             "download_stall_hours": stored.get("download_stall_hours", 24),
             "subtitle_recheck_days": stored.get("subtitle_recheck_days", 30),
+            "qbittorrent_save_root": stored.get("qbittorrent_save_root", ""),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),
             "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
             "clouddrive_api_token_set": bool(stored.get("clouddrive_api_token")),
+            "qbittorrent_password_set": bool(stored.get("qbittorrent_password")),
         }
 
     @api.put("/settings")
     async def put_settings(payload: SettingsInput):
-        await database.update_settings(payload.model_dump(exclude_none=True))
+        values = payload.model_dump(exclude_none=True)
+        if "qbittorrent_save_root" in values:
+            root = values["qbittorrent_save_root"].strip()
+            if len(root) > 1:
+                root = root.rstrip("/")
+            try:
+                validate_api_path(root, allow_root=False)
+            except ReeloomError as error:
+                raise HTTPException(status_code=422, detail=error.code)
+            values["qbittorrent_save_root"] = root
+        await database.update_settings(values)
         nudge()
         return {"updated": True}
 
@@ -544,6 +561,18 @@ def create_app(
         return {"status": "ok"}
 
     app.include_router(api)
+
+    if downloads is not None and clients is not None:
+        from reeloom.server.qbittorrent import create_qbittorrent_router
+
+        app.include_router(
+            create_qbittorrent_router(
+                database=database,
+                downloads=downloads,
+                clients=clients,
+                wake=nudge,
+            )
+        )
 
     if static_dir is not None and static_dir.is_dir():
         _mount_ui(app, static_dir)
