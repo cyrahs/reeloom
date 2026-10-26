@@ -343,6 +343,20 @@ class Plan:
 
 
 @dataclass(frozen=True, slots=True)
+class FolderSplit:
+    """The Agent's verdict that one intake folder holds several titles.
+
+    ``groups`` lists, for every title after the first, the folder-relative
+    paths of its files — taken from the run's snapshot, never from the model.
+    Each group moves into a sibling folder of its own and becomes a separate
+    run; whatever is not listed stays behind and is identified again.
+    """
+
+    groups: tuple[tuple[str, ...], ...]
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class RunResult:
     """User-visible summary of a settled run."""
 

@@ -1,9 +1,9 @@
 """The Agent's entire capability surface.
 
-Five tools: four read-only TMDB lookups and one terminal submission, plus an
-escalation hatch. No filesystem access, no shell, no URLs, no apply. Every
-argument is validated before it reaches an adapter, and ``submit_plan`` takes
-candidate IDs and episode numbers only — never a path.
+Read-only TMDB lookups, two terminal verdicts — ``submit_plan`` and
+``split_folder`` — and an escalation hatch. No filesystem access, no shell, no
+URLs, no apply. Every argument is validated before it reaches an adapter, and
+both verdicts take candidate IDs (plus episode numbers) only — never a path.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from reeloom.agent.loop import Escalate, Finished
 from reeloom.library import find_existing_folder
 from reeloom.models import (
     EpisodeSpan,
+    FileKind,
+    FolderSplit,
     MediaIdentity,
     MediaType,
     PlanError,
@@ -28,6 +30,7 @@ from reeloom.planner import MappingEntry, compile_plan
 _LOGGER = logging.getLogger(__name__)
 
 MAX_ENTRIES = 500
+MAX_SPLIT_GROUPS = 8
 
 
 def _tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
@@ -147,6 +150,38 @@ class IdentificationTools:
                 ["tmdb_id", "entries"],
             ),
             _tool(
+                "split_folder",
+                "Split a folder that holds more than one distinct title."
+                " Give one group of candidate IDs per title. The first group"
+                " stays in this folder and is identified again right after;"
+                " every further group moves to a new folder of its own and is"
+                " identified as a separate run. Candidates you do not list"
+                " stay with the first group. Every group needs at least one"
+                " video; put subtitles in the group of their video.",
+                {
+                    "groups": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": MAX_SPLIT_GROUPS,
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": MAX_ENTRIES,
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "description": (
+                            "Shown to the user; write in Simplified Chinese"
+                            " (简体中文)."
+                        ),
+                    },
+                },
+                ["groups"],
+            ),
+            _tool(
                 "report_problem",
                 "Escalate to a human when the folder cannot be identified.",
                 {
@@ -192,6 +227,8 @@ class IdentificationTools:
                 )
             case "submit_plan":
                 return await self._submit(arguments)
+            case "split_folder":
+                return self._split(arguments)
             case "report_problem":
                 raise Escalate(
                     "agent_reported_problem", reason=_text(arguments, "reason")
@@ -257,6 +294,49 @@ class IdentificationTools:
             self.rejections += 1
             raise
         raise Finished(plan)
+
+    def _split(self, arguments: dict[str, Any]) -> Any:
+        if self._run.executed_moves:
+            # Once files have moved into the library the intake folder no
+            # longer describes the run, so there is nothing left to split.
+            raise PlanError("split_unavailable_after_execution")
+        raw_groups = arguments.get("groups")
+        if not isinstance(raw_groups, list):
+            raise PlanError("groups_must_be_a_list")
+        if not 2 <= len(raw_groups) <= MAX_SPLIT_GROUPS:
+            raise PlanError(
+                "invalid_group_count",
+                count=len(raw_groups),
+                expected=f"2..{MAX_SPLIT_GROUPS}",
+            )
+
+        seen: set[str] = set()
+        groups: list[tuple[str, ...]] = []
+        for number, raw in enumerate(raw_groups, start=1):
+            if not isinstance(raw, list) or not raw:
+                raise PlanError("group_must_be_a_non_empty_list", group=number)
+            paths: list[str] = []
+            has_video = False
+            for candidate_id in raw:
+                if not isinstance(candidate_id, str):
+                    raise PlanError("invalid_candidate", group=number)
+                if candidate_id in seen:
+                    raise PlanError("duplicate_candidate", candidate_id=candidate_id)
+                seen.add(candidate_id)
+                item = self._run.candidate(candidate_id)
+                has_video |= item.kind is FileKind.VIDEO
+                paths.append(item.relative_path)
+            if not has_video:
+                raise PlanError("group_without_video", group=number)
+            groups.append(tuple(paths))
+
+        # Paths come from the snapshot; the first group is whatever stays.
+        raise Finished(
+            FolderSplit(
+                groups=tuple(groups[1:]),
+                reason=str(arguments.get("reason") or "")[:500],
+            )
+        )
 
 
 def _text(payload: dict[str, Any], key: str) -> str:

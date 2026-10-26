@@ -16,6 +16,7 @@ from reeloom.models import (
     MoveKind,
     MoveOutcome,
     Plan,
+    ReeloomError,
     Root,
     Run,
     RunState,
@@ -770,3 +771,42 @@ async def test_a_missing_trash_source_leaves_no_empty_skeleton(
     assert result.missing == ("Show S01E01.mkv",)
     assert (library / DEST).stat().st_size == 32
     assert not (inbound / TRASH_DIR).exists()
+
+
+async def test_split_off_moves_files_into_a_free_sibling_folder(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "a.mkv", "Sub/b.mkv", "Sub/b.ass")
+    make_files(inbound / "Show #2", "unrelated.mkv")
+    executor = FilesystemExecutor(FakeDatabase())
+    run = Run(
+        id="r", config_id=config.id, folder_name="Show", state=RunState.IDENTIFYING
+    )
+
+    name, moved = await executor.split_off(
+        run, config, ("Sub/b.mkv", "Sub/b.ass"), taken={"Show #3"}
+    )
+
+    # "#2" exists on disk and "#3" belongs to an open run.
+    assert name == "Show #4"
+    assert moved == 2
+    assert (inbound / "Show #4/Sub/b.mkv").is_file()
+    assert (inbound / "Show #4/Sub/b.ass").is_file()
+    assert (inbound / "Show/a.mkv").is_file()
+    assert not (inbound / "Show/Sub").exists()
+    assert (inbound / "Show #2/unrelated.mkv").is_file()
+
+
+async def test_split_off_rejects_paths_outside_the_folder(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "a.mkv")
+    executor = FilesystemExecutor(FakeDatabase())
+    run = Run(
+        id="r", config_id=config.id, folder_name="Show", state=RunState.IDENTIFYING
+    )
+
+    with pytest.raises(ReeloomError):
+        await executor.split_off(run, config, ("../Other/x.mkv",), taken=set())

@@ -558,3 +558,52 @@ async def test_an_in_progress_download_only_archives_after_the_cloud_move(
         run.folder_name: run.state for run in harness.database.runs.values()
     }
     assert states[dl_folder] is RunState.DONE
+
+
+async def test_a_folder_holding_two_titles_is_split_and_both_get_organized(
+    config: WatchConfig, roots: tuple[Path, Path]
+) -> None:
+    inbound, library = roots
+    folder = "SLEEPLESS"
+    make_files(
+        inbound / folder,
+        "SLEEPLESS Nocturne 1.mp4",
+        "SLEEPLESS Nocturne 2.mp4",
+        "Midsummer/SLEEPLESS Midsummer 1.mp4",
+        "Midsummer/SLEEPLESS Midsummer 1.chs.ass",
+    )
+    database = FakeDatabase([config])
+    model = ScriptedModel(
+        # Candidates are numbered in snapshot order: the Midsummer subfolder
+        # sorts first.
+        call("split_folder", groups=[["V2", "V3"], ["V1", "S1"]], reason="两部"),
+        call("submit_plan", tmdb_id=123, entries=episodes(("V1", 1), ("V2", 2))),
+        call(
+            "submit_plan",
+            tmdb_id=123,
+            entries=episodes(("V1", 3), ("S1", 3)),
+        ),
+    )
+    worker = Worker(
+        database,
+        identifier=AgentIdentifier(StubClients(model, FakeTmdb()), database),
+        executor=FilesystemExecutor(database),
+        tracker=StabilityTracker(clock=lambda: 5000.0),
+    )
+    harness = Harness(database, worker, model)
+
+    await harness.drain()
+
+    runs = {run.folder_name: run for run in database.runs.values()}
+    assert set(runs) == {folder, f"{folder} #2"}
+    assert all(run.state is RunState.DONE for run in runs.values())
+    season = library / "Show (2024) {tmdb-123}" / "S01"
+    assert (season / "Show S01E01.mp4").is_file()
+    assert (season / "Show S01E02.mp4").is_file()
+    assert (season / "Show S01E03.mp4").is_file()
+    assert (season / "Show S01E03.chs.ass").is_file()
+    assert not (inbound / folder).exists()
+    assert not (inbound / f"{folder} #2").exists()
+    assert (runs[folder].id, "folder split: moved files to SLEEPLESS #2 (2)") in (
+        database.logs
+    )

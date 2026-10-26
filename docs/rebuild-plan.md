@@ -73,6 +73,8 @@ V1 是 67k 行 Python + 6k 行前端，实现的核心功能只有一件事：
 scanner 发现稳定子文件夹（120s 无变化）
   → 创建 run，快照文件清单（candidate ID + 相对路径 + size）
   → Agent 识别：search_tmdb / get_details / get_inventory → submit_plan
+      文件夹含多部作品 → split_folder：Agent 只交 candidate ID 分组，第一组留在
+      原文件夹并重新识别，其余每组由代码移入同级新文件夹 `<原名> #2`… 各成一个 run
   → 代码校验映射并编译 plan（moves + unmapped + identity），存入 run 行
   → 立即执行：逐项 mkdir + no-replace rename
       目标已存在 → 该源文件移入 fail 桶（记为 duplicate）
