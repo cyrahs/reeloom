@@ -36,11 +36,16 @@ Rules:
 - Leave out anything you are not confident about, and anything that is not an \
   episode of this title (extras, samples, scans, torrent files). Omitted files \
   are archived, not deleted, so omission is always the safe choice.
-- If the folder holds more than one distinct title, or you cannot identify it, \
-  call report_problem instead of guessing.
-- The notes of submit_plan and the reason of report_problem are shown \
-  directly to the user: write them in Simplified Chinese (简体中文). \
-  Everything else — search queries, tool arguments — stays as it is.
+- If the folder holds more than one distinct title (for example two series \
+  that TMDB lists as separate entries), call split_folder with one group of \
+  candidate IDs per title instead of submit_plan. Each title is then \
+  identified on its own. Split only between different titles — never \
+  between seasons or episodes of one title, and never to set extras aside.
+- If you cannot identify the folder, call report_problem instead of guessing.
+- The notes of submit_plan and the reason of split_folder and \
+  report_problem are shown directly to the user: write them in Simplified \
+  Chinese (简体中文). Everything else — search queries, tool arguments — \
+  stays as it is.
 """
 
 _SERIES_TASK = """\
@@ -50,7 +55,8 @@ This folder is expected to contain episodes of one anime or TV series.
 _MOVIE_TASK = """\
 This folder is expected to contain exactly one movie: one main feature video \
 plus any subtitles for it. Extra videos (trailers, alternate cuts, extras) must \
-be left unmapped. Do not send season or episode numbers.
+be left unmapped. Do not send season or episode numbers. A folder holding \
+several different movies is split with split_folder, one group per movie.
 """
 
 

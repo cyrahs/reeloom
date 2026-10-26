@@ -161,6 +161,49 @@ class FilesystemExecutor:
         )
         return moved
 
+    async def split_off(
+        self,
+        run: Run,
+        config: WatchConfig,
+        paths: tuple[str, ...],
+        *,
+        taken: set[str],
+    ) -> tuple[str, int]:
+        """Move some of the intake folder's files into a new sibling folder.
+
+        Used when one download holds several titles: the new folder is picked
+        up by the scanner and becomes a run of its own. Its name derives from
+        the run's folder alone (``<folder> #2``, ``#3``…), skipping any name
+        that already exists or belongs to an open run. Files keep their place
+        relative to the folder. Returns the new folder's name and the number of
+        files moved.
+        """
+
+        roots = _Roots.of(config)
+        return await asyncio.to_thread(
+            self._split_off, run, roots, paths, taken
+        )
+
+    def _split_off(
+        self, run: Run, roots: _Roots, paths: tuple[str, ...], taken: set[str]
+    ) -> tuple[str, int]:
+        name = _free_sibling(roots.inbound, run.folder_name, taken)
+        moved = 0
+        for relative in paths:
+            safe = safe_relative(relative).as_posix()
+            source = roots.resolve(Root.INBOUND, f"{run.folder_name}/{safe}")
+            destination = roots.resolve(Root.INBOUND, f"{name}/{safe}")
+            if self._move_file(source, destination, roots.inbound) is MoveOutcome.MOVED:
+                moved += 1
+        # Subfolders the moved files leave empty go; the folder itself still
+        # holds the first group's files, so it stays.
+        for current, directories, _ in os.walk(
+            roots.inbound / run.folder_name, topdown=False, followlinks=False
+        ):
+            for directory in directories:
+                rmdir_if_empty(Path(current) / directory)
+        return name, moved
+
     # ---- one move -----------------------------------------------------
 
     def _apply(self, move: Move, roots: _Roots, run: Run) -> ExecutedMove:
@@ -439,6 +482,14 @@ def _park_units(inbound: Path, run: Run, bucket: str) -> list[tuple[str, int]]:
     else:
         units.append(("", total))
     return units
+
+
+def _free_sibling(inbound: Path, folder_name: str, taken: set[str]) -> str:
+    for number in range(2, 1000):
+        name = f"{folder_name} #{number}"
+        if name not in taken and not _exists(inbound / name):
+            return name
+    raise ExecutionError("no_free_split_folder", folder=folder_name)
 
 
 def _remove_empty_tree(folder: Path) -> None:

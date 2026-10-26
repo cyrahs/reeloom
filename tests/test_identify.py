@@ -8,8 +8,13 @@ import pytest
 from reeloom.adapters.llm import ModelReply, ToolCall
 from reeloom.agent.identify import AgentIdentifier
 from reeloom.models import (
+    ExecutedMove,
     FileKind,
+    FolderSplit,
     MediaType,
+    Move,
+    MoveOutcome,
+    Root,
     MoveKind,
     Run,
     RunState,
@@ -140,6 +145,87 @@ async def test_report_problem_escalates_to_a_human(config: WatchConfig) -> None:
     assert error.value.context["reason"] == "two series mixed"
 
 
+TWO_TITLES = (
+    SnapshotFile("V1", "Nocturne 1.mp4", FileKind.VIDEO, 100),
+    SnapshotFile("V2", "Nocturne 2.mp4", FileKind.VIDEO, 100),
+    SnapshotFile("V3", "Midsummer 1.mp4", FileKind.VIDEO, 100),
+    SnapshotFile(
+        "S1", "Midsummer 1.chs.ass", FileKind.SUBTITLE, 10, SubtitleVariant.CHS
+    ),
+    SnapshotFile("O1", "info.txt", FileKind.OTHER, 1),
+)
+
+
+async def test_split_folder_returns_snapshot_paths_for_later_groups(
+    config: WatchConfig,
+) -> None:
+    split, _, _ = await identify(
+        config,
+        call(
+            "split_folder",
+            groups=[["V1", "V2"], ["V3", "S1"]],
+            reason="两部不同的作品",
+        ),
+        run=make_run(TWO_TITLES),
+    )
+
+    # The first group (and anything unlisted) stays; only paths taken from
+    # the snapshot leave, never anything the model typed.
+    assert split == FolderSplit(
+        groups=(("Midsummer 1.mp4", "Midsummer 1.chs.ass"),),
+        reason="两部不同的作品",
+    )
+
+
+@pytest.mark.parametrize(
+    ("groups", "code"),
+    [
+        ([["V1", "V2", "V3"]], "invalid_group_count"),
+        ([["V1", "V2"], ["S1"]], "group_without_video"),
+        ([["O1"], ["V3"]], "group_without_video"),
+        ([["V1"], ["V1", "V3"]], "duplicate_candidate"),
+        ([["V1"], ["V9"]], "unknown_candidate"),
+        ([["V1"], []], "group_must_be_a_non_empty_list"),
+    ],
+)
+async def test_invalid_split_is_returned_to_the_model(
+    config: WatchConfig, groups, code
+) -> None:
+    split, model, _ = await identify(
+        config,
+        call("split_folder", groups=groups),
+        call("split_folder", groups=[["V1"], ["V3"]]),
+        run=make_run(TWO_TITLES),
+    )
+
+    assert code in model.seen[-1][-1]["content"]
+    assert split.groups == (("Midsummer 1.mp4",),)
+
+
+async def test_an_executed_run_cannot_be_split(config: WatchConfig) -> None:
+    executed = ExecutedMove(
+        Move(
+            kind=MoveKind.MEDIA,
+            source_root=Root.INBOUND,
+            source_path="x/Nocturne 1.mp4",
+            dest_root=Root.LIBRARY,
+            dest_path="Show/S01/Show S01E01.mp4",
+        ),
+        MoveOutcome.MOVED,
+    )
+    model = ScriptedModel(
+        call("split_folder", groups=[["V1"], ["V3"]]),
+        call("report_problem", reason="cannot split"),
+    )
+    identifier = AgentIdentifier(StubClients(model, FakeTmdb()), FakeDatabase())
+    with pytest.raises(NeedsAttention):
+        await identifier.identify(
+            make_run(TWO_TITLES, executed_moves=(executed,)), config
+        )
+
+    assert "split_unavailable_after_execution" in model.seen[-1][-1]["content"]
+
+
 async def test_prose_alone_cannot_settle_a_run(config: WatchConfig) -> None:
     with pytest.raises(NeedsAttention) as error:
         await identify(
@@ -190,7 +276,13 @@ async def test_movie_config_exposes_movie_tools_and_no_episodes(
     )
 
     names = {schema["function"]["name"] for schema in model.tools}
-    assert names == {"search_tmdb", "get_movie", "submit_plan", "report_problem"}
+    assert names == {
+        "search_tmdb",
+        "get_movie",
+        "submit_plan",
+        "split_folder",
+        "report_problem",
+    }
     assert plan.moves[0].dest_path == (
         "Feature (2016) {tmdb-456}/Feature (2016).mkv"
     )

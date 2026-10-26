@@ -20,6 +20,7 @@ from reeloom.db import Database
 from reeloom.models import (
     Deferred,
     FileKind,
+    FolderSplit,
     MediaType,
     MoveKind,
     Plan,
@@ -94,8 +95,9 @@ class IntakeFolder:
 
 
 class Identifier(Protocol):
-    async def identify(self, run: Run, config: WatchConfig) -> Plan:
-        """Return a compiled plan or raise NeedsAttention."""
+    async def identify(self, run: Run, config: WatchConfig) -> Plan | FolderSplit:
+        """Return a compiled plan, a split of a folder holding several
+        titles, or raise NeedsAttention."""
 
 
 class Comparer(Protocol):
@@ -110,6 +112,15 @@ class Executor(Protocol):
     async def revert(self, run: Run, config: WatchConfig) -> None: ...
 
     async def discard(self, run: Run, config: WatchConfig) -> int: ...
+
+    async def split_off(
+        self,
+        run: Run,
+        config: WatchConfig,
+        paths: tuple[str, ...],
+        *,
+        taken: set[str],
+    ) -> tuple[str, int]: ...
 
 
 class SubtitleService(Protocol):
@@ -367,6 +378,9 @@ class Worker:
         if not run.executed_moves:
             run = await self._refresh_snapshot(run, config)
         plan = await self._identifier.identify(run, config)
+        if isinstance(plan, FolderSplit):
+            await self._split(run, config, plan)
+            return
         await self._db.set_plan(run.id, plan)
         await self._db.log(
             run.id,
@@ -382,6 +396,34 @@ class Worker:
             if run.executed_moves
             else self._post_plan_state(config),
         )
+
+    async def _split(
+        self, run: Run, config: WatchConfig, split: FolderSplit
+    ) -> None:
+        """Move every title after the first into a sibling folder of its own.
+
+        The scanner turns each new folder into a separate run once it settles.
+        This run stays in IDENTIFYING: the next step rescans the folder, which
+        now holds only the first title, and identifies it again. Every split
+        leaves strictly fewer files behind, so repeated splits end.
+        """
+
+        taken = await self._db.open_folder_names(config.id)
+        folders: list[dict[str, Any]] = []
+        for paths in split.groups:
+            name, moved = await self._executor.split_off(
+                run, config, paths, taken=taken
+            )
+            taken.add(name)
+            folders.append({"folder": name, "files": moved})
+        summary = ", ".join(f"{item['folder']} ({item['files']})" for item in folders)
+        _LOGGER.info("run=%s split off %s", run.id, summary)
+        await self._db.log(
+            run.id,
+            f"folder split: moved files to {summary}",
+            data={"folders": folders, "reason": split.reason},
+        )
+        await self._db.set_state(run.id, RunState.IDENTIFYING)
 
     async def _refresh_snapshot(self, run: Run, config: WatchConfig) -> Run:
         """Re-read the intake folder before (re-)identifying.

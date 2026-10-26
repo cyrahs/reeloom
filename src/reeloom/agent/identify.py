@@ -1,4 +1,5 @@
-"""Identification: run the Agent until it submits a compilable plan."""
+"""Identification: run the Agent until it submits a compilable plan, or
+splits a folder that holds several titles."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from reeloom.agent.prompts import (
     task_message,
 )
 from reeloom.agent.tools import IdentificationTools
-from reeloom.models import Plan, Run, WatchConfig
+from reeloom.models import FolderSplit, Plan, Run, WatchConfig
 from reeloom.server.worker import NeedsAttention
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class AgentIdentifier:
         self._clients = clients
         self._db = database
 
-    async def identify(self, run: Run, config: WatchConfig) -> Plan:
+    async def identify(self, run: Run, config: WatchConfig) -> Plan | FolderSplit:
         if len(run.snapshot) > MAX_MAPPABLE_FILES:
             raise NeedsAttention("folder_too_large", files=len(run.snapshot))
 
@@ -63,6 +64,11 @@ class AgentIdentifier:
         except Escalate as error:
             raise NeedsAttention(error.code, **error.context) from error
 
+        if isinstance(plan, FolderSplit):
+            _LOGGER.info(
+                "split run=%s into %s more folder(s)", run.id, len(plan.groups)
+            )
+            return plan
         assert isinstance(plan, Plan)
         _LOGGER.info(
             "identified run=%s tmdb=%s moves=%s",
