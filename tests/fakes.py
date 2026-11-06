@@ -22,6 +22,7 @@ from reeloom.models import (
     ExecutedMove,
     MagnetDownload,
     MediaType,
+    PinnedAlert,
     Plan,
     Run,
     RunResult,
@@ -44,6 +45,7 @@ class FakeDatabase:
         self.interactions: dict[str, list[dict[str, Any]]] = {}
         self.settings: dict[str, Any] = {}
         self.downloads: dict[str, MagnetDownload] = {}
+        self.pins: dict[int, PinnedAlert] = {}
 
     async def list_configs(self, *, enabled_only: bool = False) -> list[WatchConfig]:
         return [
@@ -357,12 +359,26 @@ class FakeDatabase:
         ordered = sorted(latest, key=lambda key: latest[key], reverse=True)
         return ordered[:limit]
 
+    async def record_pinned_alert(
+        self, message_id: int, *, subject_kind: str, subject_id: str
+    ) -> None:
+        self.pins.setdefault(
+            message_id, PinnedAlert(message_id, subject_kind, subject_id)
+        )
+
+    async def pinned_alerts(self) -> list[PinnedAlert]:
+        return list(self.pins.values())
+
+    async def forget_pinned_alert(self, message_id: int) -> None:
+        self.pins.pop(message_id, None)
+
 
 class RecordingNotifier:
     def __init__(self) -> None:
         self.sent: list[Run] = []
         self.rechecked: list[Run] = []
         self.given_up: list[Run] = []
+        self.releases = 0
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
         self.sent.append(run)
@@ -372,6 +388,9 @@ class RecordingNotifier:
 
     async def subtitles_given_up(self, run: Run, config: WatchConfig) -> None:
         self.given_up.append(run)
+
+    async def release_resolved(self) -> None:
+        self.releases += 1
 
 
 class StubDownloadClients:

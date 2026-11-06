@@ -48,10 +48,12 @@ def build_subtitles(database: Database, clients: Clients, settings: Settings):
     return SubtitleAcquisition(database, clients, settings.work_dir)
 
 
-def build_notifier(clients: Clients, settings: Settings):
+def build_notifier(database: Database, clients: Clients, settings: Settings):
     from reeloom.server.notify import TelegramNotifier
 
-    return TelegramNotifier(clients, public_url=settings.public_url)
+    return TelegramNotifier(
+        clients, database=database, public_url=settings.public_url
+    )
 
 
 def build_comparer(database: Database, clients: Clients):
@@ -68,7 +70,7 @@ def build_downloads(database: Database, clients: Clients, notifier):
 
 def build(settings: Settings, database: Database):
     clients = Clients(database)
-    notifier = build_notifier(clients, settings)
+    notifier = build_notifier(database, clients, settings)
     downloads = build_downloads(database, clients, notifier)
     worker = Worker(
         database,

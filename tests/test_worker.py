@@ -920,6 +920,18 @@ async def test_purge_passes_are_rate_limited(
     assert path.exists()
 
 
+async def test_pinned_alert_releases_are_rate_limited(
+    config: WatchConfig,
+) -> None:
+    notifier = RecordingNotifier()
+    _, worker = build(config, notifier=notifier)
+
+    await worker._maybe_release_alerts()
+    await worker._maybe_release_alerts()  # inside the scan interval
+
+    assert notifier.releases == 1
+
+
 # ---- daily subtitle recheck ----------------------------------------------
 
 

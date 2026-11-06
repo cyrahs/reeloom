@@ -111,6 +111,15 @@ class TelegramClient:
         )
         return result is not None
 
+    async def unpin(self, message_id: int) -> bool:
+        """Unpin one message. Returns False on failure."""
+
+        result = await self._post(
+            "unpinChatMessage",
+            {"chat_id": self._chat_id, "message_id": str(message_id)},
+        )
+        return result is not None
+
     async def _post(self, method: str, data: dict[str, str]) -> int | None:
         try:
             response = await self._client.post(

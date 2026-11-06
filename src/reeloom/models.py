@@ -551,3 +551,13 @@ class MagnetDownload:
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedAlert:
+    """A Telegram message reeloom pinned, and what it alerted about."""
+
+    message_id: int
+    subject_kind: str
+    """``run`` or ``download``."""
+    subject_id: str
