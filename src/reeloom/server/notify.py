@@ -18,6 +18,7 @@ from reeloom.models import (
     MagnetDownload,
     MediaIdentity,
     MediaType,
+    PinnedAlert,
     ReeloomError,
     Run,
     RunState,
@@ -35,8 +36,15 @@ _HEADLINE = {
     RunState.DISCARDED: "🗑 已放弃",
 }
 # States that need a human: their notification is pinned so it stays visible
-# until someone deals with it.
+# until someone deals with it, and unpinned once the run has left them.
 _PIN_STATES = frozenset({RunState.NEEDS_ATTENTION, RunState.FAILED})
+# Download states whose alert is pinned; leaving them (resumed, finished,
+# removed, retried) or the row being deleted releases the pin.
+_DOWNLOAD_PIN_STATES = frozenset(
+    {DownloadState.FAILED, DownloadState.STALLED, DownloadState.LOST}
+)
+_RUN_SUBJECT = "run"
+_DOWNLOAD_SUBJECT = "download"
 # A daily recheck that finally found subtitles for an already finished run.
 RECHECK_HEADLINE = "💬 字幕已补全"
 # The recheck window closed and the run still lacks subtitles.
@@ -184,15 +192,19 @@ class TelegramNotifier:
         self,
         clients,
         *,
+        database=None,
         public_url: str = "",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._clients = clients
+        self._db = database
         self._public_url = public_url
         self._transport = transport
 
     async def run_settled(self, run: Run, config: WatchConfig) -> None:
-        await self._send_run(run, config, pin=await self._should_pin(run))
+        await self._send_run(
+            run, config, pin=await self._should_pin(run), track=True
+        )
 
     async def subtitles_rechecked(self, run: Run, config: WatchConfig) -> None:
         """The run was reported when it finished; this only says that the
@@ -220,6 +232,7 @@ class TelegramNotifier:
         headline: str | None = None,
         trailer: str = "",
         pin: bool,
+        track: bool = False,
     ) -> None:
         client = await self._client()
         if client is None:
@@ -237,7 +250,9 @@ class TelegramNotifier:
             if message_id is None:
                 _LOGGER.info("notification dropped for run=%s", run.id)
             elif message_id and pin:
-                await client.pin(message_id)
+                await self._pin(
+                    client, message_id, _RUN_SUBJECT if track else None, run.id
+                )
         finally:
             await client.aclose()
 
@@ -253,9 +268,68 @@ class TelegramNotifier:
             if message_id is None:
                 _LOGGER.info("notification dropped for download=%s", download.id)
             elif message_id and await self._pin_enabled():
-                await client.pin(message_id)
+                await self._pin(client, message_id, _DOWNLOAD_SUBJECT, download.id)
         finally:
             await client.aclose()
+
+    async def release_resolved(self) -> None:
+        """Unpin every tracked alert whose run or download no longer needs a
+        human. One attempt each: a failed unpin is logged and forgotten, like
+        a failed send, so a message deleted by hand cannot wedge the loop."""
+
+        if self._db is None:
+            return
+        pins = await self._db.pinned_alerts()
+        if not pins:
+            return
+        resolved = [pin for pin in pins if await self._is_resolved(pin)]
+        if not resolved:
+            return
+        client = await self._client()
+        if client is None:
+            return  # keep them: Telegram may be reconfigured later
+        try:
+            for pin in resolved:
+                if not await client.unpin(pin.message_id):
+                    _LOGGER.info(
+                        "unpin failed message=%s %s=%s",
+                        pin.message_id,
+                        pin.subject_kind,
+                        pin.subject_id,
+                    )
+                await self._db.forget_pinned_alert(pin.message_id)
+        finally:
+            await client.aclose()
+
+    async def _is_resolved(self, pin: PinnedAlert) -> bool:
+        if pin.subject_kind == _RUN_SUBJECT:
+            run = await self._db.get_run(pin.subject_id)
+            return run is None or run.state not in _PIN_STATES
+        if pin.subject_kind == _DOWNLOAD_SUBJECT:
+            download = await self._db.get_magnet_download(pin.subject_id)
+            return download is None or download.state not in _DOWNLOAD_PIN_STATES
+        return True
+
+    async def _pin(
+        self,
+        client: TelegramClient,
+        message_id: int,
+        subject_kind: str | None,
+        subject_id: str,
+    ) -> None:
+        """Pin, and remember what for so the pin can be released later.
+        Untracked pins (subtitle give-ups) stay until a human unpins them."""
+
+        if not await client.pin(message_id):
+            return
+        if subject_kind is None or self._db is None:
+            return
+        try:
+            await self._db.record_pinned_alert(
+                message_id, subject_kind=subject_kind, subject_id=subject_id
+            )
+        except Exception:
+            _LOGGER.warning("pinned alert not recorded message=%s", message_id)
 
     async def send_test(self) -> str | None:
         """Send one plain and one needs-attention test message; the second is

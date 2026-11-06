@@ -594,3 +594,132 @@ async def test_a_give_up_warning_honors_the_pin_switch(
     await notifier.subtitles_given_up(make_run(), config)
 
     assert methods(seen) == ["sendMessage"]
+
+
+# ---- releasing pins -------------------------------------------------------
+
+
+def pinning_notifier(seen: list[httpx.Request], database, **clients_kwargs):
+    return TelegramNotifier(
+        StubClients((TOKEN, CHAT), **clients_kwargs),
+        database=database,
+        transport=recording_transport(seen),
+    )
+
+
+async def test_a_stalled_download_is_unpinned_once_it_completes() -> None:
+    from reeloom.models import DownloadState
+
+    from tests.fakes import FakeDatabase
+
+    database = FakeDatabase()
+    download = make_download(state=DownloadState.STALLED)
+    database.downloads[download.id] = download
+    seen: list[httpx.Request] = []
+    notifier = pinning_notifier(seen, database)
+
+    await notifier.download_trouble(download)
+    assert [pin.message_id for pin in database.pins.values()] == [7]
+
+    # Still stalled: the pin stays.
+    await notifier.release_resolved()
+    assert methods(seen) == ["sendMessage", "pinChatMessage"]
+
+    database.downloads[download.id] = make_download(state=DownloadState.COMPLETED)
+    await notifier.release_resolved()
+
+    assert methods(seen)[-1] == "unpinChatMessage"
+    assert parse_qs(seen[-1].content.decode())["message_id"] == ["7"]
+    assert database.pins == {}
+
+    # Released once: nothing left to unpin.
+    await notifier.release_resolved()
+    assert methods(seen).count("unpinChatMessage") == 1
+
+
+async def test_a_deleted_download_releases_its_pin() -> None:
+    from tests.fakes import FakeDatabase
+
+    database = FakeDatabase()
+    download = make_download()
+    database.downloads[download.id] = download
+    seen: list[httpx.Request] = []
+    notifier = pinning_notifier(seen, database)
+
+    await notifier.download_trouble(download)
+    del database.downloads[download.id]  # removed by the download client
+    await notifier.release_resolved()
+
+    assert methods(seen)[-1] == "unpinChatMessage"
+    assert database.pins == {}
+
+
+@pytest.mark.parametrize("later", [RunState.DONE, RunState.DISCARDED, RunState.PENDING])
+async def test_an_attention_run_is_unpinned_once_it_moves_on(
+    config: WatchConfig, later: RunState
+) -> None:
+    from tests.fakes import FakeDatabase
+
+    database = FakeDatabase()
+    run = make_run(state=RunState.NEEDS_ATTENTION)
+    database.runs[run.id] = run
+    seen: list[httpx.Request] = []
+    notifier = pinning_notifier(seen, database)
+
+    await notifier.run_settled(run, config)
+    await notifier.release_resolved()
+    assert "unpinChatMessage" not in methods(seen)
+
+    database.runs[run.id] = make_run(state=later)
+    await notifier.release_resolved()
+    assert methods(seen)[-1] == "unpinChatMessage"
+    assert database.pins == {}
+
+
+async def test_a_failed_unpin_is_forgotten_not_retried_forever() -> None:
+    from tests.fakes import FakeDatabase
+
+    database = FakeDatabase()
+    await database.record_pinned_alert(
+        9, subject_kind="download", subject_id="gone"
+    )
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(400, json={"ok": False})
+
+    notifier = TelegramNotifier(
+        StubClients((TOKEN, CHAT)),
+        database=database,
+        transport=httpx.MockTransport(handler),
+    )
+    await notifier.release_resolved()
+
+    assert methods(seen) == ["unpinChatMessage"]
+    assert database.pins == {}
+
+
+async def test_pins_wait_while_telegram_is_unconfigured() -> None:
+    from tests.fakes import FakeDatabase
+
+    database = FakeDatabase()
+    await database.record_pinned_alert(
+        9, subject_kind="download", subject_id="gone"
+    )
+    notifier = TelegramNotifier(StubClients(None), database=database)
+    await notifier.release_resolved()
+    assert list(database.pins) == [9]
+
+
+async def test_subtitle_give_up_pins_are_not_tracked(config: WatchConfig) -> None:
+    from tests.fakes import FakeDatabase
+
+    database = FakeDatabase()
+    seen: list[httpx.Request] = []
+    notifier = pinning_notifier(seen, database)
+
+    await notifier.subtitles_given_up(make_run(), config)
+
+    assert methods(seen) == ["sendMessage", "pinChatMessage"]
+    assert database.pins == {}

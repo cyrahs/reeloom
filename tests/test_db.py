@@ -40,7 +40,7 @@ async def database(postgres_dsn: str) -> AsyncIterator[Database]:
         async with database._connection() as connection:  # noqa: SLF001
             await connection.execute(
                 "truncate watch_config, run, run_log, interaction,"
-                " magnet_download cascade"
+                " magnet_download, pinned_alert cascade"
             )
         yield database
 
@@ -475,3 +475,19 @@ async def test_qbittorrent_settings_round_trip(database: Database) -> None:
     settings = await database.get_settings()
     assert settings["qbittorrent_password"] == "secret-pass"
     assert settings["qbittorrent_save_root"] == "/arr"
+
+
+async def test_pinned_alerts_round_trip(database: Database) -> None:
+    await database.record_pinned_alert(11, subject_kind="download", subject_id="a")
+    await database.record_pinned_alert(12, subject_kind="run", subject_id="b")
+    # A replayed record is a no-op, not an error.
+    await database.record_pinned_alert(11, subject_kind="download", subject_id="a")
+
+    pins = await database.pinned_alerts()
+    assert [(pin.message_id, pin.subject_kind, pin.subject_id) for pin in pins] == [
+        (11, "download", "a"),
+        (12, "run", "b"),
+    ]
+
+    await database.forget_pinned_alert(11)
+    assert [pin.message_id for pin in await database.pinned_alerts()] == [12]

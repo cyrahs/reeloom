@@ -25,6 +25,7 @@ from reeloom.models import (
     ExecutedMove,
     MagnetDownload,
     MediaType,
+    PinnedAlert,
     Plan,
     Run,
     RunResult,
@@ -187,6 +188,16 @@ alter table settings
 
 alter table settings
     add column if not exists qbittorrent_save_root text not null default '';
+
+-- Telegram messages reeloom pinned, so they can be unpinned once whatever
+-- they alerted about (a run or a magnet download) no longer needs a human.
+-- No foreign key: a deleted subject is exactly what releases the pin.
+create table if not exists pinned_alert (
+    message_id bigint primary key,
+    subject_kind text not null,
+    subject_id text not null,
+    created_at timestamptz not null default now()
+);
 """
 
 
@@ -737,6 +748,43 @@ class Database:
             )
             rows = await cursor.fetchall()
         return [row["download_dir"] for row in rows]
+
+    # ---- pinned alerts --------------------------------------------------
+
+    async def record_pinned_alert(
+        self, message_id: int, *, subject_kind: str, subject_id: str
+    ) -> None:
+        async with self._connection() as connection:
+            await connection.execute(
+                """
+                insert into pinned_alert (message_id, subject_kind, subject_id)
+                values (%s, %s, %s)
+                on conflict do nothing
+                """,
+                (message_id, subject_kind, subject_id),
+            )
+
+    async def pinned_alerts(self) -> list[PinnedAlert]:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select message_id, subject_kind, subject_id from pinned_alert"
+                " order by created_at"
+            )
+            rows = await cursor.fetchall()
+        return [
+            PinnedAlert(
+                message_id=row["message_id"],
+                subject_kind=row["subject_kind"],
+                subject_id=row["subject_id"],
+            )
+            for row in rows
+        ]
+
+    async def forget_pinned_alert(self, message_id: int) -> None:
+        async with self._connection() as connection:
+            await connection.execute(
+                "delete from pinned_alert where message_id = %s", (message_id,)
+            )
 
     # ---- logs and interactions ----------------------------------------
 

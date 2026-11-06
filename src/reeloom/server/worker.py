@@ -138,6 +138,9 @@ class Notifier(Protocol):
     async def subtitles_given_up(self, run: Run, config: WatchConfig) -> None:
         """The recheck window closed and the run still lacks subtitles."""
 
+    async def release_resolved(self) -> None:
+        """Unpin alerts whose run or download no longer needs a human."""
+
 
 class DownloadPoller(Protocol):
     async def poll(self) -> None: ...
@@ -170,6 +173,7 @@ class Worker:
         self._intake: list[IntakeFolder] = []
         self._last_purge = float("-inf")
         self._last_download_poll = float("-inf")
+        self._last_alert_release = float("-inf")
         self._last_subtitle_recheck = float("-inf")
 
     def wake(self) -> None:
@@ -192,6 +196,7 @@ class Worker:
                 progressed = False
             await self._maybe_purge()
             await self._maybe_poll_downloads()
+            await self._maybe_release_alerts()
             progressed |= await self._maybe_recheck_subtitles()
             if progressed:
                 continue
@@ -700,6 +705,22 @@ class Worker:
             await self._downloads.poll()
         except Exception:
             _LOGGER.exception("download poll failed")
+
+    async def _maybe_release_alerts(self) -> None:
+        """Unpin resolved alerts, at most once per scan interval. Runs after
+        the download poll so a download that just finished is released in
+        the same pass."""
+
+        if self._notifier is None:
+            return
+        now = time.monotonic()
+        if now - self._last_alert_release < self._scan_interval:
+            return
+        self._last_alert_release = now
+        try:
+            await self._notifier.release_resolved()
+        except Exception:
+            _LOGGER.warning("releasing pinned alerts failed", exc_info=True)
 
     # ---- trash purging -------------------------------------------------
 
