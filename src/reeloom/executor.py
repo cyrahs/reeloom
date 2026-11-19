@@ -189,12 +189,24 @@ class FilesystemExecutor:
     ) -> tuple[str, int]:
         name = _free_sibling(roots.inbound, run.folder_name, taken)
         moved = 0
-        for relative in paths:
-            safe = safe_relative(relative).as_posix()
-            source = roots.resolve(Root.INBOUND, f"{run.folder_name}/{safe}")
-            destination = roots.resolve(Root.INBOUND, f"{name}/{safe}")
-            if self._move_file(source, destination, roots.inbound) is MoveOutcome.MOVED:
-                moved += 1
+        try:
+            for relative in paths:
+                safe = safe_relative(relative).as_posix()
+                source = roots.resolve(Root.INBOUND, f"{run.folder_name}/{safe}")
+                destination = roots.resolve(Root.INBOUND, f"{name}/{safe}")
+                if (
+                    self._move_file(source, destination, roots.inbound)
+                    is MoveOutcome.MOVED
+                ):
+                    moved += 1
+        except BaseException:
+            # A failed rename leaves the sibling folder ``_move_file`` already
+            # created behind. Empty, the scanner shows it as waiting for files
+            # forever and the retry splits into the next name instead, so
+            # take back whatever holds no file. Files that did move stay; the
+            # scanner turns that folder into a run of its own.
+            _remove_empty_tree(roots.inbound / name)
+            raise
         # Subfolders the moved files leave empty go; the folder itself still
         # holds the first group's files, so it stays.
         for current, directories, _ in os.walk(

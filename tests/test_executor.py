@@ -810,3 +810,29 @@ async def test_split_off_rejects_paths_outside_the_folder(
 
     with pytest.raises(ReeloomError):
         await executor.split_off(run, config, ("../Other/x.mkv",), taken=set())
+
+
+async def test_failed_split_off_leaves_no_empty_sibling_folder(
+    config: WatchConfig,
+    roots: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / "Show", "a.mkv", "Sub/b.mkv")
+    executor = FilesystemExecutor(FakeDatabase())
+    run = Run(
+        id="r", config_id=config.id, folder_name="Show", state=RunState.IDENTIFYING
+    )
+
+    def refuse(source: Path, destination: Path) -> None:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("reeloom.executor.rename_noreplace", refuse)
+
+    with pytest.raises(ExecutionError) as raised:
+        await executor.split_off(run, config, ("Sub/b.mkv",), taken=set())
+
+    assert raised.value.code == "rename_failed"
+    assert not (inbound / "Show #2").exists()
+    assert (inbound / "Show/Sub/b.mkv").is_file()
+    assert (inbound / "Show/a.mkv").is_file()
