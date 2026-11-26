@@ -68,10 +68,17 @@ def build_downloads(database: Database, clients: Clients, notifier):
     return DownloadService(database, clients, notifier=notifier)
 
 
+def build_subscriptions(database: Database, clients: Clients, notifier):
+    from reeloom.server.subscriptions import SubscriptionService
+
+    return SubscriptionService(database, clients, notifier=notifier)
+
+
 def build(settings: Settings, database: Database):
     clients = Clients(database)
     notifier = build_notifier(database, clients, settings)
     downloads = build_downloads(database, clients, notifier)
+    subscriptions = build_subscriptions(database, clients, notifier)
     worker = Worker(
         database,
         identifier=AgentIdentifier(clients, database),
@@ -89,10 +96,11 @@ def build(settings: Settings, database: Database):
         answerer=Answerer(clients),
         notifier=notifier,
         downloads=downloads,
+        subscriptions=subscriptions,
         clients=clients,
         static_dir=STATIC_DIR,
     )
-    return app, worker, clients
+    return app, worker, clients, subscriptions
 
 
 def main() -> None:
@@ -102,17 +110,22 @@ def main() -> None:
 
     async def serve() -> None:
         async with Database.connect(settings.database_url) as database:
-            app, worker, clients = build(settings, database)
+            app, worker, clients, subscriptions = build(settings, database)
 
             @asynccontextmanager
             async def lifespan(_):
-                task = asyncio.create_task(worker.run_forever())
+                tasks = [
+                    asyncio.create_task(worker.run_forever()),
+                    asyncio.create_task(subscriptions.run_forever()),
+                ]
                 try:
                     yield
                 finally:
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    for task in tasks:
+                        task.cancel()
+                    for task in tasks:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
                     await clients.aclose()
 
             app.router.lifespan_context = lifespan

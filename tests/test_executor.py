@@ -836,3 +836,98 @@ async def test_failed_split_off_leaves_no_empty_sibling_folder(
     assert not (inbound / "Show #2").exists()
     assert (inbound / "Show/Sub/b.mkv").is_file()
     assert (inbound / "Show/a.mkv").is_file()
+
+
+# ---- cross-filesystem watches -------------------------------------------
+
+
+@pytest.fixture
+def exdev_between_roots(monkeypatch, roots: tuple[Path, Path]):
+    """Make every rename between the two roots fail like a real EXDEV."""
+
+    import errno as _errno
+
+    import reeloom.executor as module
+
+    inbound, library = roots
+    original = module.rename_noreplace
+
+    def fake(source: Path, destination: Path) -> None:
+        def side(path: Path) -> Path:
+            return inbound if inbound in path.parents else library
+
+        if side(source) != side(destination):
+            raise OSError(_errno.EXDEV, os.strerror(_errno.EXDEV), str(source))
+        original(source, destination)
+
+    monkeypatch.setattr(module, "rename_noreplace", fake)
+
+
+async def test_cross_filesystem_move_copies_then_removes_the_source(
+    config: WatchConfig, roots: tuple[Path, Path], executor, exdev_between_roots
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=4096)
+    engine, database = executor
+    destination = "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"
+    run = build_run(media_move("ep01.mkv", destination))
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, replace(config, cross_filesystem=True))
+
+    landed = library / destination
+    assert landed.read_bytes() == b"x" * 4096
+    assert not (inbound / FOLDER).exists()
+    assert not list(library.rglob("*.partial~"))
+    assert result.moved == 1
+
+
+async def test_cross_filesystem_copy_never_replaces_an_existing_episode(
+    config: WatchConfig, roots: tuple[Path, Path], executor, exdev_between_roots
+) -> None:
+    inbound, library = roots
+    destination = "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"
+    make_files(inbound / FOLDER, "ep01.mkv", size=10)
+    make_files(library, destination, size=3)
+    engine, database = executor
+    run = build_run(media_move("ep01.mkv", destination))
+    database.runs[run.id] = run
+
+    result = await engine.execute(run, replace(config, cross_filesystem=True))
+
+    assert (library / destination).stat().st_size == 3
+    assert result.duplicates == ("ep01.mkv",)
+    assert (inbound / "fail" / FOLDER / "ep01.mkv").is_file()
+
+
+async def test_cross_filesystem_revert_copies_back(
+    config: WatchConfig, roots: tuple[Path, Path], executor, exdev_between_roots
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv")
+    engine, database = executor
+    destination = "Show (2024) {tmdb-123}/S01/Show S01E01.mkv"
+    run = build_run(media_move("ep01.mkv", destination))
+    database.runs[run.id] = run
+    cross = replace(config, cross_filesystem=True)
+    await engine.execute(run, cross)
+
+    await engine.revert(database.runs[run.id], cross)
+
+    assert (inbound / FOLDER / "ep01.mkv").is_file()
+    assert not (library / destination).exists()
+
+
+async def test_cross_filesystem_move_is_refused_unless_the_watch_allows_it(
+    config: WatchConfig, roots: tuple[Path, Path], executor, exdev_between_roots
+) -> None:
+    inbound, _ = roots
+    make_files(inbound / FOLDER, "ep01.mkv")
+    engine, database = executor
+    run = build_run(media_move("ep01.mkv", "Show (2024) {tmdb-123}/S01/E01.mkv"))
+    database.runs[run.id] = run
+
+    with pytest.raises(ExecutionError) as raised:
+        await engine.execute(run, config)
+    assert raised.value.code == "cross_filesystem_move"
+    assert (inbound / FOLDER / "ep01.mkv").is_file()

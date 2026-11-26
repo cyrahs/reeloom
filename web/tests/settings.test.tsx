@@ -18,6 +18,7 @@ const CONFIG: WatchConfig = {
   replace_enabled: false,
   replace_extra_dirs: [],
   replace_auto_ratio: 1.2,
+  cross_filesystem: false,
 };
 
 const SETTINGS = {

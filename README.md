@@ -76,6 +76,36 @@ password, and a category such as `radarr`.
   show as warnings in the client's queue; remove and blocklist them there to
   search for another release.
 
+### Subscriptions: private-tracker releases by group and keyword (optional)
+
+The 订阅 page follows a title on an indexer reached through your own
+**Prowlarr** (which keeps the tracker's credentials and enforces its query and
+grab limits) and downloads into your own **qBittorrent** (a real one, e.g. a
+download-only client for a private tracker). A subscription names a TMDB
+series, a search query, optional release groups (`-GROUP` / `[GROUP]`
+tokens), include/exclude regexes and a season, and the watch to archive
+through.
+
+- Each interval (30 min by default, one subscription per pass) the query runs
+  through Prowlarr. Releases are taken oldest first: one not grabbed before
+  whose `SxxEyy` episodes are not covered yet is fetched as a .torrent and
+  added to qBittorrent with save path `<inbound>/<release title>` and
+  incomplete path `<inbound>/in_progress/<release title>`, so the folder
+  appears in the watch root only once complete. qBittorrent must see the
+  inbound root at the same path as Reeloom.
+- The run for that folder is told the subscription's TMDB id, season and
+  notes, so the Agent maps episodes against the right entry (e.g. 第N期上/下
+  as two TMDB episodes). Once the run is done the torrent is removed from
+  qBittorrent without its files (they are in the library already).
+- When the inbound root is a local disk and the library a cloud mount, turn on
+  the watch's **跨盘** option: a move that cannot be a rename becomes a copy to
+  `<file>.partial~`, a size check, a no-replace rename into place and only
+  then the removal of the source.
+- Without backfill a new subscription only takes releases published after it
+  was created. 预览匹配 shows what a check would grab and why the rest is
+  skipped. Forgetting a grab lets the same release be grabbed again; a grab
+  still downloading is cancelled with its partial data.
+
 Nothing is ever deleted, and an existing file is never overwritten: a
 duplicate goes to the `fail` bucket and the copy already in your library
 stays. If something looks wrong afterwards, tell the Agent what to fix and hit
@@ -97,14 +127,18 @@ applies the new plan.
   hidden entries and loose root files are skipped, and a folder containing a
   `.env*` file is refused outright.
 - Outbound network access is limited to TMDB, your model provider, ACG.RIP,
-  Telegram and your own CloudDrive2 server (gRPC, address configured in the
-  settings page). No shell, no arbitrary URLs, no inbound webhooks. The
+  Telegram, your own CloudDrive2 server (gRPC, address configured in the
+  settings page) and, for subscriptions, your own Prowlarr and qBittorrent.
+  Prowlarr download links are re-anchored onto the configured address and
+  never followed as redirects. No shell, no arbitrary URLs, no inbound webhooks. The
   qBittorrent-compatible API takes magnets and uploaded torrents only.
 - The one cloud-side deletion — dropping an offline task with its data — only
   happens when you press 删除 on the downloads page, or when a download client
   removes an unfinished download through the qBittorrent-compatible API,
   never on the archive path.
-- Inbound and library roots must be on one filesystem — moves are renames.
+- Inbound and library roots must be on one filesystem — moves are renames —
+  unless the watch is marked 跨盘, where a cross-filesystem move is a
+  verified copy into place followed by removing the source.
 
 ## Quick start
 

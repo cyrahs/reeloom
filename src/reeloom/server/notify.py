@@ -152,6 +152,32 @@ def render_download(download: MagnetDownload) -> str:
     return "\n".join(lines)
 
 
+_GRAB_REASON = {
+    "pt_client_duplicate": "下载器里已有这个种子",
+    "pt_client_add_failed": "下载器拒绝添加",
+    "pt_client_invalid_torrent": "种子文件无效",
+    "torrent_missing": "种子从下载器里消失了，且下载目录不存在",
+    "prowlarr_not_a_torrent": "Prowlarr 返回的不是种子文件",
+    "prowlarr_redirected_download": "Prowlarr 把下载重定向了（磁力？）",
+}
+
+
+def render_grab(
+    subscription_name: str, title: str, *, grabbed: bool, error: str | None = None
+) -> str:
+    """Telegram HTML for a subscription grab. Titles are untrusted."""
+
+    lines = [f"{_BRAND} · 订阅 {_text(subscription_name)}"]
+    if grabbed:
+        lines.append("已发送到 PT 下载器")
+    else:
+        lines.append("抓取失败")
+    lines.append(_text(title))
+    if error:
+        lines.append(f"原因：{_text(_GRAB_REASON.get(error, error))}")
+    return "\n".join(lines)
+
+
 def _size(size_bytes: int) -> str:
     value = float(size_bytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -269,6 +295,26 @@ class TelegramNotifier:
                 _LOGGER.info("notification dropped for download=%s", download.id)
             elif message_id and await self._pin_enabled():
                 await self._pin(client, message_id, _DOWNLOAD_SUBJECT, download.id)
+        finally:
+            await client.aclose()
+
+    async def grab_event(
+        self,
+        subscription_name: str,
+        title: str,
+        *,
+        grabbed: bool,
+        error: str | None = None,
+    ) -> None:
+        """One unpinned line per release a subscription grabbed or failed on."""
+
+        client = await self._client()
+        if client is None:
+            return
+        try:
+            await client.send(
+                render_grab(subscription_name, title, grabbed=grabbed, error=error)
+            )
         finally:
             await client.aclose()
 

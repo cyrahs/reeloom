@@ -11,6 +11,7 @@ import posixpath
 import secrets
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -19,8 +20,17 @@ from pydantic import BaseModel, Field
 
 from reeloom.adapters.clouddrive import validate_api_path
 from reeloom.db import Database
-from reeloom.models import MediaType, ReeloomError, Run, RunState, SubtitleVariant
+from reeloom.models import (
+    GrabState,
+    MediaType,
+    ReeloomError,
+    Run,
+    RunState,
+    SubtitleVariant,
+)
+from reeloom.models import Subscription as SubscriptionModel
 from reeloom.models import WatchConfig as WatchConfigModel
+from reeloom.release import compile_pattern
 from reeloom.server.worker import (
     DEFAULT_SUBTITLE_RECHECK_DAYS,
     RECHECK_GIVEN_UP,
@@ -49,6 +59,7 @@ class ConfigInput(BaseModel):
         Field(default_factory=list, max_length=8)
     )
     replace_auto_ratio: float = Field(default=1.2, ge=1.0, le=10.0)
+    cross_filesystem: bool = False
 
 
 class ConfigPatch(BaseModel):
@@ -66,6 +77,7 @@ class ConfigPatch(BaseModel):
         list[Annotated[str, Field(min_length=1, max_length=1024)]] | None
     ) = Field(default=None, max_length=8)
     replace_auto_ratio: float | None = Field(default=None, ge=1.0, le=10.0)
+    cross_filesystem: bool | None = None
 
 
 class SettingsInput(BaseModel):
@@ -93,6 +105,47 @@ class SettingsInput(BaseModel):
         default=None, min_length=8, max_length=200
     )
     qbittorrent_save_root: str | None = Field(default=None, max_length=1024)
+    # Subscriptions: the Prowlarr that searches the indexer, and the real
+    # qBittorrent the releases download into.
+    prowlarr_url: str | None = Field(default=None, max_length=500)
+    prowlarr_api_key: str | None = Field(default=None, max_length=200)
+    prowlarr_indexer_ids: str | None = Field(default=None, max_length=200)
+    pt_client_url: str | None = Field(default=None, max_length=500)
+    pt_client_username: str | None = Field(default=None, max_length=200)
+    pt_client_password: str | None = Field(default=None, max_length=500)
+    subscription_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
+
+
+_Group = Annotated[str, Field(min_length=1, max_length=64)]
+
+
+class SubscriptionInput(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    config_id: str = Field(min_length=1, max_length=64)
+    tmdb_id: int = Field(ge=1)
+    query: str = Field(min_length=1, max_length=200)
+    season: int | None = Field(default=None, ge=0, le=999)
+    groups: list[_Group] = Field(default_factory=list, max_length=20)
+    include: str = Field(default="", max_length=500)
+    exclude: str = Field(default="", max_length=500)
+    notes: str = Field(default="", max_length=2000)
+    enabled: bool = True
+    backfill: bool = True
+    """Grab releases already on the indexer; off: only ones published later."""
+
+
+class SubscriptionPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    config_id: str | None = Field(default=None, min_length=1, max_length=64)
+    tmdb_id: int | None = Field(default=None, ge=1)
+    query: str | None = Field(default=None, min_length=1, max_length=200)
+    season: int | None = Field(default=None, ge=0, le=999)
+    clear_season: bool = False
+    groups: list[_Group] | None = Field(default=None, max_length=20)
+    include: str | None = Field(default=None, max_length=500)
+    exclude: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=2000)
+    enabled: bool | None = None
 
 
 class MessageInput(BaseModel):
@@ -116,6 +169,7 @@ def create_app(
     answerer=None,
     notifier=None,
     downloads=None,
+    subscriptions=None,
     clients=None,
     static_dir: Path | None = None,
 ) -> FastAPI:
@@ -305,6 +359,7 @@ def create_app(
             replace_enabled=payload.replace_enabled,
             replace_extra_dirs=tuple(payload.replace_extra_dirs),
             replace_auto_ratio=payload.replace_auto_ratio,
+            cross_filesystem=payload.cross_filesystem,
         )
         await database.create_config(config)
         nudge()
@@ -383,6 +438,15 @@ def create_app(
             "download_stall_hours": stored.get("download_stall_hours", 24),
             "subtitle_recheck_days": stored.get("subtitle_recheck_days", 30),
             "qbittorrent_save_root": stored.get("qbittorrent_save_root", ""),
+            "prowlarr_url": stored.get("prowlarr_url", ""),
+            "prowlarr_indexer_ids": stored.get("prowlarr_indexer_ids", ""),
+            "pt_client_url": stored.get("pt_client_url", ""),
+            "pt_client_username": stored.get("pt_client_username", ""),
+            "subscription_interval_minutes": stored.get(
+                "subscription_interval_minutes", 30
+            ),
+            "prowlarr_api_key_set": bool(stored.get("prowlarr_api_key")),
+            "pt_client_password_set": bool(stored.get("pt_client_password")),
             "tmdb_api_key_set": bool(stored.get("tmdb_api_key")),
             "llm_api_key_set": bool(stored.get("llm_api_key")),
             "telegram_bot_token_set": bool(stored.get("telegram_bot_token")),
@@ -402,6 +466,13 @@ def create_app(
             except ReeloomError as error:
                 raise HTTPException(status_code=422, detail=error.code)
             values["qbittorrent_save_root"] = root
+        for key in ("prowlarr_url", "pt_client_url"):
+            if key in values:
+                values[key] = values[key].strip().rstrip("/")
+                if values[key] and not values[key].startswith(
+                    ("http://", "https://")
+                ):
+                    raise HTTPException(status_code=422, detail=f"{key}_invalid")
         await database.update_settings(values)
         nudge()
         return {"updated": True}
@@ -443,6 +514,201 @@ def create_app(
         except ReeloomError as error:
             return {"ok": False, "error": error.code}
         return {"ok": True}
+
+    @api.post("/settings/test-prowlarr")
+    async def test_prowlarr():
+        """List Prowlarr's indexers, so the admin can check the address and
+        key and find the indexer ids to search."""
+
+        if clients is None:
+            return {"ok": False, "error": "prowlarr_not_configured"}
+        try:
+            prowlarr = await clients.prowlarr()
+            indexers = await prowlarr.indexers()
+        except ReeloomError as error:
+            return {"ok": False, "error": error.code}
+        return {"ok": True, "indexers": indexers}
+
+    @api.post("/settings/test-pt-client")
+    async def test_pt_client():
+        if clients is None:
+            return {"ok": False, "error": "pt_client_not_configured"}
+        try:
+            client = await clients.pt_client()
+            version = await client.version()
+        except ReeloomError as error:
+            return {"ok": False, "error": error.code}
+        return {"ok": True, "version": version}
+
+    # ---- subscriptions ------------------------------------------------
+
+    def need_subscriptions():
+        if subscriptions is None:
+            raise HTTPException(status_code=503, detail="subscriptions_not_available")
+        return subscriptions
+
+    async def check_subscription_target(config_id: str) -> None:
+        config = await database.get_config(config_id)
+        if config is None:
+            raise HTTPException(status_code=422, detail="config_not_found")
+        if config.media_type is MediaType.MOVIE:
+            raise HTTPException(status_code=422, detail="subscription_needs_series_watch")
+
+    def check_patterns(*patterns: str | None) -> None:
+        for pattern in patterns:
+            if pattern:
+                try:
+                    compile_pattern(pattern)
+                except ReeloomError as error:
+                    raise HTTPException(status_code=422, detail=error.code)
+
+    async def subscription_json(subscription: SubscriptionModel) -> dict[str, Any]:
+        grabs = await database.list_grabs(subscription_id=subscription.id, limit=200)
+        return {
+            **subscription.to_json(),
+            "grabs": [grab.to_json() for grab in grabs],
+        }
+
+    @api.get("/subscriptions")
+    async def list_subscriptions():
+        return {
+            "subscriptions": [
+                await subscription_json(item)
+                for item in await database.list_subscriptions()
+            ]
+        }
+
+    @api.post("/subscriptions", status_code=201)
+    async def create_subscription(payload: SubscriptionInput):
+        await check_subscription_target(payload.config_id)
+        check_patterns(payload.include, payload.exclude)
+        name = (payload.name or "").strip()
+        if not name and clients is not None:
+            try:
+                tmdb = await clients.tmdb()
+                name = (await tmdb.get_series(payload.tmdb_id)).get("title") or ""
+            except ReeloomError:
+                name = ""
+        subscription = SubscriptionModel(
+            id=str(uuid.uuid4()),
+            name=name or payload.query,
+            config_id=payload.config_id,
+            tmdb_id=payload.tmdb_id,
+            query=payload.query.strip(),
+            season=payload.season,
+            groups=tuple(item.strip() for item in payload.groups if item.strip()),
+            include=payload.include,
+            exclude=payload.exclude,
+            notes=payload.notes,
+            enabled=payload.enabled,
+            ignore_before=None if payload.backfill else datetime.now(timezone.utc),
+        )
+        created = await database.create_subscription(subscription)
+        return await subscription_json(created)
+
+    @api.patch("/subscriptions/{subscription_id}")
+    async def update_subscription(subscription_id: str, payload: SubscriptionPatch):
+        if await database.get_subscription(subscription_id) is None:
+            raise HTTPException(status_code=404, detail="subscription_not_found")
+        values = payload.model_dump(exclude_none=True)
+        if values.pop("clear_season", False):
+            values["season"] = None
+        if "config_id" in values:
+            await check_subscription_target(values["config_id"])
+        check_patterns(values.get("include"), values.get("exclude"))
+        if "groups" in values:
+            values["groups"] = [item.strip() for item in values["groups"] if item.strip()]
+        await database.update_subscription(subscription_id, values)
+        stored = await database.get_subscription(subscription_id)
+        assert stored is not None
+        return await subscription_json(stored)
+
+    @api.delete("/subscriptions/{subscription_id}")
+    async def delete_subscription(subscription_id: str):
+        live = await database.list_grabs(
+            subscription_id=subscription_id,
+            states=[GrabState.DOWNLOADING, GrabState.COMPLETED],
+        )
+        if live:
+            raise HTTPException(status_code=409, detail="subscription_has_live_grabs")
+        await database.delete_subscription(subscription_id)
+        return {"deleted": True}
+
+    @api.post("/subscriptions/{subscription_id}/check")
+    async def check_subscription(subscription_id: str):
+        service = need_subscriptions()
+        try:
+            grabs = await service.check_now(subscription_id)
+        except ReeloomError as error:
+            status = 404 if error.code == "subscription_not_found" else 502
+            if error.code.endswith("_not_configured"):
+                status = 503
+            raise HTTPException(status_code=status, detail=error.code)
+        return {"grabbed": [grab.to_json() for grab in grabs]}
+
+    @api.post("/subscriptions/preview")
+    async def preview_subscription(payload: SubscriptionInput):
+        """What a check would grab for these settings, without grabbing."""
+
+        service = need_subscriptions()
+        check_patterns(payload.include, payload.exclude)
+        draft = SubscriptionModel(
+            id="",
+            name=payload.name or payload.query,
+            config_id=payload.config_id,
+            tmdb_id=payload.tmdb_id,
+            query=payload.query.strip(),
+            season=payload.season,
+            groups=tuple(item.strip() for item in payload.groups if item.strip()),
+            include=payload.include,
+            exclude=payload.exclude,
+            ignore_before=None if payload.backfill else datetime.now(timezone.utc),
+        )
+        try:
+            verdicts = await service.preview(draft)
+        except ReeloomError as error:
+            status = 503 if error.code.endswith("_not_configured") else 502
+            raise HTTPException(status_code=status, detail=error.code)
+        return {"releases": [item.to_json() for item in verdicts]}
+
+    @api.post("/subscriptions/{subscription_id}/preview")
+    async def preview_existing(subscription_id: str):
+        service = need_subscriptions()
+        subscription = await database.get_subscription(subscription_id)
+        if subscription is None:
+            raise HTTPException(status_code=404, detail="subscription_not_found")
+        try:
+            verdicts = await service.preview(subscription)
+        except ReeloomError as error:
+            status = 503 if error.code.endswith("_not_configured") else 502
+            raise HTTPException(status_code=status, detail=error.code)
+        return {"releases": [item.to_json() for item in verdicts]}
+
+    @api.delete("/grabs/{grab_id}")
+    async def forget_grab(grab_id: str):
+        service = need_subscriptions()
+        try:
+            await service.forget(grab_id)
+        except ReeloomError as error:
+            status = 404 if error.code == "grab_not_found" else 502
+            raise HTTPException(status_code=status, detail=error.code)
+        return {"deleted": True}
+
+    @api.get("/tmdb/search")
+    async def tmdb_search(query: str, movie: bool = False):
+        """TMDB lookup for the subscription form."""
+
+        if clients is None:
+            raise HTTPException(status_code=503, detail="tmdb_not_configured")
+        if not query.strip() or len(query) > 200:
+            raise HTTPException(status_code=422, detail="invalid_query")
+        try:
+            tmdb = await clients.tmdb()
+            result = await tmdb.search(query.strip(), movie=movie)
+        except ReeloomError as error:
+            status = 503 if error.code.endswith("_not_configured") else 502
+            raise HTTPException(status_code=status, detail=error.code)
+        return result.to_json()
 
     # ---- magnet downloads ---------------------------------------------
 
@@ -662,6 +928,7 @@ def _config_json(config: WatchConfigModel | None) -> dict[str, Any]:
         "replace_enabled": config.replace_enabled,
         "replace_extra_dirs": list(config.replace_extra_dirs),
         "replace_auto_ratio": config.replace_auto_ratio,
+        "cross_filesystem": config.cross_filesystem,
     }
 
 

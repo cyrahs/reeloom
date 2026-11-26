@@ -12,6 +12,7 @@ import { DownloadsPage } from "./pages/Downloads";
 import { RunDetailPage } from "./pages/RunDetail";
 import { RunsPage } from "./pages/Runs";
 import { SettingsPage } from "./pages/Settings";
+import { SubscriptionsPage } from "./pages/Subscriptions";
 import { SubtitlesPage } from "./pages/Subtitles";
 import { Link, useRoute } from "./router";
 
@@ -124,6 +125,12 @@ export function App() {
               下载
             </Link>
             <Link
+              to="/subscriptions"
+              className={route === "/subscriptions" ? "active" : ""}
+            >
+              订阅
+            </Link>
+            <Link
               to="/subtitles"
               className={route === "/subtitles" ? "active" : ""}
             >
@@ -154,6 +161,8 @@ export function App() {
           <SettingsPage />
         ) : route === "/downloads" ? (
           <DownloadsPage />
+        ) : route === "/subscriptions" ? (
+          <SubscriptionsPage />
         ) : route === "/subtitles" ? (
           <SubtitlesPage />
         ) : (

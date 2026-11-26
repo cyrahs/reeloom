@@ -23,6 +23,7 @@ destination always means a previous pass already did it.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import shutil
@@ -227,7 +228,12 @@ class FilesystemExecutor:
         if move.kind in _TRASH_KINDS:
             return self._trash_apply(move, source, destination, roots)
 
-        outcome = self._move_file(source, destination, roots.base(move.dest_root))
+        outcome = self._move_file(
+            source,
+            destination,
+            roots.base(move.dest_root),
+            cross_filesystem=roots.cross_filesystem,
+        )
         if outcome is not MoveOutcome.DUPLICATE:
             return ExecutedMove(move, outcome)
 
@@ -238,7 +244,12 @@ class FilesystemExecutor:
         _LOGGER.info("duplicate, diverting to fail: %s", move.source_path)
         return ExecutedMove(
             redirect,
-            self._move_file(source, fail_destination, roots.base(redirect.dest_root)),
+            self._move_file(
+                source,
+                fail_destination,
+                roots.base(redirect.dest_root),
+                cross_filesystem=roots.cross_filesystem,
+            ),
         )
 
     def _trash_apply(
@@ -264,7 +275,14 @@ class FilesystemExecutor:
             outcome = MoveOutcome.ALREADY_DONE
         return ExecutedMove(move, outcome)
 
-    def _move_file(self, source: Path, destination: Path, base: Path) -> MoveOutcome:
+    def _move_file(
+        self,
+        source: Path,
+        destination: Path,
+        base: Path,
+        *,
+        cross_filesystem: bool = False,
+    ) -> MoveOutcome:
         destination.parent.mkdir(parents=True, exist_ok=True)
         _check_within(base, destination)
         try:
@@ -281,6 +299,8 @@ class FilesystemExecutor:
                     if _exists(destination)
                     else MoveOutcome.MISSING
                 )
+            if failure is RenameFailure.CROSS_FILESYSTEM and cross_filesystem:
+                return _copy_across(source, destination)
             if failure is RenameFailure.CROSS_FILESYSTEM:
                 raise ExecutionError(
                     "cross_filesystem_move",
@@ -376,9 +396,12 @@ class FilesystemExecutor:
 
 
 class _Roots:
-    def __init__(self, inbound: Path, library: Path) -> None:
+    def __init__(
+        self, inbound: Path, library: Path, *, cross_filesystem: bool = False
+    ) -> None:
         self.inbound = inbound
         self.library = library
+        self.cross_filesystem = cross_filesystem
 
     @classmethod
     def of(cls, config: WatchConfig) -> _Roots:
@@ -390,7 +413,7 @@ class _Roots:
                 inbound=config.inbound_root,
                 library=config.library_root,
             )
-        return cls(inbound, library)
+        return cls(inbound, library, cross_filesystem=config.cross_filesystem)
 
     def base(self, root: Root, extra_base: str | None = None) -> Path:
         if root is Root.EXTRA:
@@ -430,6 +453,75 @@ def _check_within(base: Path, destination: Path) -> None:
         raise ExecutionError(
             "destination_escapes_root", path=str(resolved), root=str(base)
         )
+
+
+PARTIAL_SUFFIX = ".partial~"
+_COPY_CHUNK = 8 * 1024 * 1024
+
+
+def _copy_across(source: Path, destination: Path) -> MoveOutcome:
+    """Move one file between filesystems: copy into place, then unlink.
+
+    Only for watches marked ``cross_filesystem`` (a local download disk
+    feeding a cloud mount). The copy goes to ``<destination>.partial~`` and
+    is renamed into place without replacing anything, after its size is
+    checked, so the library never shows a half-written file under its real
+    name. The source is removed only once the destination holds the full
+    copy — the same end state a rename would leave. An existing destination
+    is a duplicate, exactly as for a rename.
+    """
+
+    if source.is_symlink() or not source.is_file():
+        if not _exists(source):
+            return MoveOutcome.ALREADY_DONE if _exists(destination) else MoveOutcome.MISSING
+        raise ExecutionError("cross_filesystem_not_a_file", source=str(source))
+    if _exists(destination):
+        return MoveOutcome.DUPLICATE
+    partial = destination.with_name(destination.name + PARTIAL_SUFFIX)
+    expected = source.stat().st_size
+    _LOGGER.info("copying across filesystems (%d bytes): %s", expected, destination)
+    try:
+        with source.open("rb") as reader, partial.open("wb") as writer:
+            while chunk := reader.read(_COPY_CHUNK):
+                writer.write(chunk)
+            writer.flush()
+            try:
+                os.fsync(writer.fileno())
+            except OSError as error:
+                # Some FUSE mounts do not implement fsync; close still flushes.
+                if error.errno not in (errno.EINVAL, errno.ENOSYS, errno.ENOTSUP):
+                    raise
+        copied = partial.stat().st_size
+        if copied != expected:
+            raise ExecutionError(
+                "cross_filesystem_copy_short",
+                expected=expected,
+                copied=copied,
+                destination=str(destination),
+            )
+        rename_noreplace(partial, destination)
+    except FileExistsError:
+        _discard_partial(partial)
+        return MoveOutcome.DUPLICATE
+    except ExecutionError:
+        _discard_partial(partial)
+        raise
+    except OSError as error:
+        _discard_partial(partial)
+        raise ExecutionError(
+            "cross_filesystem_copy_failed",
+            reason=classify(error).value,
+            destination=str(destination),
+        ) from error
+    source.unlink()
+    return MoveOutcome.MOVED
+
+
+def _discard_partial(partial: Path) -> None:
+    """Remove reeloom's own half-written copy; never anything else."""
+
+    if partial.name.endswith(PARTIAL_SUFFIX) and partial.is_file():
+        partial.unlink(missing_ok=True)
 
 
 def _delete_acquired_staging(inbound: Path, run: Run) -> None:

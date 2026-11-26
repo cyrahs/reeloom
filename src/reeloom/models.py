@@ -452,6 +452,10 @@ class WatchConfig:
     """Extra absolute directories checked for existing versions (e.g. anirss)."""
     replace_auto_ratio: float = 1.2
     """Season size ratio at or above which a replacement runs unattended."""
+    cross_filesystem: bool = False
+    """Inbound and library are on different filesystems (a local download
+    disk feeding a cloud mount): a move that cannot be a rename becomes a
+    copy into place followed by removing the source."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -561,3 +565,100 @@ class PinnedAlert:
     subject_kind: str
     """``run`` or ``download``."""
     subject_id: str
+
+
+class GrabState(StrEnum):
+    """Lifecycle of one release a subscription sent to the PT client."""
+
+    DOWNLOADING = "downloading"
+    COMPLETED = "completed"
+    """Every byte is on disk and the folder sits in the watch's inbound root."""
+    IMPORTED = "imported"
+    """Its run finished and the torrent was dropped from the client."""
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class Subscription:
+    id: str
+    name: str
+    config_id: str
+    """Watch whose inbound root the downloads land in."""
+    tmdb_id: int
+    query: str
+    season: int | None = None
+    groups: tuple[str, ...] = ()
+    include: str = ""
+    exclude: str = ""
+    notes: str = ""
+    """User guidance handed to the Agent with every grabbed folder."""
+    enabled: bool = True
+    ignore_before: datetime | None = None
+    """Releases published earlier are never grabbed (None: backfill all)."""
+    last_checked_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "config_id": self.config_id,
+            "tmdb_id": self.tmdb_id,
+            "query": self.query,
+            "season": self.season,
+            "groups": list(self.groups),
+            "include": self.include,
+            "exclude": self.exclude,
+            "notes": self.notes,
+            "enabled": self.enabled,
+            "ignore_before": _iso(self.ignore_before),
+            "last_checked_at": _iso(self.last_checked_at),
+            "last_error": self.last_error,
+            "created_at": _iso(self.created_at),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Grab:
+    id: str
+    subscription_id: str
+    config_id: str
+    guid: str
+    title: str
+    folder_name: str
+    """Folder under the watch's inbound root the release downloads into."""
+    info_hash: str
+    state: GrabState
+    season: int | None = None
+    episodes: tuple[int, ...] | None = None
+    size_bytes: int = 0
+    progress: float = 0.0
+    error: str | None = None
+    run_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "subscription_id": self.subscription_id,
+            "config_id": self.config_id,
+            "guid": self.guid,
+            "title": self.title,
+            "folder_name": self.folder_name,
+            "info_hash": self.info_hash,
+            "state": self.state.value,
+            "season": self.season,
+            "episodes": list(self.episodes) if self.episodes is not None else None,
+            "size_bytes": self.size_bytes,
+            "progress": self.progress,
+            "error": self.error,
+            "run_id": self.run_id,
+            "created_at": _iso(self.created_at),
+            "updated_at": _iso(self.updated_at),
+        }
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None

@@ -14,7 +14,7 @@ import re
 REDACTED = "<redacted>"
 
 _PATTERNS = (
-    re.compile(r"(?i)(api_key=)[^&\s'\"]*"),
+    re.compile(r"(?i)(api_?key=)[^&\s'\"]*"),
     re.compile(r"(/bot)[0-9]{1,20}:[A-Za-z0-9_-]+"),
 )
 
