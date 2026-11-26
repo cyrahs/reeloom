@@ -40,6 +40,13 @@ class QbittorrentClientError(ReeloomError):
     pass
 
 
+def _ok(response: httpx.Response) -> bool:
+    """Any 2xx: qBittorrent 5.x answers several calls with 204 or a JSON
+    body where older versions said 200 "Ok."."""
+
+    return 200 <= response.status_code < 300
+
+
 @dataclass(frozen=True, slots=True)
 class TorrentStatus:
     info_hash: str
@@ -120,7 +127,12 @@ class QbittorrentClient:
         if response.status_code == 403:
             # qBittorrent bans an address after repeated failures.
             raise QbittorrentClientError("pt_client_banned")
-        if response.status_code != 200 or response.text.strip() != "Ok.":
+        # qBittorrent before 5.x answers 200 "Ok."; 5.x answers 204 with an
+        # empty body (and a 401 or 200 "Fails." for a wrong password).
+        accepted = response.status_code == 204 or (
+            response.status_code == 200 and response.text.strip() == "Ok."
+        )
+        if not accepted:
             self._rejected = True
             raise QbittorrentClientError("pt_client_login_failed")
         self._logged_in = True
@@ -147,7 +159,7 @@ class QbittorrentClient:
             "POST", "/api/v2/torrents/createCategory", data={"category": category}
         )
         # 409: already exists, which is the point.
-        if response.status_code not in (200, 409):
+        if not (_ok(response) or response.status_code == 409):
             raise QbittorrentClientError(
                 "pt_client_error", status=response.status_code, call="createCategory"
             )
@@ -186,7 +198,7 @@ class QbittorrentClient:
             raise QbittorrentClientError("pt_client_invalid_torrent")
         if response.status_code == 409:
             raise QbittorrentClientError("pt_client_duplicate")
-        if response.status_code != 200 or response.text.strip() == "Fails.":
+        if not _ok(response) or response.text.strip() == "Fails.":
             raise QbittorrentClientError(
                 "pt_client_add_failed", status=response.status_code
             )
@@ -230,7 +242,7 @@ class QbittorrentClient:
                 "deleteFiles": "true" if delete_files else "false",
             },
         )
-        if response.status_code != 200:
+        if not _ok(response):
             raise QbittorrentClientError(
                 "pt_client_error", status=response.status_code, call="delete"
             )
