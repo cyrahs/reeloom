@@ -8,8 +8,10 @@ and recorded in the run's ledger like any other move, so a revert can bring
 it back for as long as it exists. The ``origin`` segment names where the file
 came from (``library``, ``inbound``, ``extra-1`` …) so displaced files from
 different roots cannot collide. The library and any extra directories must
-therefore share a filesystem with the watch root; a cross-filesystem trash
-move fails loudly instead of copying.
+therefore share a filesystem with the watch root — a cross-filesystem trash
+move fails loudly instead of copying — unless the watch is marked
+``cross_filesystem``, where a trash move is the same verified copy and
+source removal as any other move on that watch.
 
 The periodic purge in the worker is the only place trash is actually deleted,
 once the run is settled and the retention window has passed.

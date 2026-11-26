@@ -931,3 +931,28 @@ async def test_cross_filesystem_move_is_refused_unless_the_watch_allows_it(
         await engine.execute(run, config)
     assert raised.value.code == "cross_filesystem_move"
     assert (inbound / FOLDER / "ep01.mkv").is_file()
+
+
+async def test_cross_filesystem_replacement_copies_the_old_version_into_trash(
+    config: WatchConfig, roots: tuple[Path, Path], executor, exdev_between_roots
+) -> None:
+    inbound, library = roots
+    make_files(inbound / FOLDER, "ep01.mkv", size=32)
+    make_files(library, DEST, size=16)
+    engine, database = executor
+    run = replacement_run()
+    database.runs[run.id] = run
+    cross = replace(config, cross_filesystem=True)
+
+    result = await engine.execute(run, cross)
+
+    assert (library / DEST).stat().st_size == 32
+    assert (inbound / TRASH_DIR / "run-1" / "library" / DEST).stat().st_size == 16
+    assert not list(inbound.rglob("*.partial~"))
+    assert not list(library.rglob("*.partial~"))
+    assert result.replaced == ("Show S01E01.mkv",)
+
+    await engine.revert(database.runs[run.id], cross)
+
+    assert (library / DEST).stat().st_size == 16
+    assert (inbound / FOLDER / "ep01.mkv").stat().st_size == 32
