@@ -118,7 +118,9 @@ applies the new plan.
   and episode numbers; destinations are computed from the TMDB entry.
 - Title and year come from TMDB, not from model output.
 - Renames use `RENAME_NOREPLACE` / `RENAME_EXCL`, so an existing destination
-  makes the move fail rather than clobber.
+  makes the move fail rather than clobber. Where the flag is not supported
+  (NFS, e.g. a Kubernetes RWX volume) a file move is `link` + `unlink`, which
+  refuses an existing name just the same.
 - Execution is forward-only and idempotent. Re-running a plan is a no-op, which
   is how a crashed job finishes: it just runs again.
 - Nothing is deleted. Unmapped files go to `archive`, duplicates and discarded

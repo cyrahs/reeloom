@@ -2,9 +2,12 @@
 
 The single primitive the whole safety model rests on: a rename that fails
 rather than overwriting. ``renameat2(RENAME_NOREPLACE)`` on Linux,
-``renameatx_np(RENAME_EXCL)`` on Darwin. FUSE mounts that answer "not
-supported" fall back to check-then-rename, which is what CloudDrive-style
-mounts need; that path is logged because it is not atomic.
+``renameatx_np(RENAME_EXCL)`` on Darwin. Filesystems that answer "not
+supported" (NFS, for one, rejects the flag with EINVAL) fall back to
+``link`` + ``unlink`` for files, which refuses an existing destination
+just as atomically. FUSE mounts, and directories anywhere, fall back to
+check-then-rename, which is what CloudDrive-style mounts need; that path is
+logged because it is not atomic.
 """
 
 from __future__ import annotations
@@ -107,8 +110,11 @@ def rename_noreplace(source: Path, destination: Path) -> None:
     number = ctypes.get_errno()
     error = OSError(number, os.strerror(number), str(source))
     failure = classify(error)
-    if failure is RenameFailure.UNSUPPORTED and _is_fuse(source):
-        _checked_rename(source, destination, reason="FUSE mount")
+    if failure is RenameFailure.UNSUPPORTED:
+        if _is_fuse(source) or source.is_dir():
+            _checked_rename(source, destination, reason="FUSE mount or directory")
+            return
+        _link_then_unlink(source, destination)
         return
     if failure is RenameFailure.COLLISION:
         raise FileExistsError(number, os.strerror(number), str(destination))
@@ -128,6 +134,25 @@ def _checked_rename(source: Path, destination: Path, *, reason: str) -> None:
         )
     _LOGGER.warning("degraded non-atomic rename (%s): %s", reason, destination)
     os.rename(source, destination)
+
+
+def _link_then_unlink(source: Path, destination: Path) -> None:
+    """Exclusive move of a file where the rename flag is not supported.
+
+    ``link`` never replaces an existing name, so a taken destination raises
+    FileExistsError exactly like ``RENAME_NOREPLACE``; the source name is
+    dropped only once the new one exists.
+    """
+
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except OSError as error:
+        if classify(error) is RenameFailure.COLLISION:
+            raise FileExistsError(
+                errno.EEXIST, os.strerror(errno.EEXIST), str(destination)
+            ) from error
+        raise
+    os.unlink(source)
 
 
 def _is_fuse(path: Path) -> bool:
