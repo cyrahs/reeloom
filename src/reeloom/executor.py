@@ -268,8 +268,15 @@ class FilesystemExecutor:
         forward = _in_trash(move.dest_path)
         if forward and _exists(destination):
             return ExecutedMove(move, MoveOutcome.ALREADY_DONE)
+        # On a cross-filesystem watch the trash area (under the local watch
+        # root) and the library are on different disks, so displacing a
+        # library file is a verified copy down followed by removing the
+        # original, like any other cross-filesystem move.
         outcome = self._move_file(
-            source, destination, roots.base(move.dest_root, move.extra_base)
+            source,
+            destination,
+            roots.base(move.dest_root, move.extra_base),
+            cross_filesystem=roots.cross_filesystem,
         )
         if forward and outcome is MoveOutcome.DUPLICATE:
             outcome = MoveOutcome.ALREADY_DONE
