@@ -82,7 +82,10 @@ async def test_prowlarr_rate_limit_is_a_stable_error() -> None:
 
 
 class FakeQbit:
-    def __init__(self) -> None:
+    def __init__(self, *, modern: bool = False) -> None:
+        # modern: qBittorrent 5.x, which answers a good login with 204 and
+        # an empty body, a bad one with 401, and add/delete with 204.
+        self.modern = modern
         self.logins = 0
         self.expire_next = False
         self.added: list[dict[str, str]] = []
@@ -94,9 +97,15 @@ class FakeQbit:
             self.logins += 1
             body = request.content.decode()
             if "password=right" in body:
+                if self.modern:
+                    return httpx.Response(
+                        204, headers={"set-cookie": "SID=abc; path=/"}
+                    )
                 return httpx.Response(
                     200, text="Ok.", headers={"set-cookie": "SID=abc; path=/"}
                 )
+            if self.modern:
+                return httpx.Response(401, text="Fails.")
             return httpx.Response(200, text="Fails.")
         if request.headers.get("cookie") != "SID=abc":
             return httpx.Response(403)
@@ -107,6 +116,8 @@ class FakeQbit:
             return httpx.Response(409)
         if path == "/api/v2/torrents/add":
             self.added.append({"body": request.content.decode("latin-1")})
+            if self.modern:
+                return httpx.Response(204)
             return httpx.Response(200, text="Ok.")
         if path == "/api/v2/torrents/info":
             return httpx.Response(
@@ -124,12 +135,15 @@ class FakeQbit:
             )
         if path == "/api/v2/torrents/delete":
             self.deleted.append({"body": request.content.decode()})
-            return httpx.Response(200)
+            return httpx.Response(204 if self.modern else 200)
         return httpx.Response(404)
 
 
-async def test_qbittorrent_client_logs_in_once_and_again_after_expiry() -> None:
-    fake = FakeQbit()
+@pytest.mark.parametrize("modern", [False, True], ids=["4.x", "5.x"])
+async def test_qbittorrent_client_logs_in_once_and_again_after_expiry(
+    modern: bool,
+) -> None:
+    fake = FakeQbit(modern=modern)
     client = QbittorrentClient(
         "http://qbittorrent-pt.media.svc", "admin", "right",
         transport=httpx.MockTransport(fake),
@@ -155,8 +169,9 @@ async def test_qbittorrent_client_logs_in_once_and_again_after_expiry() -> None:
     await client.aclose()
 
 
-async def test_qbittorrent_wrong_password_is_not_retried() -> None:
-    fake = FakeQbit()
+@pytest.mark.parametrize("modern", [False, True], ids=["4.x", "5.x"])
+async def test_qbittorrent_wrong_password_is_not_retried(modern: bool) -> None:
+    fake = FakeQbit(modern=modern)
     client = QbittorrentClient(
         "http://qbt", "admin", "wrong", transport=httpx.MockTransport(fake)
     )
