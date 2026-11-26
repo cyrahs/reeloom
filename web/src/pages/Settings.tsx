@@ -22,6 +22,7 @@ interface ConfigForm {
   replace_enabled: boolean;
   replace_extra_dirs: string[];
   replace_auto_ratio: number;
+  cross_filesystem: boolean;
 }
 
 const EMPTY_CONFIG: ConfigForm = {
@@ -37,6 +38,7 @@ const EMPTY_CONFIG: ConfigForm = {
   replace_enabled: false,
   replace_extra_dirs: [],
   replace_auto_ratio: 1.2,
+  cross_filesystem: false,
 };
 
 function ConfigRow({
@@ -52,6 +54,7 @@ function ConfigRow({
   if (config.media_type === "anime" && config.acquire_subtitles)
     features.push("字幕");
   if (config.replace_enabled) features.push("洗版");
+  if (config.cross_filesystem) features.push("跨盘");
   if (config.notify) features.push("通知");
 
   return (
@@ -275,6 +278,19 @@ function ConfigFields({
           />
           洗版
         </label>
+        <label
+          className="checkbox-field"
+          title="监控目录和媒体库不在同一文件系统（如本地 PT 下载盘 → 云盘挂载）：先复制到位再删除源文件"
+        >
+          <input
+            type="checkbox"
+            checked={form.cross_filesystem}
+            onChange={(event) =>
+              onChange({ cross_filesystem: event.target.checked })
+            }
+          />
+          跨盘（复制后删源）
+        </label>
       </div>
       <div className="field-pair">
         <label className="field">
@@ -361,6 +377,7 @@ function EditConfig({
     replace_enabled: config.replace_enabled,
     replace_extra_dirs: config.replace_extra_dirs,
     replace_auto_ratio: config.replace_auto_ratio,
+    cross_filesystem: config.cross_filesystem,
   });
   const [error, setError] = useState("");
 
@@ -462,6 +479,13 @@ function Credentials({
     download_stall_hours: String(settings.download_stall_hours),
     subtitle_recheck_days: String(settings.subtitle_recheck_days),
     qbittorrent_save_root: settings.qbittorrent_save_root,
+    prowlarr_url: settings.prowlarr_url,
+    prowlarr_indexer_ids: settings.prowlarr_indexer_ids,
+    pt_client_url: settings.pt_client_url,
+    pt_client_username: settings.pt_client_username,
+    subscription_interval_minutes: String(
+      settings.subscription_interval_minutes ?? "",
+    ),
   });
   const [pinAlerts, setPinAlerts] = useState(settings.telegram_pin_alerts);
   const [cloudSecure, setCloudSecure] = useState(settings.clouddrive_secure);
@@ -475,6 +499,10 @@ function Credentials({
   } | null>(null);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramResult, setTelegramResult] = useState<{
+    ok: boolean;
+    detail: string;
+  } | null>(null);
+  const [subsResult, setSubsResult] = useState<{
     ok: boolean;
     detail: string;
   } | null>(null);
@@ -515,6 +543,41 @@ function Credentials({
       setTelegramResult({ ok: false, detail: (thrown as Error).message });
     } finally {
       setTestingTelegram(false);
+    }
+  }
+
+  async function testProwlarr() {
+    setSubsResult(null);
+    try {
+      const body = await api.testProwlarr();
+      setSubsResult(
+        body.ok
+          ? {
+              ok: true,
+              detail:
+                "Prowlarr 连通，索引器：" +
+                (body.indexers ?? [])
+                  .map((item) => `${item.id} ${item.name}`)
+                  .join("、"),
+            }
+          : { ok: false, detail: body.error ?? "未知错误" },
+      );
+    } catch (thrown) {
+      setSubsResult({ ok: false, detail: (thrown as Error).message });
+    }
+  }
+
+  async function testPtClient() {
+    setSubsResult(null);
+    try {
+      const body = await api.testPtClient();
+      setSubsResult(
+        body.ok
+          ? { ok: true, detail: `下载器连通（qBittorrent ${body.version}）` }
+          : { ok: false, detail: body.error ?? "未知错误" },
+      );
+    } catch (thrown) {
+      setSubsResult({ ok: false, detail: (thrown as Error).message });
     }
   }
 
@@ -588,6 +651,11 @@ function Credentials({
             download_stall_hours: form.download_stall_hours,
             subtitle_recheck_days: form.subtitle_recheck_days,
             qbittorrent_save_root: form.qbittorrent_save_root,
+            prowlarr_url: form.prowlarr_url,
+            prowlarr_indexer_ids: form.prowlarr_indexer_ids,
+            pt_client_url: form.pt_client_url,
+            pt_client_username: form.pt_client_username,
+            subscription_interval_minutes: form.subscription_interval_minutes,
           });
           setSaved(true);
           onSaved();
@@ -787,6 +855,64 @@ function Credentials({
         )}
         <span className="muted">
           客户端用户名任意，密码填这里的值（至少 8 位）。两项都配置后接口才开放。
+        </span>
+      </div>
+      <div className="cred-group">
+        <h3>订阅</h3>
+        <label className="field">
+          Prowlarr 地址
+          <input
+            placeholder="http://prowlarr.media.svc:9696"
+            {...bind("prowlarr_url")}
+          />
+        </label>
+        {secretField(
+          "prowlarr_api_key",
+          "Prowlarr API Key",
+          settings.prowlarr_api_key_set,
+        )}
+        <label className="field">
+          索引器 ID
+          <input placeholder="5" {...bind("prowlarr_indexer_ids")} />
+        </label>
+        <label className="field">
+          检查间隔（分钟）
+          <input
+            type="number"
+            min={5}
+            max={1440}
+            {...bind("subscription_interval_minutes")}
+          />
+        </label>
+        <label className="field">
+          PT 下载器（qBittorrent）地址
+          <input
+            placeholder="http://qbittorrent-pt.media.svc"
+            {...bind("pt_client_url")}
+          />
+        </label>
+        <label className="field">
+          用户名
+          <input {...bind("pt_client_username")} />
+        </label>
+        {secretField("pt_client_password", "密码", settings.pt_client_password_set)}
+        <div className="field llm-test">
+          <button type="button" onClick={testProwlarr}>
+            测试 Prowlarr
+          </button>
+          <button type="button" onClick={testPtClient}>
+            测试下载器
+          </button>
+          {subsResult && (
+            <span className={subsResult.ok ? "muted" : "error"}>
+              {subsResult.detail}
+            </span>
+          )}
+        </div>
+        <span className="muted">
+          订阅经 Prowlarr 搜索索引器（站点凭据只在 Prowlarr 里），匹配的种子加入这台
+          qBittorrent，下载到订阅所选监控目录下的独立文件夹；下载器必须和本服务以相同路径挂载该目录。
+          每个订阅每个间隔搜索一次，请让总次数低于索引器的查询限额。
         </span>
       </div>
       <div className="form-actions">

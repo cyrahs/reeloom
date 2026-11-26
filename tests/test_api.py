@@ -976,3 +976,30 @@ async def test_clouddrive_test_endpoint(download_client, client) -> None:
         "/api/settings/test-clouddrive", headers=AUTH
     )
     assert response.json() == {"ok": True}
+
+
+async def test_subscription_settings_never_echo_secrets(client) -> None:
+    await client.put(
+        "/api/settings",
+        headers=AUTH,
+        json={
+            "prowlarr_url": "http://prowlarr.media.svc:9696/",
+            "prowlarr_api_key": "prowlarr-secret",
+            "prowlarr_indexer_ids": "5",
+            "pt_client_url": "http://qbittorrent-pt.media.svc",
+            "pt_client_username": "admin",
+            "pt_client_password": "qbit-secret",
+            "subscription_interval_minutes": 20,
+        },
+    )
+    body = (await client.get("/api/settings", headers=AUTH)).json()
+    assert body["prowlarr_url"] == "http://prowlarr.media.svc:9696"
+    assert body["prowlarr_api_key_set"] is True
+    assert body["pt_client_password_set"] is True
+    assert body["subscription_interval_minutes"] == 20
+    assert "prowlarr-secret" not in str(body) and "qbit-secret" not in str(body)
+
+    refused = await client.put(
+        "/api/settings", headers=AUTH, json={"prowlarr_url": "ftp://x"}
+    )
+    assert refused.status_code == 422

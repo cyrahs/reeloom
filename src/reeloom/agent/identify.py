@@ -13,6 +13,7 @@ from reeloom.agent.prompts import (
     SYSTEM,
     chat_message,
     revision_message,
+    subscription_message,
     task_message,
 )
 from reeloom.agent.tools import IdentificationTools
@@ -33,6 +34,26 @@ class ClientFactory(Protocol):
 class AgentIdentifier:
     """Implements the worker's ``Identifier`` protocol."""
 
+    async def _subscription_hint(self, run: Run, config: WatchConfig) -> str | None:
+        """What the subscription that downloaded this folder was after."""
+
+        lookup = getattr(self._db, "grab_for_folder", None)
+        if lookup is None:
+            return None
+        grab = await lookup(config.id, run.folder_name)
+        if grab is None:
+            return None
+        subscription = await self._db.get_subscription(grab.subscription_id)
+        if subscription is None:
+            return None
+        return subscription_message(
+            subscription_name=subscription.name,
+            tmdb_id=subscription.tmdb_id,
+            season=subscription.season,
+            release_title=grab.title,
+            notes=subscription.notes,
+        )
+
     def __init__(self, clients: ClientFactory, database) -> None:
         self._clients = clients
         self._db = database
@@ -44,6 +65,9 @@ class AgentIdentifier:
         conversation = Conversation()
         conversation.system(SYSTEM)
         conversation.user(task_message(run, config))
+        hint = await self._subscription_hint(run, config)
+        if hint:
+            conversation.user(hint)
         # The run's whole chat log is the model's context: Q&A as background,
         # revision messages as binding instructions, in that order so the
         # instructions land last.
@@ -77,3 +101,4 @@ class AgentIdentifier:
             len(plan.moves),
         )
         return plan
+

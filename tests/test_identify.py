@@ -442,3 +442,52 @@ async def test_an_out_of_range_page_is_rejected_not_fetched(
     observation = model.seen[-1][-1]["content"]
     assert "invalid_argument" in observation
     assert '"argument": "page"' in observation
+
+
+async def test_a_subscription_download_tells_the_agent_its_tmdb_entry(
+    config: WatchConfig,
+) -> None:
+    from reeloom.models import Grab, GrabState, Subscription
+
+    class SubscriptionDatabase(FakeDatabase):
+        async def grab_for_folder(self, config_id, folder_name):
+            return Grab(
+                id="g1",
+                subscription_id="s1",
+                config_id=config_id,
+                guid="guid",
+                title="Show S01E01-E02 1080p-HHWEB",
+                folder_name=folder_name,
+                info_hash="H",
+                state=GrabState.COMPLETED,
+            )
+
+        async def get_subscription(self, subscription_id):
+            return Subscription(
+                id="s1",
+                name="Show",
+                config_id=config.id,
+                tmdb_id=123,
+                query="Show",
+                season=1,
+                notes="第N期上/下 are separate TMDB episodes",
+            )
+
+    _, model, _ = await identify(
+        config,
+        call("get_series", tmdb_id=123),
+        call(
+            "submit_plan",
+            tmdb_id=123,
+            entries=episodes(("V1", 1), ("V2", 2)),
+            notes="ok",
+        ),
+        database=SubscriptionDatabase(),
+    )
+    first_turn = "\n".join(
+        str(message.get("content")) for message in model.seen[0]
+    )
+    assert "targets TMDB id 123" in first_turn
+    assert "season 1" in first_turn
+    assert "第N期上/下" in first_turn
+    assert "Show S01E01-E02 1080p-HHWEB" in first_turn

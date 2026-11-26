@@ -1271,3 +1271,60 @@ ul {
   padding: 0.25rem 0.6rem;
   font-size: 0.82rem;
 }
+
+/* ---- subscriptions ---------------------------------------------------- */
+
+.subscription-form,
+.subscription {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.subscription-form .field-grid {
+  display: grid;
+  gap: 0.75rem 1.25rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+}
+
+.subscription-form textarea {
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.subscription .form-actions,
+.subscription-form .form-actions {
+  flex-wrap: wrap;
+}
+
+.subscription > p {
+  margin: 0;
+}
+
+.inline-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.inline-row input {
+  flex: 1;
+}
+
+.pick-list {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.pick-list button.link {
+  text-align: left;
+  font-weight: 400;
+}
+
+.runs.preview {
+  max-height: 24rem;
+  overflow-y: auto;
+}

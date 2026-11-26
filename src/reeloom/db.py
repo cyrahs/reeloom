@@ -23,6 +23,8 @@ from psycopg_pool import AsyncConnectionPool
 from reeloom.models import (
     DownloadState,
     ExecutedMove,
+    Grab,
+    GrabState,
     MagnetDownload,
     MediaType,
     PinnedAlert,
@@ -31,6 +33,7 @@ from reeloom.models import (
     RunResult,
     RunState,
     SnapshotFile,
+    Subscription,
     SubtitleVariant,
     WatchConfig,
 )
@@ -189,6 +192,77 @@ alter table settings
 alter table settings
     add column if not exists qbittorrent_save_root text not null default '';
 
+alter table watch_config
+    add column if not exists cross_filesystem boolean not null default false;
+
+alter table settings
+    add column if not exists prowlarr_url text not null default '';
+
+alter table settings
+    add column if not exists prowlarr_api_key text not null default '';
+
+alter table settings
+    add column if not exists prowlarr_indexer_ids text not null default '';
+
+alter table settings
+    add column if not exists pt_client_url text not null default '';
+
+alter table settings
+    add column if not exists pt_client_username text not null default '';
+
+alter table settings
+    add column if not exists pt_client_password text not null default '';
+
+alter table settings
+    add column if not exists subscription_interval_minutes integer
+        not null default 30;
+
+-- A subscription searches the indexer (through Prowlarr) for a title and
+-- sends matching releases to the PT client, into its watch's inbound root.
+create table if not exists subscription (
+    id uuid primary key,
+    name text not null,
+    config_id uuid not null references watch_config(id) on delete cascade,
+    tmdb_id integer not null,
+    query text not null,
+    season integer,
+    groups jsonb not null default '[]'::jsonb,
+    include text not null default '',
+    exclude text not null default '',
+    notes text not null default '',
+    enabled boolean not null default true,
+    ignore_before timestamptz,
+    last_checked_at timestamptz,
+    last_error text,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists grab (
+    id uuid primary key,
+    subscription_id uuid not null references subscription(id) on delete cascade,
+    config_id uuid not null,
+    guid text not null,
+    title text not null,
+    folder_name text not null,
+    info_hash text not null,
+    state text not null,
+    season integer,
+    episodes jsonb,
+    size_bytes bigint not null default 0,
+    progress double precision not null default 0,
+    error text,
+    run_id uuid,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create unique index if not exists grab_subscription_guid_key
+    on grab (subscription_id, guid);
+
+create index if not exists grab_state_key on grab (state, updated_at);
+
+create index if not exists grab_folder_key on grab (config_id, folder_name);
+
 -- Telegram messages reeloom pinned, so they can be unpinned once whatever
 -- they alerted about (a run or a magnet download) no longer needs a human.
 -- No foreign key: a deleted subject is exactly what releases the pin.
@@ -269,6 +343,13 @@ class Database:
             "subtitle_recheck_days",
             "qbittorrent_password",
             "qbittorrent_save_root",
+            "prowlarr_url",
+            "prowlarr_api_key",
+            "prowlarr_indexer_ids",
+            "pt_client_url",
+            "pt_client_username",
+            "pt_client_password",
+            "subscription_interval_minutes",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
@@ -308,9 +389,9 @@ class Database:
                     id, name, inbound_root, library_root, media_type,
                     enabled, stability_seconds, acquire_subtitles,
                     subtitle_variant, notify, replace_enabled,
-                    replace_extra_dirs, replace_auto_ratio
+                    replace_extra_dirs, replace_auto_ratio, cross_filesystem
                 ) values (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s
                 )
                 """,
                 (
@@ -327,6 +408,7 @@ class Database:
                     config.replace_enabled,
                     json.dumps(list(config.replace_extra_dirs)),
                     config.replace_auto_ratio,
+                    config.cross_filesystem,
                 ),
             )
         return config
@@ -345,6 +427,7 @@ class Database:
             "replace_enabled",
             "replace_extra_dirs",
             "replace_auto_ratio",
+            "cross_filesystem",
         }
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
@@ -788,6 +871,207 @@ class Database:
 
     # ---- logs and interactions ----------------------------------------
 
+    # ---- subscriptions ------------------------------------------------
+
+    async def list_subscriptions(self) -> list[Subscription]:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from subscription order by created_at"
+            )
+            rows = await cursor.fetchall()
+        return [_subscription(row) for row in rows]
+
+    async def get_subscription(self, subscription_id: str) -> Subscription | None:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from subscription where id = %s", (subscription_id,)
+            )
+            row = await cursor.fetchone()
+        return _subscription(row) if row else None
+
+    async def create_subscription(self, subscription: Subscription) -> Subscription:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                insert into subscription (
+                    id, name, config_id, tmdb_id, query, season, groups,
+                    include, exclude, notes, enabled, ignore_before
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s
+                )
+                returning *
+                """,
+                (
+                    subscription.id,
+                    subscription.name,
+                    subscription.config_id,
+                    subscription.tmdb_id,
+                    subscription.query,
+                    subscription.season,
+                    json.dumps(list(subscription.groups)),
+                    subscription.include,
+                    subscription.exclude,
+                    subscription.notes,
+                    subscription.enabled,
+                    subscription.ignore_before,
+                ),
+            )
+            row = await cursor.fetchone()
+        return _subscription(row)
+
+    async def update_subscription(
+        self, subscription_id: str, values: dict[str, Any]
+    ) -> None:
+        allowed = {
+            "name",
+            "config_id",
+            "tmdb_id",
+            "query",
+            "season",
+            "groups",
+            "include",
+            "exclude",
+            "notes",
+            "enabled",
+            "last_checked_at",
+            "last_error",
+        }
+        updates = {key: value for key, value in values.items() if key in allowed}
+        if not updates:
+            return
+        if "groups" in updates:
+            updates["groups"] = json.dumps(list(updates["groups"]))
+        assignments = ", ".join(
+            f"{key} = %({key})s::jsonb" if key == "groups" else f"{key} = %({key})s"
+            for key in updates
+        )
+        async with self._connection() as connection:
+            await connection.execute(
+                f"update subscription set {assignments} where id = %(id)s",
+                {**updates, "id": subscription_id},
+            )
+
+    async def delete_subscription(self, subscription_id: str) -> None:
+        async with self._connection() as connection:
+            await connection.execute(
+                "delete from subscription where id = %s", (subscription_id,)
+            )
+
+    async def create_grab(self, grab: Grab) -> bool:
+        """Record a grab; False if this subscription already has the guid."""
+
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                """
+                insert into grab (
+                    id, subscription_id, config_id, guid, title, folder_name,
+                    info_hash, state, season, episodes, size_bytes
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                on conflict do nothing
+                returning id
+                """,
+                (
+                    grab.id,
+                    grab.subscription_id,
+                    grab.config_id,
+                    grab.guid,
+                    grab.title,
+                    grab.folder_name,
+                    grab.info_hash,
+                    grab.state.value,
+                    grab.season,
+                    json.dumps(list(grab.episodes))
+                    if grab.episodes is not None
+                    else None,
+                    grab.size_bytes,
+                ),
+            )
+            row = await cursor.fetchone()
+        return row is not None
+
+    async def get_grab(self, grab_id: str) -> Grab | None:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from grab where id = %s", (grab_id,)
+            )
+            row = await cursor.fetchone()
+        return _grab(row) if row else None
+
+    async def list_grabs(
+        self,
+        *,
+        subscription_id: str | None = None,
+        states: Sequence[GrabState] | None = None,
+        limit: int = 500,
+    ) -> list[Grab]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if subscription_id is not None:
+            clauses.append("subscription_id = %s")
+            params.append(subscription_id)
+        if states:
+            clauses.append("state = any(%s)")
+            params.append([state.value for state in states])
+        query = "select * from grab"
+        if clauses:
+            query += " where " + " and ".join(clauses)
+        query += " order by created_at desc limit %s"
+        params.append(limit)
+        async with self._connection() as connection:
+            cursor = await connection.execute(query, params)
+            rows = await cursor.fetchall()
+        return [_grab(row) for row in rows]
+
+    async def update_grab(self, grab_id: str, values: dict[str, Any]) -> None:
+        allowed = {"state", "progress", "error", "run_id"}
+        updates = {key: value for key, value in values.items() if key in allowed}
+        if not updates:
+            return
+        if isinstance(updates.get("state"), GrabState):
+            updates["state"] = updates["state"].value
+        assignments = ", ".join(f"{key} = %({key})s" for key in updates)
+        async with self._connection() as connection:
+            await connection.execute(
+                f"update grab set {assignments}, updated_at = now()"
+                " where id = %(id)s",
+                {**updates, "id": grab_id},
+            )
+
+    async def delete_grab(self, grab_id: str) -> None:
+        async with self._connection() as connection:
+            await connection.execute("delete from grab where id = %s", (grab_id,))
+
+    async def grab_for_folder(self, config_id: str, folder_name: str) -> Grab | None:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from grab where config_id = %s and folder_name = %s"
+                " order by created_at desc limit 1",
+                (config_id, folder_name),
+            )
+            row = await cursor.fetchone()
+        return _grab(row) if row else None
+
+    async def grab_folder_names(self, config_id: str) -> set[str]:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select folder_name from grab where config_id = %s",
+                (config_id,),
+            )
+            rows = await cursor.fetchall()
+        return {row["folder_name"] for row in rows}
+
+    async def latest_run_for_folder(
+        self, config_id: str, folder_name: str
+    ) -> Run | None:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "select * from run where config_id = %s and folder_name = %s"
+                " order by created_at desc limit 1",
+                (config_id, folder_name),
+            )
+            row = await cursor.fetchone()
+        return _run(row) if row else None
+
     async def log(
         self,
         run_id: str,
@@ -847,6 +1131,49 @@ def _watch_config(row: dict[str, Any]) -> WatchConfig:
         replace_enabled=row["replace_enabled"],
         replace_extra_dirs=tuple(row["replace_extra_dirs"] or ()),
         replace_auto_ratio=row["replace_auto_ratio"],
+        cross_filesystem=bool(row.get("cross_filesystem", False)),
+    )
+
+
+def _subscription(row: dict[str, Any]) -> Subscription:
+    return Subscription(
+        id=str(row["id"]),
+        name=row["name"],
+        config_id=str(row["config_id"]),
+        tmdb_id=row["tmdb_id"],
+        query=row["query"],
+        season=row["season"],
+        groups=tuple(row["groups"] or ()),
+        include=row["include"],
+        exclude=row["exclude"],
+        notes=row["notes"],
+        enabled=row["enabled"],
+        ignore_before=row["ignore_before"],
+        last_checked_at=row["last_checked_at"],
+        last_error=row["last_error"],
+        created_at=row["created_at"],
+    )
+
+
+def _grab(row: dict[str, Any]) -> Grab:
+    episodes = row["episodes"]
+    return Grab(
+        id=str(row["id"]),
+        subscription_id=str(row["subscription_id"]),
+        config_id=str(row["config_id"]),
+        guid=row["guid"],
+        title=row["title"],
+        folder_name=row["folder_name"],
+        info_hash=row["info_hash"],
+        state=GrabState(row["state"]),
+        season=row["season"],
+        episodes=tuple(episodes) if episodes is not None else None,
+        size_bytes=row["size_bytes"],
+        progress=row["progress"],
+        error=row["error"],
+        run_id=str(row["run_id"]) if row["run_id"] else None,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 

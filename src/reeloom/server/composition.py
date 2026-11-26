@@ -19,6 +19,8 @@ from reeloom.adapters.llm import (
     ModelReply,
     OpenAICompatibleModel,
 )
+from reeloom.adapters.prowlarr import ProwlarrClient
+from reeloom.adapters.qbittorrent import QbittorrentClient
 from reeloom.adapters.tmdb import TmdbClient
 from reeloom.db import Database
 from reeloom.models import Deferred, Run, WatchConfig
@@ -50,6 +52,10 @@ class Clients:
         self._tmdb_key: str | None = None
         self._clouddrive: AsyncCloudDrive | None = None
         self._clouddrive_key: tuple[str, str, bool] | None = None
+        self._prowlarr: ProwlarrClient | None = None
+        self._prowlarr_key: tuple[str, str] | None = None
+        self._pt_client: QbittorrentClient | None = None
+        self._pt_client_key: tuple[str, str, str] | None = None
 
     async def model(self) -> Model:
         settings = await self._db.get_settings()
@@ -104,6 +110,47 @@ class Clients:
         assert self._clouddrive is not None
         return self._clouddrive
 
+    async def prowlarr(self) -> ProwlarrClient:
+        settings = await self._db.get_settings()
+        key = (
+            settings.get("prowlarr_url", ""),
+            settings.get("prowlarr_api_key", ""),
+        )
+        if not all(key):
+            raise NotConfigured("prowlarr_not_configured")
+        if key != self._prowlarr_key:
+            if self._prowlarr is not None:
+                await self._prowlarr.aclose()
+            self._prowlarr = ProwlarrClient(key[0], key[1])
+            self._prowlarr_key = key
+        assert self._prowlarr is not None
+        return self._prowlarr
+
+    async def prowlarr_indexer_ids(self) -> tuple[int, ...]:
+        settings = await self._db.get_settings()
+        return parse_indexer_ids(settings.get("prowlarr_indexer_ids", ""))
+
+    async def pt_client(self) -> QbittorrentClient:
+        settings = await self._db.get_settings()
+        key = (
+            settings.get("pt_client_url", ""),
+            settings.get("pt_client_username", ""),
+            settings.get("pt_client_password", ""),
+        )
+        if not key[0] or not key[2]:
+            raise NotConfigured("pt_client_not_configured")
+        if key != self._pt_client_key:
+            if self._pt_client is not None:
+                await self._pt_client.aclose()
+            self._pt_client = QbittorrentClient(*key)
+            self._pt_client_key = key
+        assert self._pt_client is not None
+        return self._pt_client
+
+    async def subscription_interval_minutes(self) -> int:
+        settings = await self._db.get_settings()
+        return int(settings.get("subscription_interval_minutes", 30) or 30)
+
     async def download_stall_hours(self) -> int:
         settings = await self._db.get_settings()
         return int(settings.get("download_stall_hours", 24) or 24)
@@ -133,6 +180,12 @@ class Clients:
         await self._close_model()
         await self._close_tmdb()
         await self._close_clouddrive()
+        if self._prowlarr is not None:
+            await self._prowlarr.aclose()
+            self._prowlarr = None
+        if self._pt_client is not None:
+            await self._pt_client.aclose()
+            self._pt_client = None
 
     async def _close_model(self) -> None:
         if self._model is not None and hasattr(self._model, "aclose"):
@@ -234,6 +287,16 @@ def describe_run(run: Run, config: WatchConfig) -> str:
     return _describe(run, config)
 
 
+def parse_indexer_ids(value: str) -> tuple[int, ...]:
+    """``"5, 7"`` → ``(5, 7)``; junk entries are ignored."""
+
+    ids: list[int] = []
+    for part in value.replace(" ", ",").split(","):
+        if part.strip().isdigit():
+            ids.append(int(part.strip()))
+    return tuple(dict.fromkeys(ids))
+
+
 def settings_summary(settings: dict[str, Any]) -> dict[str, bool]:
     return {
         "tmdb": bool(settings.get("tmdb_api_key")),
@@ -248,5 +311,11 @@ def settings_summary(settings: dict[str, Any]) -> dict[str, bool]:
         "clouddrive": bool(
             settings.get("clouddrive_address")
             and settings.get("clouddrive_api_token")
+        ),
+        "subscriptions": bool(
+            settings.get("prowlarr_url")
+            and settings.get("prowlarr_api_key")
+            and settings.get("pt_client_url")
+            and settings.get("pt_client_password")
         ),
     }

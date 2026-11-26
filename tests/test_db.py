@@ -6,6 +6,7 @@ Run with ``REELOOM_TEST_POSTGRES_DSN`` pointing at a throwaway database.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from collections.abc import AsyncIterator
 from datetime import timedelta
 
@@ -39,7 +40,7 @@ async def database(postgres_dsn: str) -> AsyncIterator[Database]:
         # Every test starts from an empty control plane.
         async with database._connection() as connection:  # noqa: SLF001
             await connection.execute(
-                "truncate watch_config, run, run_log, interaction,"
+                "truncate watch_config, run, run_log, interaction, subscription, grab,"
                 " magnet_download, pinned_alert cascade"
             )
         yield database
@@ -491,3 +492,64 @@ async def test_pinned_alerts_round_trip(database: Database) -> None:
 
     await database.forget_pinned_alert(11)
     assert [pin.message_id for pin in await database.pinned_alerts()] == [12]
+
+
+async def test_subscriptions_and_grabs_round_trip(
+    database: Database, watch: WatchConfig
+) -> None:
+    from reeloom.models import Grab, GrabState, Subscription
+
+    await database.update_config(watch.id, {"cross_filesystem": True})
+    assert (await database.get_config(watch.id)).cross_filesystem is True
+
+    created = await database.create_subscription(
+        Subscription(
+            id=str(uuid.uuid4()),
+            name="后会友期",
+            config_id=watch.id,
+            tmdb_id=338938,
+            query="后会友期",
+            season=1,
+            groups=("HHWEB",),
+            include="1080p",
+        )
+    )
+    assert created.groups == ("HHWEB",) and created.created_at is not None
+    await database.update_subscription(
+        created.id, {"groups": ["HHWEB", "ADWeb"], "last_error": "x"}
+    )
+    stored = await database.get_subscription(created.id)
+    assert stored.groups == ("HHWEB", "ADWeb") and stored.last_error == "x"
+
+    grab = Grab(
+        id=str(uuid.uuid4()),
+        subscription_id=created.id,
+        config_id=watch.id,
+        guid="https://kp.m-team.cc/detail/1",
+        title="Show S01E01-E02",
+        folder_name="Show S01E01-E02",
+        info_hash="ABC",
+        state=GrabState.DOWNLOADING,
+        season=1,
+        episodes=(1, 2),
+        size_bytes=10,
+    )
+    assert await database.create_grab(grab) is True
+    assert await database.create_grab(replace(grab, id=str(uuid.uuid4()))) is False
+    await database.update_grab(grab.id, {"state": GrabState.COMPLETED, "progress": 1.0})
+    found = await database.grab_for_folder(watch.id, "Show S01E01-E02")
+    assert found.state is GrabState.COMPLETED and found.episodes == (1, 2)
+    assert await database.grab_folder_names(watch.id) == {"Show S01E01-E02"}
+    assert [g.id for g in await database.list_grabs(states=[GrabState.COMPLETED])] == [
+        grab.id
+    ]
+    assert await database.latest_run_for_folder(watch.id, "Show S01E01-E02") is None
+
+    await database.update_settings(
+        {"prowlarr_url": "http://prowlarr:9696", "subscription_interval_minutes": 15}
+    )
+    settings = await database.get_settings()
+    assert settings["subscription_interval_minutes"] == 15
+
+    await database.delete_subscription(created.id)
+    assert await database.get_grab(grab.id) is None

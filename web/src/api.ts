@@ -149,6 +149,8 @@ export interface WatchConfig {
   replace_enabled: boolean;
   replace_extra_dirs: string[];
   replace_auto_ratio: number;
+  /** Inbound and library on different filesystems: moves copy, then remove. */
+  cross_filesystem: boolean;
 }
 
 export interface DirListing {
@@ -177,6 +179,100 @@ export interface Settings {
   telegram_bot_token_set: boolean;
   clouddrive_api_token_set: boolean;
   qbittorrent_password_set: boolean;
+  prowlarr_url: string;
+  prowlarr_indexer_ids: string;
+  pt_client_url: string;
+  pt_client_username: string;
+  subscription_interval_minutes: number;
+  prowlarr_api_key_set: boolean;
+  pt_client_password_set: boolean;
+}
+
+export type GrabState = "downloading" | "completed" | "imported" | "failed";
+
+export interface Grab {
+  id: string;
+  subscription_id: string;
+  config_id: string;
+  guid: string;
+  title: string;
+  folder_name: string;
+  info_hash: string;
+  state: GrabState;
+  season: number | null;
+  episodes: number[] | null;
+  size_bytes: number;
+  progress: number;
+  error: string | null;
+  run_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Subscription {
+  id: string;
+  name: string;
+  config_id: string;
+  tmdb_id: number;
+  query: string;
+  season: number | null;
+  groups: string[];
+  include: string;
+  exclude: string;
+  notes: string;
+  enabled: boolean;
+  ignore_before: string | null;
+  last_checked_at: string | null;
+  last_error: string | null;
+  created_at: string | null;
+  grabs: Grab[];
+}
+
+export interface SubscriptionInput {
+  name?: string;
+  config_id: string;
+  tmdb_id: number;
+  query: string;
+  season: number | null;
+  groups: string[];
+  include: string;
+  exclude: string;
+  notes: string;
+  enabled?: boolean;
+  backfill: boolean;
+}
+
+export type ReleaseVerdict =
+  | "grab"
+  | "group"
+  | "include"
+  | "exclude"
+  | "season"
+  | "grabbed"
+  | "covered"
+  | "too_old";
+
+export interface ReleasePreview {
+  guid: string;
+  title: string;
+  size_bytes: number;
+  indexer: string;
+  info_url: string;
+  published_at: string | null;
+  seeders: number | null;
+  flags: string[];
+  season: number | null;
+  episodes: number[] | null;
+  verdict: ReleaseVerdict;
+}
+
+export interface TmdbHit {
+  tmdb_id: number;
+  title: string;
+  original_title: string;
+  year: number | null;
+  date: string;
+  overview: string;
 }
 
 export type DownloadState =
@@ -331,6 +427,42 @@ export const api = {
     ),
   testTelegram: () =>
     post<{ ok: boolean; error?: string }>("/settings/test-telegram"),
+  testProwlarr: () =>
+    post<{
+      ok: boolean;
+      error?: string;
+      indexers?: { id: number; name: string; privacy: string; enabled: boolean }[];
+    }>("/settings/test-prowlarr"),
+  testPtClient: () =>
+    post<{ ok: boolean; error?: string; version?: string }>(
+      "/settings/test-pt-client",
+    ),
+  listSubscriptions: () =>
+    request<{ subscriptions: Subscription[] }>("/subscriptions"),
+  createSubscription: (body: SubscriptionInput) =>
+    post<Subscription>("/subscriptions", body),
+  updateSubscription: (
+    id: string,
+    body: Partial<SubscriptionInput> & { clear_season?: boolean },
+  ) =>
+    request<Subscription>(`/subscriptions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteSubscription: (id: string) =>
+    request<{ deleted: boolean }>(`/subscriptions/${id}`, { method: "DELETE" }),
+  checkSubscription: (id: string) =>
+    post<{ grabbed: Grab[] }>(`/subscriptions/${id}/check`),
+  previewSubscription: (body: SubscriptionInput) =>
+    post<{ releases: ReleasePreview[] }>("/subscriptions/preview", body),
+  previewExisting: (id: string) =>
+    post<{ releases: ReleasePreview[] }>(`/subscriptions/${id}/preview`),
+  forgetGrab: (id: string) =>
+    request<{ deleted: boolean }>(`/grabs/${id}`, { method: "DELETE" }),
+  searchTmdb: (query: string) =>
+    request<{ results: TmdbHit[] }>(
+      `/tmdb/search?query=${encodeURIComponent(query)}`,
+    ),
   listConfigs: () => request<{ configs: WatchConfig[] }>("/configs"),
   createConfig: (body: Partial<WatchConfig>) =>
     post<WatchConfig>("/configs", body),

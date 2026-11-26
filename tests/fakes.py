@@ -208,6 +208,13 @@ class FakeDatabase:
             "subtitle_recheck_days",
             "qbittorrent_password",
             "qbittorrent_save_root",
+            "prowlarr_url",
+            "prowlarr_api_key",
+            "prowlarr_indexer_ids",
+            "pt_client_url",
+            "pt_client_username",
+            "pt_client_password",
+            "subscription_interval_minutes",
         }
         self.settings.update(
             {key: value for key, value in values.items() if key in allowed}

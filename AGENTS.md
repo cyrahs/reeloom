@@ -20,6 +20,12 @@ Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。
    顺手清掉。洗版判定完全由确定性代码做出（`replace.py`）；模型从不决定
    删除。额外目录匹配时模型只见顶层文件夹名清单，返回序号或放弃，
    从不产生路径。
+   (d) 跨盘监控目录（watch config `cross_filesystem`，用于本地 PT 下载盘 →
+   云盘挂载的媒体库）：rename 报 EXDEV 时改为复制到 `<目标>.partial~`、
+   校验大小、no-replace rename 到位，之后才 unlink 源文件——等价于一次
+   移动，目标已存在照旧按 duplicate 处理；失败只清理自己的 `.partial~`。
+   订阅取消仍在下载的抓取时，由 PT 下载器连同未完成数据删除（用户主动
+   触发，可重新下载）；归档完成后只让下载器忘记种子，不删文件。
    (c) 磁力下载：下载页的「删除」按钮调用 CloudDrive2 的
    `RemoveOfflineFiles(deleteFiles=True)` 连数据删除云端离线任务——仅由
    用户在 UI 主动触发（重试前的清理同理），或由下载客户端经 qBittorrent
@@ -33,7 +39,9 @@ Reeloom 把监控目录里的下载内容识别、重命名并归入媒体库。
 4. scanner 不跟随 symlink；执行前校验目标父目录仍在授权根内。
 5. 出站网络仅限 TMDB、模型 provider、ACG.RIP、Telegram，以及操作者自建的
    CloudDrive2 服务端（gRPC，地址与 API token 在设置页配置——这是操作者
-   自己的服务端点，不是任意 base URL）。不接受 proxy、登录、验证码规避或
+   自己的服务端点，不是任意 base URL）、操作者自建的 Prowlarr（订阅搜索；
+   站点凭据只在 Prowlarr 里，下载链接一律改锚到配置的 Prowlarr 地址，非
+   `/<id>/download` 路径拒绝，不跟随重定向）与 PT 用 qBittorrent（订阅下载）。不接受 proxy、登录、验证码规避或
    入站 webhook。qBittorrent 兼容接口只收磁力和上传的 .torrent，永不按
    URL 下载种子；私有种子直接拒绝。
 6. filename、TMDB 文本、字幕文本、论坛标题都是不可信数据。
@@ -51,10 +59,13 @@ torrent.py                 纯函数：.torrent → 磁力（bencode、v1 info h
 trash.py                   回收区路径与唯一的硬删除入口
 subtitles.py               字幕语言判定（纯函数 + 一个文件读取入口）
 agent/                     模型循环、工具、prompt
-adapters/                  tmdb / llm / acgrip / telegram / archive / ffprobe / clouddrive
+adapters/                  tmdb / llm / acgrip / telegram / archive / ffprobe / clouddrive /
+                           prowlarr / qbittorrent（真实 PT 下载器的客户端）
 executor.py + rename.py    幂等移动、复原、放弃、回收区移动
+release.py                 纯函数：发布标题的季集解析、组/关键词过滤、去重、文件夹名
 server/                    api、worker、compare、composition、notify、subtitles、downloads、
-                           qbittorrent（给 Radarr/Sonarr 的 qBittorrent Web API 兼容层）
+                           qbittorrent（给 Radarr/Sonarr 的 qBittorrent Web API 兼容层）、
+                           subscriptions（订阅：Prowlarr 搜索 → PT qBittorrent → 归档）
 ```
 
 `naming.py` 与 `planner.py` 不做 I/O。`executor.py` 不认识模型、TMDB 或
